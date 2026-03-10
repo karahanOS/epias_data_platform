@@ -1,11 +1,13 @@
 import logging
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+import pytz
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from epias_client import EPIASClient  # Faz 1'de yazdığımız wrapper
+import sys
+sys.path.insert(0, '/opt/airflow/src')
+from epias_client import EPIASClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ def get_context_params(**context):
     """
     tgt = context["ti"].xcom_pull(task_ids="fetch_tgt")
     execution_date = context["execution_date"]
-    tz = ZoneInfo("Europe/Istanbul")
+    tz = pytz.timezone("Europe/Istanbul")
 
     start = execution_date.replace(hour=0, minute=0, second=0, tzinfo=tz)
     end = execution_date.replace(hour=23, minute=0, second=0, tzinfo=tz)

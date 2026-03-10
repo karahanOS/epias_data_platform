@@ -92,40 +92,27 @@ class EPIASClient:
     # ── ENDPOINTler ───────────────────────────────────────────────────────────
 
     def get_ptf(self, start_date: str, end_date: str) -> list:
-        """
-        PTF (Piyasa Takas Fiyatı) verisini çeker.
-        
-        Kullanım:
-            client.get_ptf("2024-01-01T00:00:00+03:00", "2024-01-01T23:00:00+03:00")
-        """
         body = {"startDate": start_date, "endDate": end_date}
-        result = self._post("/v1/markets/day-ahead/data/mcp", body)
-        return result.get("body", {}).get("mCPList", [])
+        result = self._post("/v1/markets/dam/data/mcp", body)
+        return result.get("items", [])
 
     def get_smf(self, start_date: str, end_date: str) -> list:
-        """SMF (Sistem Marjinal Fiyatı) verisini çeker."""
         body = {"startDate": start_date, "endDate": end_date}
         result = self._post("/v1/markets/bpm/data/system-marginal-price", body)
-        return result.get("body", {}).get("systemMarginalPriceList", [])
+        print("SMF RAW RESPONSE:", list(result.keys()))  # sadece key'leri yazdır
+        return result.get("items", [])
 
     def get_realtime_generation(self, start_date: str, end_date: str) -> list:
-        """Gerçek zamanlı üretim verisini kaynak bazında çeker."""
         body = {"startDate": start_date, "endDate": end_date}
         result = self._post("/v1/generation/data/realtime-generation", body)
-        return result.get("body", {}).get("hourlyGenerations", [])
+        print("GENERATION RAW RESPONSE:", list(result.keys()))
+        return result.get("items", [])
 
     def get_realtime_consumption(self, start_date: str, end_date: str) -> list:
-        """Gerçek zamanlı tüketim verisini çeker."""
         body = {"startDate": start_date, "endDate": end_date}
         result = self._post("/v1/consumption/data/realtime-consumption", body)
-        return result.get("body", {}).get("hourlyConsumptions", [])
-
-    def get_demand_forecast(self, start_date: str, end_date: str) -> list:
-        """Yük tahmini verisini çeker."""
-        body = {"startDate": start_date, "endDate": end_date}
-        result = self._post("/v1/consumption/data/demand-forecast", body)
-        return result.get("body", {}).get("loadEstimationPlanList", [])
-
+        print("CONSUMPTION RAW RESPONSE:", list(result.keys()))
+        return result.get("items", [])
 
 # ── KULLANIM ──────────────────────────────────────────────────────────────────
 
