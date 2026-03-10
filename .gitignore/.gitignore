@@ -1,0 +1,24 @@
+# Virtual environment
+venv/
+
+# Credentials
+credentials/
+*.json
+
+# Environment
+.env
+
+# Data
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# VSCode
+.vscode/
+
+# Airflow
+logs/
+plugins/

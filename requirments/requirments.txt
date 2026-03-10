@@ -1,0 +1,22 @@
+# API & Data
+requests==2.31.0
+pydantic==2.5.0
+pandas==2.1.0
+pyarrow==14.0.0
+python-dotenv==1.0.0
+
+# Google Cloud
+gcsfs==2023.10.0
+google-cloud-storage==2.13.0
+
+# Airflow (Docker ile kurulacak, direkt pip'e gerek yok)
+# apache-airflow==2.8.0
+
+# Spark
+pyspark==3.5.0
+
+# dbt (ilerleyen fazda)
+# dbt-bigquery==1.7.0
+
+# Test
+pytest==7.4.0
