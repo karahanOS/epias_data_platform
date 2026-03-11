@@ -44,3 +44,15 @@ services:
     <<: *airflow-common
     command: scheduler
     restart: always
+
+  spark:
+    image: apache/spark:3.5.0
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    environment:
+      - SPARK_MODE=master
+    ports:
+      - "8081:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark_jobs:/opt/spark_jobs
+      - ./credentials:/opt/credentials
