@@ -157,8 +157,13 @@ hr {
 # ── BIGQUERY CLIENT ───────────────────────────────────────────────────────────
 
 @st.cache_resource
+@st.cache_resource
 def get_client():
-    return bigquery.Client(project=PROJECT)
+    from google.oauth2 import service_account
+    credentials = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"]
+    )
+    return bigquery.Client(project=PROJECT, credentials=credentials)
 
 @st.cache_data(ttl=3600)
 def query(sql):
