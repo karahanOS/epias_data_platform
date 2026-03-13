@@ -99,14 +99,29 @@ class EPIASClient:
     def get_smf(self, start_date: str, end_date: str) -> list:
         body = {"startDate": start_date, "endDate": end_date}
         result = self._post("/v1/markets/bpm/data/system-marginal-price", body)
-        print("SMF RAW RESPONSE:", list(result.keys()))  # sadece key'leri yazdır
-        return result.get("items", [])
+        data = result.get("items", [])
+        # systemMarginalPrice'ı her zaman float'a çevir
+        for row in data:
+            if "systemMarginalPrice" in row:
+                row["systemMarginalPrice"] = float(row["systemMarginalPrice"])
+        return data
 
     def get_realtime_generation(self, start_date: str, end_date: str) -> list:
         body = {"startDate": start_date, "endDate": end_date}
         result = self._post("/v1/generation/data/realtime-generation", body)
-        print("GENERATION RAW RESPONSE:", list(result.keys()))
-        return result.get("items", [])
+        data = result.get("items", [])
+        # Tüm sayısal kolonları float'a çevir
+        numeric_cols = [
+            "total", "naturalGas", "dammedHydro", "lignite", "river",
+            "importCoal", "wind", "sun", "fueloil", "geothermal",
+            "asphaltiteCoal", "blackCoal", "biomass", "naphta", "lng",
+            "importExport", "wasteheat"
+        ]
+        for row in data:
+            for col in numeric_cols:
+                if col in row and row[col] is not None:
+                    row[col] = float(row[col])
+        return data
 
     def get_realtime_consumption(self, start_date: str, end_date: str) -> list:
         body = {"startDate": start_date, "endDate": end_date}

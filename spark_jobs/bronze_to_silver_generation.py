@@ -15,6 +15,8 @@ spark = SparkSession.builder \
 
 spark.sparkContext.setLogLevel("WARN")
 
+
+
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
 BUCKET = "epias-data-lake"
@@ -41,6 +43,35 @@ df = spark.read.parquet(BRONZE_PATH)
 print(f"Bronze kayıt sayısı: {df.count()}")
 df.printSchema()
 df.show(5)
+
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+
+schema = StructType([
+    StructField("date", StringType(), True),
+    StructField("hour", StringType(), True),
+    StructField("total", DoubleType(), True),
+    StructField("naturalGas", DoubleType(), True),
+    StructField("dammedHydro", DoubleType(), True),
+    StructField("lignite", DoubleType(), True),
+    StructField("river", DoubleType(), True),
+    StructField("importCoal", DoubleType(), True),
+    StructField("wind", DoubleType(), True),
+    StructField("sun", DoubleType(), True),
+    StructField("fueloil", DoubleType(), True),
+    StructField("geothermal", DoubleType(), True),
+    StructField("asphaltiteCoal", DoubleType(), True),
+    StructField("blackCoal", DoubleType(), True),
+    StructField("biomass", DoubleType(), True),
+    StructField("naphta", DoubleType(), True),
+    StructField("lng", DoubleType(), True),
+    StructField("importExport", DoubleType(), True),
+    StructField("wasteheat", DoubleType(), True),
+])
+
+df = spark.read \
+    .schema(schema) \
+    .option("mergeSchema", "false") \
+    .parquet(BRONZE_PATH)
 
 # ── 2. DÖNÜŞÜMLER ─────────────────────────────────────────────────────────────
 

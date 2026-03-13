@@ -2,10 +2,12 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType
 
+
 # ── SPARK SESSION ─────────────────────────────────────────────────────────────
 
 spark = SparkSession.builder \
     .appName("epias_bronze_to_silver_smf") \
+    .config("spark.sql.parquet.enableVectorizedReader", "false") \
     .config("spark.hadoop.google.cloud.auth.service.account.enable", "true") \
     .config("spark.hadoop.google.cloud.auth.service.account.json.keyfile",
             "/opt/credentials/gcp-key.json") \
@@ -20,6 +22,18 @@ spark.sparkContext.setLogLevel("WARN")
 BUCKET = "epias-data-lake"
 BRONZE_PATH = f"gs://{BUCKET}/bronze/smf/"
 SILVER_PATH = f"gs://{BUCKET}/silver/smf/"
+
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+
+# Schema'yı manuel tanımla
+schema = StructType([
+    StructField("date", StringType(), True),
+    StructField("hour", StringType(), True),
+    StructField("systemMarginalPrice", DoubleType(), True),
+])
+
+df = spark.read.schema(schema).parquet(BRONZE_PATH)
+
 
 # ── 1. BRONZE'U OKU ───────────────────────────────────────────────────────────
 
@@ -41,7 +55,7 @@ df_silver = df \
         "date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX")
     ) \
     .withColumn(
-        "hour", F.lpad(F.col("hour"), 5, "0")
+    "hour", F.date_format(F.to_timestamp(F.col("hour"), "yyyy-MM-dd'T'HH:mm:ssXXX"), "HH:mm")
     ) \
     .withColumn(
         # snake_case standardizasyonu
@@ -64,6 +78,7 @@ df_silver.select([
 
 print(f"\nSilver'a yazılıyor: {SILVER_PATH}")
 print(f"Silver kayıt sayısı: {df_silver.count()}")
+print("Silver örnek veri:")
 
 df_silver.show(5)
 
