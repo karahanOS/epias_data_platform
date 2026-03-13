@@ -1,0 +1,1 @@
+select * from {{ source('epias_gold', 'generation_mix_price_impact') }}

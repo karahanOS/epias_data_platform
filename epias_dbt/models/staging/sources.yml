@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: epias_gold
+    database: epias-data-platform
+    schema: epias_gold
+    tables:
+      - name: price_spread_analysis
+      - name: generation_mix_price_impact
+      - name: supply_demand_summary
+      - name: monthly_executive_metrics

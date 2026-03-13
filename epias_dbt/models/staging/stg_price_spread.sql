@@ -1,0 +1,1 @@
+select * from {{ source('epias_gold', 'price_spread_analysis') }}

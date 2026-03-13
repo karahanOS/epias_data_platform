@@ -1,0 +1,44 @@
+version: 2
+
+models:
+  - name: stg_price_spread
+    description: "PTF ve SMF fiyat makası analizi"
+    columns:
+      - name: date
+        description: "Tarih"
+        tests:
+          - not_null
+      - name: ptf
+        description: "Piyasa Takas Fiyatı"
+        tests:
+          - not_null
+      - name: smf
+        description: "Sistem Marjinal Fiyatı"
+        tests:
+          - not_null
+      - name: system_direction
+        description: "Sistem yönü"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Enerji Açığı', 'Enerji Fazlası', 'Dengeli']
+
+  - name: stg_generation_mix
+    description: "Üretim karışımı ve fiyat etkisi"
+    columns:
+      - name: date
+        tests:
+          - not_null
+      - name: total_generation
+        tests:
+          - not_null
+
+  - name: stg_supply_demand
+    description: "Arz-talep dengesi"
+    columns:
+      - name: date
+        tests:
+          - not_null
+      - name: coverage_ratio
+        tests:
+          - not_null
