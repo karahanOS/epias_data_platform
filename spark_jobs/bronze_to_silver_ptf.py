@@ -41,9 +41,9 @@ df_silver = df \
     .dropDuplicates() \
     .dropna(subset=["date", "price"]) \
     .withColumn(
-        # date: string → timestamp
-        # EPIAS formatı: "2024-01-01T00:00:00+03:00"
-        "date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX")
+    "date", F.to_utc_timestamp(
+        F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"),
+        "Europe/Istanbul")
     ) \
     .withColumn(
         # hour: "00:00" formatını standart tut, 24 saatlik sisteme çevir

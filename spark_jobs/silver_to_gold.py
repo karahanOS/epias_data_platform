@@ -1,6 +1,5 @@
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType
 
 # ── SPARK SESSION ─────────────────────────────────────────────────────────────
 
@@ -31,37 +30,83 @@ print(f"SMF: {smf.count()} kayıt")
 print(f"Generation: {gen.count()} kayıt")
 print(f"Consumption: {con.count()} kayıt")
 
+# ── DEBUG: FORMAT KONTROLÜ ────────────────────────────────────────────────────
+
+print("\nPTF örnekleri:")
+ptf.select("date", "hour").show(5)
+
+print("SMF örnekleri:")
+smf.select("date", "hour").show(5)
+
+print("Generation örnekleri:")
+gen.select("date", "hour").show(5)
+
+print("Consumption örnekleri:")
+con.select("date", "hour").show(5)
+
+# ── JOIN KEY OLUŞTUR ──────────────────────────────────────────────────────────
+# date UTC'de, hour TR saatinde — join_key = "yyyy-MM-dd HH:mm"
+
+def add_join_key(df):
+    return df.withColumn(
+        "join_key",
+        F.concat(
+            F.date_format(F.col("date"), "yyyy-MM-dd"),
+            F.lit(" "),
+            F.col("hour")
+        )
+    )
+
+ptf_clean = add_join_key(ptf)
+smf_clean = add_join_key(smf)
+gen_clean  = add_join_key(gen)
+con_clean  = add_join_key(con)
+
+# ── DEBUG: JOIN KEY KONTROLÜ ──────────────────────────────────────────────────
+
+print("\nPTF join_key örnekleri:")
+ptf_clean.select("date", "hour", "join_key").show(5)
+
+print("SMF join_key örnekleri:")
+smf_clean.select("date", "hour", "join_key").show(5)
+
+print("Eşleşen kayıt sayısı (PTF-SMF):")
+match_count = ptf_clean.alias("ptf").join(
+    smf_clean.alias("smf"),
+    on=["join_key"],
+    how="inner"
+).count()
+print(f"→ {match_count} kayıt eşleşti")
+
 # ═════════════════════════════════════════════════════════════════════════════
 # GOLD 1: gold_price_spread_analysis
-# PTF vs SMF — fiyat makası ve sistem dengesizliği analizi
 # ═════════════════════════════════════════════════════════════════════════════
 
 print("\n[1/4] gold_price_spread_analysis oluşturuluyor...")
 
-gold_price_spread = ptf.alias("ptf").join(
-    smf.alias("smf"),
-    on=["date", "hour"],
+gold_price_spread = ptf_clean.alias("ptf").join(
+    smf_clean.alias("smf"),
+    on=["join_key"],
     how="inner"
 ) \
 .withColumn(
-    "price_spread", F.round(F.col("price") - F.col("system_marginal_price"), 2)
+    "price_spread", F.round(F.col("ptf.price") - F.col("smf.system_marginal_price"), 2)
 ) \
 .withColumn(
-    # Spread pozitifse sistem enerji açığında (SMF > PTF değil, PTF > SMF)
-    # Spread negatifse sistem enerji fazlasında
     "system_direction",
     F.when(F.col("price_spread") > 0, "Enerji Açığı")
      .when(F.col("price_spread") < 0, "Enerji Fazlası")
      .otherwise("Dengeli")
 ) \
 .withColumn("season",
-    F.when(F.month("date").isin(12, 1, 2), "Kış")
-     .when(F.month("date").isin(3, 4, 5), "İlkbahar")
-     .when(F.month("date").isin(6, 7, 8), "Yaz")
+    F.when(F.month("ptf.date").isin(12, 1, 2), "Kış")
+     .when(F.month("ptf.date").isin(3, 4, 5), "İlkbahar")
+     .when(F.month("ptf.date").isin(6, 7, 8), "Yaz")
      .otherwise("Sonbahar")
 ) \
 .select(
-    "date", "hour",
+    F.col("ptf.date").alias("date"),
+    F.col("ptf.hour").alias("hour"),
     F.col("ptf.price").alias("ptf"),
     F.col("smf.system_marginal_price").alias("smf"),
     "price_spread",
@@ -81,7 +126,6 @@ print("gold_price_spread_analysis tamamlandı!")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # GOLD 2: gold_generation_mix_price_impact
-# Yenilenebilir üretim oranı ve PTF ilişkisi (Merit Order Effect)
 # ═════════════════════════════════════════════════════════════════════════════
 
 print("\n[2/4] gold_generation_mix_price_impact oluşturuluyor...")
@@ -90,31 +134,20 @@ renewable_cols = ["wind", "sun", "river", "dammed_hydro", "geothermal", "biomass
 fossil_cols    = ["natural_gas", "lignite", "import_coal", "asphaltite_coal",
                   "black_coal", "fuel_oil", "naphta", "lng"]
 
-gen_with_ratios = gen \
-    .withColumn(
-        "renewable_generation",
-        sum(F.col(c) for c in renewable_cols)
-    ) \
-    .withColumn(
-        "fossil_generation",
-        sum(F.col(c) for c in fossil_cols)
-    ) \
-    .withColumn(
-        "renewable_ratio",
-        F.round(F.col("renewable_generation") / F.col("total") * 100, 2)
-    ) \
-    .withColumn(
-        "fossil_ratio",
-        F.round(F.col("fossil_generation") / F.col("total") * 100, 2)
-    )
+gen_with_ratios = gen_clean \
+    .withColumn("renewable_generation", sum(F.col(c) for c in renewable_cols)) \
+    .withColumn("fossil_generation", sum(F.col(c) for c in fossil_cols)) \
+    .withColumn("renewable_ratio", F.round(F.col("renewable_generation") / F.col("total") * 100, 2)) \
+    .withColumn("fossil_ratio", F.round(F.col("fossil_generation") / F.col("total") * 100, 2))
 
 gold_gen_mix = gen_with_ratios.alias("gen").join(
-    ptf.alias("ptf"),
-    on=["date", "hour"],
+    ptf_clean.alias("ptf"),
+    on=["join_key"],
     how="inner"
 ) \
 .select(
-    "date", "hour",
+    F.col("gen.date").alias("date"),
+    F.col("gen.hour").alias("hour"),
     F.col("gen.total").alias("total_generation"),
     "renewable_generation",
     "fossil_generation",
@@ -135,14 +168,13 @@ print("gold_generation_mix_price_impact tamamlandı!")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # GOLD 3: gold_supply_demand_summary
-# Arz-talep karşılaması ve peak saat analizi
 # ═════════════════════════════════════════════════════════════════════════════
 
 print("\n[3/4] gold_supply_demand_summary oluşturuluyor...")
 
-gold_supply_demand = gen.alias("gen").join(
-    con.alias("con"),
-    on=["date", "hour"],
+gold_supply_demand = gen_clean.alias("gen").join(
+    con_clean.alias("con"),
+    on=["join_key"],
     how="inner"
 ) \
 .withColumn(
@@ -151,13 +183,14 @@ gold_supply_demand = gen.alias("gen").join(
 ) \
 .withColumn(
     "time_of_day",
-    F.when(F.col("hour").between("06:00", "11:00"), "Sabah Peak")
-     .when(F.col("hour").between("12:00", "16:00"), "Öğle")
-     .when(F.col("hour").between("17:00", "22:00"), "Akşam Peak")
+    F.when(F.col("gen.hour").between("06:00", "11:00"), "Sabah Peak")
+     .when(F.col("gen.hour").between("12:00", "16:00"), "Öğle")
+     .when(F.col("gen.hour").between("17:00", "22:00"), "Akşam Peak")
      .otherwise("Gece")
 ) \
 .select(
-    "date", "hour",
+    F.col("gen.date").alias("date"),
+    F.col("gen.hour").alias("hour"),
     "time_of_day",
     F.col("gen.total").alias("total_generation"),
     F.col("con.consumption").alias("total_consumption"),
@@ -176,7 +209,6 @@ print("gold_supply_demand_summary tamamlandı!")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # GOLD 4: gold_monthly_executive_metrics
-# Aylık özet — executive summary KPI tablosu
 # ═════════════════════════════════════════════════════════════════════════════
 
 print("\n[4/4] gold_monthly_executive_metrics oluşturuluyor...")
@@ -194,17 +226,16 @@ monthly_consumption = con.groupBy("year", "month").agg(
 
 monthly_spread = gold_price_spread.groupBy("year", "month").agg(
     F.round(F.avg("price_spread"), 2).alias("avg_price_spread"),
-    F.count(F.when(F.col("system_direction") == "Enerji Açığı", 1))
-     .alias("energy_deficit_hours"),
-    F.count(F.when(F.col("system_direction") == "Enerji Fazlası", 1))
-     .alias("energy_surplus_hours"),
+    F.count(F.when(F.col("system_direction") == "Enerji Açığı", 1)).alias("energy_deficit_hours"),
+    F.count(F.when(F.col("system_direction") == "Enerji Fazlası", 1)).alias("energy_surplus_hours"),
 )
 
 gold_monthly = monthly_ptf \
     .join(monthly_consumption, on=["year", "month"], how="left") \
     .join(monthly_spread, on=["year", "month"], how="left") \
     .withColumn(
-        "year_month", F.concat(F.col("year"), F.lit("-"), F.lpad(F.col("month"), 2, "0"))
+        "year_month",
+        F.concat(F.col("year"), F.lit("-"), F.lpad(F.col("month"), 2, "0"))
     ) \
     .orderBy("year", "month")
 

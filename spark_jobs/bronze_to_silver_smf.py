@@ -52,8 +52,10 @@ df_silver = df \
     .dropDuplicates() \
     .dropna(subset=["date", "systemMarginalPrice"]) \
     .withColumn(
-        "date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX")
-    ) \
+    "date", F.to_utc_timestamp(
+        F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"),
+        "Europe/Istanbul")
+     ) \
     .withColumn(
     "hour", F.date_format(F.to_timestamp(F.col("hour"), "yyyy-MM-dd'T'HH:mm:ssXXX"), "HH:mm")
     ) \
