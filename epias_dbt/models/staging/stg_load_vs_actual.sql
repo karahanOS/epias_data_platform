@@ -1,0 +1,1 @@
+select * from {{ source('epias_gold', 'load_vs_actual') }}

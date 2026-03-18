@@ -9,3 +9,4 @@ sources:
       - name: generation_mix_price_impact
       - name: supply_demand_summary
       - name: monthly_executive_metrics
+      - name: load_vs_actual
