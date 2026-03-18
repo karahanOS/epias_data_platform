@@ -63,7 +63,7 @@ def get_ptf_callable(**context):
     """PTF (Piyasa Takas Fiyatı) verisini çeker."""
     tgt, start, end = get_context_params(**context)
     client = EPIASClient()
-    client._tgt = tgt  # XCom'dan gelen TGT'yi client'a set et, yeniden auth'a gitme
+    client._tgt = tgt
     data = client.get_ptf(start, end)
     logger.info(f"PTF verisi çekildi: {len(data)} kayıt")
     return data
@@ -99,6 +99,16 @@ def get_consumption_callable(**context):
     return data
 
 
+def get_load_estimation_callable(**context):
+    """Saatlik yük tahmin planı verisini çeker."""
+    tgt, start, end = get_context_params(**context)
+    client = EPIASClient()
+    client._tgt = tgt
+    data = client.get_load_estimation_plan(start, end)
+    logger.info(f"Yük tahmin verisi çekildi: {len(data)} kayıt")
+    return data
+
+
 # ── CALLABLE'LAR: GCS'E KAYDET ───────────────────────────────────────────────
 
 def save_to_gcs(task_id: str, bucket_path: str, **context):
@@ -117,7 +127,6 @@ def save_to_gcs(task_id: str, bucket_path: str, **context):
     execution_date = context["execution_date"]
     date_str = execution_date.strftime("%Y-%m-%d")
 
-    # gs://bucket/bronze/ptf/2024-01-15.parquet
     gcs_path = f"gs://epias-data-lake/{bucket_path}/{date_str}.parquet"
 
     df = pd.DataFrame(data)
@@ -141,6 +150,10 @@ def save_consumption_callable(**context):
     save_to_gcs("get_consumption", "bronze/consumption", **context)
 
 
+def save_load_estimation_callable(**context):
+    save_to_gcs("get_load_estimation", "bronze/load_estimation", **context)
+
+
 # ── DAG TANIMI ────────────────────────────────────────────────────────────────
 
 default_args = {
@@ -153,10 +166,10 @@ default_args = {
 with DAG(
     dag_id="epias_daily_ingestion",
     default_args=default_args,
-    schedule_interval="0 0 * * *",   # Her gece 00:00
+    schedule_interval="0 0 * * *",
     start_date=datetime(2024, 1, 1),
-    catchup=True,                     # Geçmiş tarihleri doldur
-    max_active_runs=3,                # Aynı anda max 3 run — sistemi patlatma
+    catchup=True,
+    max_active_runs=3,
     tags=["epias", "ingestion"],
 ) as dag:
 
@@ -166,10 +179,7 @@ with DAG(
         python_callable=fetch_tgt_callable,
     )
 
-    # ── TASK 2-5: VERİ ÇEK ───────────────────────────────────────────────────
-    # trigger_rule="all_done" → fetch_tgt başarısız olsa bile çalışır
-    # (zaten TGT yoksa hata verecek, ama Airflow bağımsız olarak loglar)
-
+    # ── TASK 2-6: VERİ ÇEK ───────────────────────────────────────────────────
     get_ptf = PythonOperator(
         task_id="get_ptf",
         python_callable=get_ptf_callable,
@@ -194,7 +204,13 @@ with DAG(
         trigger_rule="all_done",
     )
 
-    # ── TASK 6-9: GCS'E KAYDET ───────────────────────────────────────────────
+    get_load_estimation = PythonOperator(
+        task_id="get_load_estimation",
+        python_callable=get_load_estimation_callable,
+        trigger_rule="all_done",
+    )
+
+    # ── TASK 7-11: GCS'E KAYDET ──────────────────────────────────────────────
     save_ptf = PythonOperator(
         task_id="save_ptf_to_gcs",
         python_callable=save_ptf_callable,
@@ -215,18 +231,25 @@ with DAG(
         python_callable=save_consumption_callable,
     )
 
+    save_load_estimation = PythonOperator(
+        task_id="save_load_estimation_to_gcs",
+        python_callable=save_load_estimation_callable,
+    )
+
     # ── BAĞIMLILIKLAR ─────────────────────────────────────────────────────────
     #
     # fetch_tgt
     #     │
-    #     ├── get_ptf ──────── save_ptf_to_gcs
-    #     ├── get_smf ──────── save_smf_to_gcs
-    #     ├── get_generation ── save_generation_to_gcs
-    #     └── get_consumption ─ save_consumption_to_gcs
+    #     ├── get_ptf ──────────── save_ptf_to_gcs
+    #     ├── get_smf ──────────── save_smf_to_gcs
+    #     ├── get_generation ───── save_generation_to_gcs
+    #     ├── get_consumption ──── save_consumption_to_gcs
+    #     └── get_load_estimation ─ save_load_estimation_to_gcs
 
-    fetch_tgt >> [get_ptf, get_smf, get_generation, get_consumption]
+    fetch_tgt >> [get_ptf, get_smf, get_generation, get_consumption, get_load_estimation]
 
     get_ptf >> save_ptf
     get_smf >> save_smf
     get_generation >> save_generation
     get_consumption >> save_consumption
+    get_load_estimation >> save_load_estimation

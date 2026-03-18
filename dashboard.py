@@ -183,8 +183,8 @@ with st.sidebar:
 
     page = st.selectbox(
         "📊 Sayfa Seç",
-        ["🏠 Executive Summary", "⚖️ Fiyat Dengesizliği", "🌱 Üretim Karışımı", "🔋 Arz-Talep Analizi"],
-        label_visibility="collapsed"
+        ["🏠 Executive Summary", "⚖️ Fiyat Dengesizliği", "🌱 Üretim Karışımı", "🔋 Arz-Talep Analizi", "📉 Yük Tahmin Sapması"],
+    label_visibility="collapsed"
     )
 
     st.markdown("---")
@@ -659,3 +659,205 @@ elif page == "🔋 Arz-Talep Analizi":
             height=350,
         )
         st.plotly_chart(fig3, use_container_width=True)
+
+    # Bu kodu dashboard.py'ın en sonuna ekle
+
+elif page == "📉 Yük Tahmin Sapması":
+
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>SAPMA ANALİZİ</span>
+        <h1>Yük Tahmin Sapması</h1>
+        <p>Tahmin edilen tüketim ile gerçekleşen tüketim arasındaki saatlik sapmalar</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    df = query(f"""
+        SELECT
+            date,
+            hour,
+            forecast_consumption,
+            actual_consumption,
+            deviation,
+            deviation_pct,
+            deviation_direction,
+            EXTRACT(YEAR FROM date)       as year,
+            EXTRACT(MONTH FROM date)      as month,
+            EXTRACT(DAY FROM date)        as day,
+            EXTRACT(HOUR FROM date)       as hour_num
+        FROM `{PROJECT}.{DATASET}.load_vs_actual`
+        ORDER BY date, hour
+    """)
+
+    if df.empty:
+        st.warning("Veri bulunamadı.")
+    else:
+        years = sorted(df["year"].unique(), reverse=True)
+        selected_year = st.selectbox("Yıl Seç", years)
+        df_y = df[df["year"] == selected_year]
+
+        # KPI kartları
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Ort. Mutlak Sapma", f"{df_y['deviation'].abs().mean():,.0f} MWh")
+        with col2:
+            st.metric("Ort. Sapma %", f"%{df_y['deviation_pct'].abs().mean():.2f}")
+        with col3:
+            fazla_pct = (df_y["deviation_direction"] == "Tüketim Fazla").mean() * 100
+            st.metric("Tüketim Fazla Saatleri", f"%{fazla_pct:.1f}")
+        with col4:
+            st.metric("Maks. Sapma", f"{df_y['deviation'].abs().max():,.0f} MWh")
+
+        st.markdown("---")
+
+        # Heatmap: Gün × Saat bazında sapma
+        import plotly.graph_objects as go
+        import numpy as np
+
+        # Son 28 günü al
+        df_recent = df_y.sort_values("date").tail(28 * 24)
+        df_recent["day_label"] = df_recent["date"].dt.strftime("%d %a")
+
+        pivot = df_recent.pivot_table(
+            index="day_label",
+            columns="hour_num",
+            values="deviation",
+            aggfunc="mean"
+        )
+
+        fig_heat = go.Figure(go.Heatmap(
+            z=pivot.values,
+            x=[f"{int(h):02d}:00" for h in pivot.columns],
+            y=pivot.index,
+            colorscale=[
+                [0.0,  "#1e40af"],
+                [0.4,  "#3b82f6"],
+                [0.5,  "#1a2235"],
+                [0.6,  "#f97316"],
+                [1.0,  "#dc2626"],
+            ],
+            zmid=0,
+            colorbar=dict(
+                title="Sapma (MWh)",
+                tickfont=dict(color="#e2e8f0"),
+                titlefont=dict(color="#e2e8f0"),
+            ),
+            hoverongaps=False,
+            hovertemplate="Gün: %{y}<br>Saat: %{x}<br>Sapma: %{z:,.0f} MWh<extra></extra>",
+        ))
+
+        fig_heat.update_layout(
+            title="Saatlere Göre Tüketim Sapması (Son 28 Gün) — Mavi: Az Tüketim / Kırmızı: Fazla Tüketim",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#e2e8f0", family="DM Sans"),
+            xaxis=dict(title="Saat", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(title="Gün", gridcolor="rgba(255,255,255,0.05)"),
+            height=580,
+        )
+        st.plotly_chart(fig_heat, use_container_width=True)
+
+        col_l, col_r = st.columns(2)
+
+        with col_l:
+            # Saatlik ortalama sapma
+            hourly = df_y.groupby("hour_num").agg(
+                avg_dev=("deviation", "mean"),
+                avg_abs_dev=("deviation", lambda x: x.abs().mean()),
+            ).reset_index()
+
+            fig2 = go.Figure()
+            fig2.add_trace(go.Bar(
+                x=hourly["hour_num"],
+                y=hourly["avg_dev"],
+                name="Ort. Sapma",
+                marker_color=[
+                    "#ef4444" if v > 0 else "#3b82f6"
+                    for v in hourly["avg_dev"]
+                ],
+            ))
+            fig2.add_hline(
+                y=0, line_color="rgba(255,255,255,0.3)", line_dash="dash"
+            )
+            fig2.update_layout(
+                title="Saate Göre Ortalama Sapma",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e2e8f0"),
+                xaxis=dict(
+                    gridcolor="rgba(255,255,255,0.05)",
+                    tickmode="linear", title="Saat"
+                ),
+                yaxis=dict(
+                    gridcolor="rgba(255,255,255,0.05)",
+                    title="Sapma (MWh)"
+                ),
+                height=380,
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+        with col_r:
+            # Sapma yönü dağılımı
+            direction_counts = df_y["deviation_direction"].value_counts()
+            fig3 = go.Figure(go.Pie(
+                labels=direction_counts.index,
+                values=direction_counts.values,
+                hole=0.6,
+                marker_colors=["#ef4444", "#3b82f6", "#00d4ff"],
+            ))
+            fig3.update_layout(
+                title="Sapma Yönü Dağılımı",
+                paper_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e2e8f0"),
+                legend=dict(bgcolor="rgba(0,0,0,0)"),
+                height=380,
+                annotations=[dict(
+                    text=f"{selected_year}",
+                    x=0.5, y=0.5,
+                    font_size=20,
+                    font_color="#00d4ff",
+                    showarrow=False
+                )]
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+
+        # Tahmin vs Gerçekleşen trend
+        monthly = df_y.groupby("month").agg(
+            avg_forecast=("forecast_consumption", "mean"),
+            avg_actual=("actual_consumption", "mean"),
+        ).reset_index()
+
+        fig4 = go.Figure()
+        fig4.add_trace(go.Scatter(
+            x=monthly["month"], y=monthly["avg_forecast"],
+            name="Tahmin (LEP)",
+            line=dict(color="#7c3aed", width=2.5, dash="dash"),
+            mode="lines+markers",
+            marker=dict(size=7),
+        ))
+        fig4.add_trace(go.Scatter(
+            x=monthly["month"], y=monthly["avg_actual"],
+            name="Gerçekleşen",
+            line=dict(color="#00d4ff", width=2.5),
+            mode="lines+markers",
+            marker=dict(size=7),
+            fill="tonexty",
+            fillcolor="rgba(0, 212, 255, 0.05)",
+        ))
+        fig4.update_layout(
+            title=f"{selected_year} — Aylık Tahmin vs Gerçekleşen Tüketim",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#e2e8f0"),
+            legend=dict(bgcolor="rgba(0,0,0,0)"),
+            xaxis=dict(
+                gridcolor="rgba(255,255,255,0.05)",
+                tickmode="linear", title="Ay"
+            ),
+            yaxis=dict(
+                gridcolor="rgba(255,255,255,0.05)",
+                title="Tüketim (MWh)"
+            ),
+            height=380,
+        )
+        st.plotly_chart(fig4, use_container_width=True)

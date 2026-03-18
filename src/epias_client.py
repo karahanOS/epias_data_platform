@@ -129,6 +129,15 @@ class EPIASClient:
         print("CONSUMPTION RAW RESPONSE:", list(result.keys()))
         return result.get("items", [])
 
+    def get_load_estimation_plan(self, start_date: str, end_date: str) -> list:
+        body = {"startDate": start_date, "endDate": end_date}
+        result = self._post("/v1/consumption/data/load-estimation-plan", body)
+        data = result.get("items", [])
+        for row in data:
+            if "lep" in row and row["lep"] is not None:
+                row["lep"] = float(row["lep"])
+        return data
+    
 # ── KULLANIM ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

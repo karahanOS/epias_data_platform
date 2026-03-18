@@ -24,7 +24,9 @@ ptf = spark.read.parquet(f"gs://{BUCKET}/silver/ptf/")
 smf = spark.read.parquet(f"gs://{BUCKET}/silver/smf/")
 gen = spark.read.parquet(f"gs://{BUCKET}/silver/generation/")
 con = spark.read.parquet(f"gs://{BUCKET}/silver/consumption/")
+lep = spark.read.parquet(f"gs://{BUCKET}/silver/load_estimation/")
 
+print(f"Load Estimation: {lep.count()} kayıt")
 print(f"PTF: {ptf.count()} kayıt")
 print(f"SMF: {smf.count()} kayıt")
 print(f"Generation: {gen.count()} kayıt")
@@ -61,8 +63,20 @@ ptf_clean = add_join_key(ptf)
 smf_clean = add_join_key(smf)
 gen_clean  = add_join_key(gen)
 con_clean  = add_join_key(con)
+lep_clean = add_join_key(lep)
 
 # ── DEBUG: JOIN KEY KONTROLÜ ──────────────────────────────────────────────────
+print("LEP tarih aralığı:")
+lep.select(F.min("date"), F.max("date")).show()
+
+print("Consumption tarih aralığı:")
+con.select(F.min("date"), F.max("date")).show()
+
+print("LEP join_key örnekleri:")
+lep_clean.select("date", "hour", "join_key").show(5)
+
+print("Consumption join_key örnekleri:")
+con_clean.select("date", "hour", "join_key").show(5)
 
 print("\nPTF join_key örnekleri:")
 ptf_clean.select("date", "hour", "join_key").show(5)
@@ -245,6 +259,53 @@ gold_monthly.write \
     .parquet(f"gs://{BUCKET}/gold/monthly_executive_metrics/")
 
 print("gold_monthly_executive_metrics tamamlandı!")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# GOLD 5: gold_load_vs_actual
+# Tahmin edilen tüketim vs gerçekleşen tüketim — sapma analizi
+# ═════════════════════════════════════════════════════════════════════════════
+
+print("\n[5/5] gold_load_vs_actual oluşturuluyor...")
+
+gold_load_vs_actual = lep.alias("lep").join(
+    con.alias("con"),
+    on=["date"],
+    how="inner"
+) \
+.withColumn(
+    "deviation", F.round(F.col("con.consumption") - F.col("lep.lep"), 2)
+) \
+.withColumn(
+    "deviation_pct", F.round(
+        (F.col("con.consumption") - F.col("lep.lep")) / F.col("lep.lep") * 100, 2
+    )
+) \
+.withColumn(
+    "deviation_direction",
+    F.when(F.col("deviation") > 0, "Tüketim Fazla")
+     .when(F.col("deviation") < 0, "Tüketim Az")
+     .otherwise("Dengeli")
+) \
+.select(
+    F.col("lep.date").alias("date"),
+    F.col("lep.hour").alias("hour"),
+    F.col("lep.lep").alias("forecast_consumption"),
+    F.col("con.consumption").alias("actual_consumption"),
+    "deviation",
+    "deviation_pct",
+    "deviation_direction",
+    F.col("lep.year").alias("year"),
+    F.col("lep.month").alias("month"),
+)
+
+gold_load_vs_actual.show(5)
+gold_load_vs_actual.write \
+    .mode("overwrite") \
+    .partitionBy("year", "month") \
+    .parquet(f"gs://{BUCKET}/gold/load_vs_actual/")
+
+print("gold_load_vs_actual tamamlandı!")
+
 print("\n✅ Tüm Gold tablolar oluşturuldu!")
 
 spark.stop()
