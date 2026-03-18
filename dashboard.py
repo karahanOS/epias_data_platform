@@ -726,22 +726,17 @@ elif page == "📉 Yük Tahmin Sapması":
         )
 
         fig_heat = go.Figure(go.Heatmap(
-            z=pivot.values,
-            x=[f"{int(h):02d}:00" for h in pivot.columns],
-            y=pivot.index,
-            colorscale=[
-                [0.0,  "#1e40af"],
-                [0.4,  "#3b82f6"],
-                [0.5,  "#1a2235"],
-                [0.6,  "#f97316"],
-                [1.0,  "#dc2626"],
+        z=pivot.values,
+        x=[f"{int(h):02d}:00" for h in pivot.columns],
+        y=pivot.index,
+        colorscale=[
+            [0.0,  "#1e40af"],
+            [0.4,  "#3b82f6"],
+            [0.5,  "#1a2235"],
+            [0.6,  "#f97316"],
+            [1.0,  "#dc2626"],
             ],
             zmid=0,
-            colorbar=dict(
-                title="Sapma (MWh)",
-                tickfont=dict(color="#e2e8f0"),
-                titlefont=dict(color="#e2e8f0"),
-            ),
             hoverongaps=False,
             hovertemplate="Gün: %{y}<br>Saat: %{x}<br>Sapma: %{z:,.0f} MWh<extra></extra>",
         ))
