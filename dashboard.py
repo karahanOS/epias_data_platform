@@ -183,7 +183,7 @@ with st.sidebar:
 
     page = st.selectbox(
         "📊 Sayfa Seç",
-        ["🏠 Executive Summary", "⚖️ Fiyat Dengesizliği", "🌱 Üretim Karışımı", "🔋 Arz-Talep Analizi", "📉 Yük Tahmin Sapması"],
+        ["🏠 Executive Summary", "⚖️ Fiyat Dengesizliği", "🌱 Üretim Karışımı", "🔋 Arz-Talep Analizi", "📉 Yük Tahmin Sapması","🌬️ Yenilenebilir Derinlemesine"],
     label_visibility="collapsed"
     )
 
@@ -854,5 +854,232 @@ elif page == "📉 Yük Tahmin Sapması":
                 title="Tüketim (MWh)"
             ),
             height=380,
+        )
+
+        # Bu kodu dashboard.py'ın en sonuna ekle
+
+elif page == "🌬️ Yenilenebilir Derinlemesine":
+
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>MERIT ORDER</span>
+        <h1>Yenilenebilir Enerji Derinlemesine Analiz</h1>
+        <p>Rüzgar, güneş ve hidrolik üretimin fiyat üzerindeki etkisi — kaynak bazında Merit Order</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    df = query(f"""
+        SELECT
+            date,
+            hour,
+            time_of_day,
+            season,
+            total_generation,
+            wind,
+            sun,
+            dammed_hydro,
+            river,
+            natural_gas,
+            wind_ratio,
+            sun_ratio,
+            hydro_ratio,
+            gas_ratio,
+            coal_ratio,
+            combined_renewable_ratio,
+            ptf,
+            EXTRACT(YEAR FROM date)  as year,
+            EXTRACT(MONTH FROM date) as month
+        FROM `{PROJECT}.{DATASET}.renewable_deep_analysis`
+        ORDER BY date, hour
+    """)
+
+    if df.empty:
+        st.warning("Veri bulunamadı.")
+    else:
+        years = sorted(df["year"].unique(), reverse=True)
+        col_filter1, col_filter2 = st.columns(2)
+        with col_filter1:
+            selected_year = st.selectbox("Yıl Seç", years)
+        with col_filter2:
+            selected_season = st.selectbox(
+                "Mevsim Seç",
+                ["Tümü", "Kış", "İlkbahar", "Yaz", "Sonbahar"]
+            )
+
+        df_y = df[df["year"] == selected_year]
+        if selected_season != "Tümü":
+            df_y = df_y[df_y["season"] == selected_season]
+
+        # KPI kartları
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            corr_wind = df_y["wind_ratio"].corr(df_y["ptf"])
+            st.metric("Rüzgar-PTF Korelasyonu", f"{corr_wind:.3f}")
+        with col2:
+            corr_sun = df_y["sun_ratio"].corr(df_y["ptf"])
+            st.metric("Güneş-PTF Korelasyonu", f"{corr_sun:.3f}")
+        with col3:
+            corr_hydro = df_y["hydro_ratio"].corr(df_y["ptf"])
+            st.metric("Hidrolik-PTF Korelasyonu", f"{corr_hydro:.3f}")
+        with col4:
+            st.metric("Ort. Yenilenebilir Oranı", f"%{df_y['combined_renewable_ratio'].mean():.1f}")
+
+        st.markdown("---")
+
+        import plotly.express as px
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        # Kaynak bazında scatter plotlar
+        col_l, col_r = st.columns(2)
+
+        with col_l:
+            fig1 = px.scatter(
+                df_y.sample(min(2000, len(df_y))),
+                x="wind_ratio", y="ptf",
+                color="season",
+                color_discrete_map={
+                    "Kış": "#3b82f6",
+                    "İlkbahar": "#10b981",
+                    "Yaz": "#f59e0b",
+                    "Sonbahar": "#f97316"
+                },
+                opacity=0.5,
+                trendline="lowess",
+                title="🌬️ Rüzgar Oranı → PTF",
+                labels={"wind_ratio": "Rüzgar Oranı (%)", "ptf": "PTF (TL/MWh)"}
+            )
+            fig1.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e2e8f0"),
+                legend=dict(bgcolor="rgba(0,0,0,0)"),
+                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                height=380,
+            )
+            st.plotly_chart(fig1, use_container_width=True)
+
+        with col_r:
+            fig2 = px.scatter(
+                df_y.sample(min(2000, len(df_y))),
+                x="hydro_ratio", y="ptf",
+                color="season",
+                color_discrete_map={
+                    "Kış": "#3b82f6",
+                    "İlkbahar": "#10b981",
+                    "Yaz": "#f59e0b",
+                    "Sonbahar": "#f97316"
+                },
+                opacity=0.5,
+                trendline="lowess",
+                title="💧 Hidrolik Oranı → PTF",
+                labels={"hydro_ratio": "Hidrolik Oranı (%)", "ptf": "PTF (TL/MWh)"}
+            )
+            fig2.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e2e8f0"),
+                legend=dict(bgcolor="rgba(0,0,0,0)"),
+                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                height=380,
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+        # Güneş etkisi — saat dilimine göre
+        sun_tod = df_y.groupby("time_of_day").agg(
+            avg_sun_ratio=("sun_ratio", "mean"),
+            avg_ptf=("ptf", "mean"),
+        ).reset_index()
+
+        col_l2, col_r2 = st.columns(2)
+
+        with col_l2:
+            fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+            fig3.add_trace(go.Bar(
+                x=sun_tod["time_of_day"],
+                y=sun_tod["avg_sun_ratio"],
+                name="Ort. Güneş %",
+                marker_color="rgba(245, 158, 11, 0.7)",
+                marker_line_color="#f59e0b",
+                marker_line_width=1,
+            ))
+            fig3.add_trace(go.Scatter(
+                x=sun_tod["time_of_day"],
+                y=sun_tod["avg_ptf"],
+                name="Ort. PTF",
+                line=dict(color="#00d4ff", width=2.5),
+                mode="lines+markers",
+                marker=dict(size=8),
+            ), secondary_y=True)
+            fig3.update_layout(
+                title="☀️ Güneş Üretimi ve PTF — Saat Dilimine Göre",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e2e8f0"),
+                legend=dict(bgcolor="rgba(0,0,0,0)"),
+                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Güneş %"),
+                yaxis2=dict(title="PTF (TL/MWh)", gridcolor="rgba(0,0,0,0)"),
+                height=380,
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+
+        with col_r2:
+            # Aylık üretim karışımı stacked bar
+            monthly_mix = df_y.groupby("month").agg(
+                wind=("wind_ratio", "mean"),
+                sun=("sun_ratio", "mean"),
+                hydro=("hydro_ratio", "mean"),
+                gas=("gas_ratio", "mean"),
+                coal=("coal_ratio", "mean"),
+            ).reset_index()
+
+            fig4 = go.Figure()
+            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["wind"],
+                name="Rüzgar", marker_color="rgba(59, 130, 246, 0.8)"))
+            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["sun"],
+                name="Güneş", marker_color="rgba(245, 158, 11, 0.8)"))
+            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["hydro"],
+                name="Hidrolik", marker_color="rgba(16, 185, 129, 0.8)"))
+            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["gas"],
+                name="Doğalgaz", marker_color="rgba(239, 68, 68, 0.8)"))
+            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["coal"],
+                name="Kömür", marker_color="rgba(107, 114, 128, 0.8)"))
+
+            fig4.update_layout(
+                title=f"{selected_year} — Aylık Üretim Karışımı (%)",
+                barmode="stack",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e2e8f0"),
+                legend=dict(bgcolor="rgba(0,0,0,0)"),
+                xaxis=dict(gridcolor="rgba(255,255,255,0.05)",
+                           tickmode="linear", title="Ay"),
+                yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="%"),
+                height=380,
+            )
+            st.plotly_chart(fig4, use_container_width=True)
+
+        # Mevsimsel korelasyon tablosu
+        st.markdown("#### Kaynak Bazında PTF Korelasyonu — Mevsimsel")
+        seasonal_corr = df_y.groupby("season").apply(lambda x: {
+            "Mevsim": x["season"].iloc[0],
+            "Rüzgar": round(x["wind_ratio"].corr(x["ptf"]), 3),
+            "Güneş": round(x["sun_ratio"].corr(x["ptf"]), 3),
+            "Hidrolik": round(x["hydro_ratio"].corr(x["ptf"]), 3),
+            "Doğalgaz": round(x["gas_ratio"].corr(x["ptf"]), 3),
+        }).reset_index(drop=True)
+
+        import pandas as pd
+        corr_df = pd.DataFrame(seasonal_corr.tolist())
+        st.dataframe(
+            corr_df.style.background_gradient(
+                subset=["Rüzgar", "Güneş", "Hidrolik", "Doğalgaz"],
+                cmap="RdYlGn"
+            ),
+            use_container_width=True,
+            hide_index=True,
         )
         st.plotly_chart(fig4, use_container_width=True)

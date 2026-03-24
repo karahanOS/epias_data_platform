@@ -10,3 +10,4 @@ sources:
       - name: supply_demand_summary
       - name: monthly_executive_metrics
       - name: load_vs_actual
+      - name: renewable_deep_analysis

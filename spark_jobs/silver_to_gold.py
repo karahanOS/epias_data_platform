@@ -306,6 +306,68 @@ gold_load_vs_actual.write \
 
 print("gold_load_vs_actual tamamlandı!")
 
+# ═════════════════════════════════════════════════════════════════════════════
+# GOLD 6: gold_renewable_deep_analysis
+# Rüzgar, güneş, hidrolik bazında Merit Order derinlemesine analiz
+# ═════════════════════════════════════════════════════════════════════════════
+
+print("\n[6/6] gold_renewable_deep_analysis oluşturuluyor...")
+
+gold_renewable_deep = gen_clean.alias("gen").join(
+    ptf_clean.alias("ptf"),
+    on=["join_key"],
+    how="inner"
+) \
+.withColumn("wind_ratio",  F.round(F.col("wind")  / F.col("total") * 100, 2)) \
+.withColumn("sun_ratio",   F.round(F.col("sun")   / F.col("total") * 100, 2)) \
+.withColumn("hydro_ratio", F.round((F.col("dammed_hydro") + F.col("river")) / F.col("total") * 100, 2)) \
+.withColumn("gas_ratio",   F.round(F.col("natural_gas") / F.col("total") * 100, 2)) \
+.withColumn("coal_ratio",  F.round((F.col("lignite") + F.col("import_coal") + F.col("black_coal") + F.col("asphaltite_coal")) / F.col("total") * 100, 2)) \
+.withColumn("combined_renewable_ratio", F.round(
+    (F.col("wind") + F.col("sun") + F.col("dammed_hydro") + F.col("river") + F.col("geothermal") + F.col("biomass")) / F.col("total") * 100, 2
+)) \
+.withColumn("time_of_day",
+    F.when(F.col("gen.hour").between("06:00", "09:00"), "Sabah")
+     .when(F.col("gen.hour").between("10:00", "14:00"), "Öğle")
+     .when(F.col("gen.hour").between("15:00", "19:00"), "Akşam")
+     .otherwise("Gece")
+) \
+.withColumn("season",
+    F.when(F.month("gen.date").isin(12, 1, 2), "Kış")
+     .when(F.month("gen.date").isin(3, 4, 5), "İlkbahar")
+     .when(F.month("gen.date").isin(6, 7, 8), "Yaz")
+     .otherwise("Sonbahar")
+) \
+.select(
+    F.col("gen.date").alias("date"),
+    F.col("gen.hour").alias("hour"),
+    "time_of_day",
+    "season",
+    F.col("gen.total").alias("total_generation"),
+    F.col("gen.wind").alias("wind"),
+    F.col("gen.sun").alias("sun"),
+    F.col("gen.dammed_hydro").alias("dammed_hydro"),
+    F.col("gen.river").alias("river"),
+    F.col("gen.natural_gas").alias("natural_gas"),
+    "wind_ratio",
+    "sun_ratio",
+    "hydro_ratio",
+    "gas_ratio",
+    "coal_ratio",
+    "combined_renewable_ratio",
+    F.col("ptf.price").alias("ptf"),
+    F.col("gen.year").alias("year"),
+    F.col("gen.month").alias("month"),
+)
+
+gold_renewable_deep.show(5)
+gold_renewable_deep.write \
+    .mode("overwrite") \
+    .partitionBy("year", "month") \
+    .parquet(f"gs://{BUCKET}/gold/renewable_deep_analysis/")
+
+print("gold_renewable_deep_analysis tamamlandı!")
+
 print("\n✅ Tüm Gold tablolar oluşturuldu!")
 
 spark.stop()

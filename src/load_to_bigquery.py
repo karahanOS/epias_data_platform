@@ -14,7 +14,8 @@ tables = [
     "generation_mix_price_impact",
     "supply_demand_summary",
     "monthly_executive_metrics",
-    "load_vs_actual", 
+    "load_vs_actual",
+    "renewable_deep_analysis" 
 ]
 
 def list_parquet_files(prefix):
