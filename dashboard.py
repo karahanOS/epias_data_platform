@@ -157,7 +157,6 @@ hr {
 # ── BIGQUERY CLIENT ───────────────────────────────────────────────────────────
 
 @st.cache_resource
-@st.cache_resource
 def get_client():
     from google.oauth2 import service_account
     credentials = service_account.Credentials.from_service_account_info(
@@ -262,7 +261,7 @@ if page == "🏠 Executive Summary":
             height=420,
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="chart_1")
 
         # Min/Max PTF band
         fig2 = go.Figure()
@@ -290,7 +289,7 @@ if page == "🏠 Executive Summary":
             yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
             height=380,
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, use_container_width=True, key="chart_2")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 2: Fiyat Dengesizliği
@@ -377,7 +376,7 @@ elif page == "⚖️ Fiyat Dengesizliği":
                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
                 height=420,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_3")
 
         with col_right:
             # Sistem yönü pie
@@ -402,7 +401,7 @@ elif page == "⚖️ Fiyat Dengesizliği":
                     showarrow=False
                 )]
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True, key="chart_4")
 
         # Mevsimsel spread
         seasonal = df_y.groupby("season")["price_spread"].mean().reset_index()
@@ -422,7 +421,7 @@ elif page == "⚖️ Fiyat Dengesizliği":
             coloraxis_showscale=False,
             height=350,
         )
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, use_container_width=True, key="chart_5")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 3: Üretim Karışımı
@@ -494,7 +493,7 @@ elif page == "🌱 Üretim Karışımı":
             coloraxis_showscale=False,
             height=430,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="chart_6")
 
         # Aylık yenilenebilir vs PTF trend
         monthly = df_y.groupby("month").agg(
@@ -529,7 +528,7 @@ elif page == "🌱 Üretim Karışımı":
             yaxis2=dict(title="PTF (TL/MWh)", gridcolor="rgba(0,0,0,0)"),
             height=380,
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, use_container_width=True, key="chart_7")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 4: Arz-Talep Analizi
@@ -604,7 +603,7 @@ elif page == "🔋 Arz-Talep Analizi":
                 coloraxis_showscale=False,
                 height=380,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_8")
 
         with col_r:
             fig2 = go.Figure()
@@ -627,7 +626,7 @@ elif page == "🔋 Arz-Talep Analizi":
                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
                 height=380,
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True, key="chart_9")
 
         # Aylık karşılama oranı trend
         monthly_cov = df_y.groupby("month")["coverage_ratio"].mean().reset_index()
@@ -658,9 +657,8 @@ elif page == "🔋 Arz-Talep Analizi":
             yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
             height=350,
         )
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, use_container_width=True, key="chart_10")
 
-    # Bu kodu dashboard.py'ın en sonuna ekle
 
 elif page == "📉 Yük Tahmin Sapması":
 
@@ -711,9 +709,6 @@ elif page == "📉 Yük Tahmin Sapması":
         st.markdown("---")
 
         # Heatmap: Gün × Saat bazında sapma
-        import plotly.graph_objects as go
-        import numpy as np
-
         # Son 28 günü al
         df_recent = df_y.sort_values("date").tail(28 * 24)
         df_recent["day_label"] = df_recent["date"].dt.strftime("%d %a")
@@ -750,7 +745,7 @@ elif page == "📉 Yük Tahmin Sapması":
             yaxis=dict(title="Gün", gridcolor="rgba(255,255,255,0.05)"),
             height=580,
         )
-        st.plotly_chart(fig_heat, use_container_width=True)
+        st.plotly_chart(fig_heat, use_container_width=True, key="chart_11")
 
         col_l, col_r = st.columns(2)
 
@@ -789,7 +784,7 @@ elif page == "📉 Yük Tahmin Sapması":
                 ),
                 height=380,
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True, key="chart_12")
 
         with col_r:
             # Sapma yönü dağılımı
@@ -814,7 +809,7 @@ elif page == "📉 Yük Tahmin Sapması":
                     showarrow=False
                 )]
             )
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, use_container_width=True, key="chart_13")
 
         # Tahmin vs Gerçekleşen trend
         monthly = df_y.groupby("month").agg(
@@ -855,8 +850,8 @@ elif page == "📉 Yük Tahmin Sapması":
             ),
             height=380,
         )
+        st.plotly_chart(fig4, use_container_width=True, key="load_monthly_fig4")
 
-        # Bu kodu dashboard.py'ın en sonuna ekle
 
 elif page == "🌬️ Yenilenebilir Derinlemesine":
 
@@ -926,10 +921,6 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
 
         st.markdown("---")
 
-        import plotly.express as px
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-
         # Kaynak bazında scatter plotlar
         col_l, col_r = st.columns(2)
 
@@ -958,7 +949,7 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
                 height=380,
             )
-            st.plotly_chart(fig1, use_container_width=True)
+            st.plotly_chart(fig1, use_container_width=True, key="chart_14")
 
         with col_r:
             fig2 = px.scatter(
@@ -985,7 +976,7 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
                 height=380,
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True, key="chart_15")
 
         # Güneş etkisi — saat dilimine göre
         sun_tod = df_y.groupby("time_of_day").agg(
@@ -1024,7 +1015,7 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
                 yaxis2=dict(title="PTF (TL/MWh)", gridcolor="rgba(0,0,0,0)"),
                 height=380,
             )
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, use_container_width=True, key="chart_16")
 
         with col_r2:
             # Aylık üretim karışımı stacked bar
@@ -1060,7 +1051,7 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="%"),
                 height=380,
             )
-            st.plotly_chart(fig4, use_container_width=True)
+            st.plotly_chart(fig4, use_container_width=True, key="chart_17")
 
         # Mevsimsel korelasyon tablosu
         st.markdown("#### Kaynak Bazında PTF Korelasyonu — Mevsimsel")
@@ -1072,7 +1063,6 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             "Doğalgaz": round(x["gas_ratio"].corr(x["ptf"]), 3),
         }).reset_index(drop=True)
 
-        import pandas as pd
         corr_df = pd.DataFrame(seasonal_corr.tolist())
         st.dataframe(
             corr_df.style.background_gradient(
@@ -1082,4 +1072,3 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             use_container_width=True,
             hide_index=True,
         )
-        st.plotly_chart(fig4, use_container_width=True)
