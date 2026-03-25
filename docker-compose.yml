@@ -10,7 +10,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/credentials/gcp-key.json  # ← ekle
+    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/credentials/gcp-key.json
+    _PIP_ADDITIONAL_REQUIREMENTS: "openmeteo-requests requests-cache retry-requests"
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/airflow/src

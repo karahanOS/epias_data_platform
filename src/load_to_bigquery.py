@@ -15,7 +15,8 @@ tables = [
     "supply_demand_summary",
     "monthly_executive_metrics",
     "load_vs_actual",
-    "renewable_deep_analysis" 
+    "renewable_deep_analysis",
+    "ml_features", 
 ]
 
 def list_parquet_files(prefix):

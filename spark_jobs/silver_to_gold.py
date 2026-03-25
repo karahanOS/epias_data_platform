@@ -25,7 +25,9 @@ smf = spark.read.parquet(f"gs://{BUCKET}/silver/smf/")
 gen = spark.read.parquet(f"gs://{BUCKET}/silver/generation/")
 con = spark.read.parquet(f"gs://{BUCKET}/silver/consumption/")
 lep = spark.read.parquet(f"gs://{BUCKET}/silver/load_estimation/")
+weather = spark.read.parquet(f"gs://{BUCKET}/silver/weather/")
 
+print(f"Weather: {weather.count()} kayıt")
 print(f"Load Estimation: {lep.count()} kayıt")
 print(f"PTF: {ptf.count()} kayıt")
 print(f"SMF: {smf.count()} kayıt")
@@ -64,6 +66,7 @@ smf_clean = add_join_key(smf)
 gen_clean  = add_join_key(gen)
 con_clean  = add_join_key(con)
 lep_clean = add_join_key(lep)
+weather_clean = add_join_key(weather)
 
 # ── DEBUG: JOIN KEY KONTROLÜ ──────────────────────────────────────────────────
 print("LEP tarih aralığı:")
@@ -367,6 +370,66 @@ gold_renewable_deep.write \
     .parquet(f"gs://{BUCKET}/gold/renewable_deep_analysis/")
 
 print("gold_renewable_deep_analysis tamamlandı!")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# GOLD 7: gold_ml_features
+# PTF tahmini için feature tablosu — tüm veriler birleşik
+# ═════════════════════════════════════════════════════════════════════════════
+
+print("\n[7/7] gold_ml_features oluşturuluyor...")
+
+gold_ml = ptf_clean.alias("ptf").join(
+    weather_clean.alias("w"), on=["join_key"], how="inner"
+).join(
+    gen_clean.alias("gen"), on=["join_key"], how="left"
+).join(
+    con_clean.alias("con"), on=["join_key"], how="left"
+).join(
+    lep_clean.alias("lep"), on=["join_key"], how="left"
+) \
+.withColumn("hour_of_day", F.hour(F.col("ptf.date"))) \
+.withColumn("day_of_week", F.dayofweek(F.col("ptf.date"))) \
+.withColumn("is_weekend",
+    F.when(F.dayofweek(F.col("ptf.date")).isin(1, 7), 1).otherwise(0)
+) \
+.withColumn("month_of_year", F.month(F.col("ptf.date"))) \
+.withColumn("season",
+    F.when(F.month("ptf.date").isin(12, 1, 2), "Kış")
+     .when(F.month("ptf.date").isin(3, 4, 5), "İlkbahar")
+     .when(F.month("ptf.date").isin(6, 7, 8), "Yaz")
+     .otherwise("Sonbahar")
+) \
+.select(
+    F.col("ptf.date").alias("date"),
+    F.col("ptf.hour").alias("hour"),
+    F.col("ptf.price").alias("ptf"),                          # TARGET
+    "hour_of_day",
+    "day_of_week",
+    "is_weekend",
+    "month_of_year",
+    "season",
+    F.col("w.weighted_temperature_2m").alias("temperature"),
+    F.col("w.weighted_wind_speed_10m").alias("wind_speed"),
+    F.col("w.weighted_shortwave_radiation").alias("solar_radiation"),
+    F.col("w.weighted_relative_humidity_2m").alias("humidity"),
+    F.col("gen.wind").alias("wind_generation"),
+    F.col("gen.sun").alias("solar_generation"),
+    F.col("gen.dammed_hydro").alias("hydro_generation"),
+    F.col("gen.natural_gas").alias("gas_generation"),
+    F.col("gen.total").alias("total_generation"),
+    F.col("con.consumption").alias("actual_consumption"),
+    F.col("lep.lep").alias("forecast_consumption"),
+    F.col("ptf.year").alias("year"),
+    F.col("ptf.month").alias("month"),
+)
+
+gold_ml.show(5)
+gold_ml.write \
+    .mode("overwrite") \
+    .partitionBy("year", "month") \
+    .parquet(f"gs://{BUCKET}/gold/ml_features/")
+
+print("gold_ml_features tamamlandı!")
 
 print("\n✅ Tüm Gold tablolar oluşturuldu!")
 

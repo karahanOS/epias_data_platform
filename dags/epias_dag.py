@@ -8,6 +8,8 @@ from airflow.operators.python import PythonOperator
 import sys
 sys.path.insert(0, '/opt/airflow/src')
 from epias_client import EPIASClient
+sys.path.insert(0, '/opt/airflow/src')
+from weather_client import WeatherClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,16 @@ def get_context_params(**context):
 
 
 # ── CALLABLE'LAR: VERİ ÇEK ───────────────────────────────────────────────────
+def get_weather_callable(**context):
+    """4 şehir için saatlik hava durumu verisini çeker."""
+    execution_date = context["execution_date"]
+    date_str = execution_date.strftime("%Y-%m-%d")
+    client = WeatherClient()
+    data = client.get_weighted_weather(date_str, date_str)
+    logger.info(f"Hava durumu verisi çekildi: {len(data)} kayıt")
+    return data
+
+
 
 def fetch_tgt_callable():
     """
@@ -154,6 +166,8 @@ def save_load_estimation_callable(**context):
     save_to_gcs("get_load_estimation", "bronze/load_estimation", **context)
 
 
+def save_weather_callable(**context):
+    save_to_gcs("get_weather", "bronze/weather", **context)
 # ── DAG TANIMI ────────────────────────────────────────────────────────────────
 
 default_args = {
@@ -210,6 +224,12 @@ with DAG(
         trigger_rule="all_done",
     )
 
+    get_weather = PythonOperator(
+        task_id="get_weather",
+        python_callable=get_weather_callable,
+        trigger_rule="all_done",
+    )
+
     # ── TASK 7-11: GCS'E KAYDET ──────────────────────────────────────────────
     save_ptf = PythonOperator(
         task_id="save_ptf_to_gcs",
@@ -236,6 +256,10 @@ with DAG(
         python_callable=save_load_estimation_callable,
     )
 
+    save_weather = PythonOperator(
+        task_id="save_weather_to_gcs",
+        python_callable=save_weather_callable,
+    )
     # ── BAĞIMLILIKLAR ─────────────────────────────────────────────────────────
     #
     # fetch_tgt
@@ -246,7 +270,8 @@ with DAG(
     #     ├── get_consumption ──── save_consumption_to_gcs
     #     └── get_load_estimation ─ save_load_estimation_to_gcs
 
-    fetch_tgt >> [get_ptf, get_smf, get_generation, get_consumption, get_load_estimation]
+    fetch_tgt >> [get_ptf, get_smf, get_generation, get_consumption, get_load_estimation, get_weather]
+    get_weather >> save_weather
 
     get_ptf >> save_ptf
     get_smf >> save_smf
