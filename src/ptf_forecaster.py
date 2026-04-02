@@ -58,7 +58,7 @@ FEATURE_COLS = [
     "ptf_rolling_min_24h",
 ]
 
-TARGET_COL = "ptf"
+TARGET_COL = "ptf_usd"
 
 # ── BIGQUERY'DEN VERİ ÇEK ────────────────────────────────────────────────────
 
