@@ -203,10 +203,42 @@ if page == "🏠 Executive Summary":
     </div>
     """, unsafe_allow_html=True)
 
+# 1. Sayfa Executive Summary SQL Güncellemesi
     df = query(f"""
-            SELECT * FROM `{PROJECT}.{DATASET}.mart_gold_monthly_executive_metrics`
-            ORDER BY year, month
-        """)
+        WITH price AS (
+            SELECT 
+                EXTRACT(YEAR FROM date) as year,
+                EXTRACT(MONTH FROM date) as month,
+                AVG(mcpUsd) as avg_mcp_usd,
+                MAX(mcpUsd) as max_mcp_usd,
+                MIN(mcpUsd) as min_mcp_usd,
+                AVG(smpUsd - mcpUsd) as avg_price_spread_usd
+            FROM `{PROJECT}.{DATASET}.gold_price_spread_analysis`
+            GROUP BY 1, 2
+        ),
+        cons AS (
+            SELECT 
+                EXTRACT(YEAR FROM date) as year,
+                EXTRACT(MONTH FROM date) as month,
+                SUM(actual_consumption) as total_consumption,
+                AVG(actual_consumption) as avg_hourly_consumption
+            FROM `{PROJECT}.{DATASET}.gold_load_vs_actual`
+            GROUP BY 1, 2
+        )
+        SELECT 
+            p.year,
+            p.month,
+            CONCAT(CAST(p.year AS STRING), '-', LPAD(CAST(p.month AS STRING), 2, '0')) AS year_month,
+            p.avg_mcp_usd,
+            p.max_mcp_usd,
+            p.min_mcp_usd,
+            p.avg_price_spread_usd,
+            c.total_consumption,
+            c.avg_hourly_consumption
+        FROM price p
+        JOIN cons c ON p.year = c.year AND p.month = c.month
+        ORDER BY year, month
+    """)
 
     if df.empty:
         st.warning("Veri bulunamadı.")
