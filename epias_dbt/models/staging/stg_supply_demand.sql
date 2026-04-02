@@ -1,1 +1,1 @@
-select * from {{ source('epias_gold', 'supply_demand_summary') }}
+select * from {{ source('epias_gold', 'gold_supply_demand_summary') }}

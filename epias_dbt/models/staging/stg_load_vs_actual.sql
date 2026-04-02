@@ -1,1 +1,1 @@
-select * from {{ source('epias_gold', 'load_vs_actual') }}
+select * from {{ source('epias_gold', 'gold_load_vs_actual') }}

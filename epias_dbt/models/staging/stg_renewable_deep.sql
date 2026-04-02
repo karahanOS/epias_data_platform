@@ -1,1 +1,1 @@
-select * from {{ source('epias_gold', 'renewable_deep_analysis') }}
+select * from {{ source('epias_gold', 'gold_renewable_deep_analysis') }}
