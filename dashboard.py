@@ -204,7 +204,7 @@ if page == "🏠 Executive Summary":
     """, unsafe_allow_html=True)
 
     df = query(f"""
-        SELECT * FROM `{PROJECT}.{DATASET}.gold_monthly_executive_metrics`
+        SELECT * FROM `{PROJECT}.{DATASET}.mart_gold_monthly_executive_metrics`
         ORDER BY year, month
     """)
 
@@ -303,19 +303,24 @@ elif page == "⚖️ Fiyat Dengesizliği":
     """, unsafe_allow_html=True)
 
     df = query(f"""
-        SELECT
-            date,
-            hour,
-            mcp_usd,
-            smp_usd,
-            price_spread_usd,
-            system_direction,
-            season,
-            EXTRACT(YEAR FROM date) as year,
-            EXTRACT(MONTH FROM date) as month
-        FROM `{PROJECT}.{DATASET}.gold_price_spread_analysis`
-        ORDER BY date, hour
-    """)
+            SELECT
+                date,
+                hour,
+                mcpUsd AS mcp_usd,
+                smpUsd AS smp_usd,
+                (smpUsd - mcpUsd) AS price_spread_usd,
+                system_direction,
+                CASE 
+                    WHEN EXTRACT(MONTH FROM date) IN (12, 1, 2) THEN 'Kış'
+                    WHEN EXTRACT(MONTH FROM date) IN (3, 4, 5) THEN 'İlkbahar'
+                    WHEN EXTRACT(MONTH FROM date) IN (6, 7, 8) THEN 'Yaz'
+                    ELSE 'Sonbahar'
+                END AS season,
+                EXTRACT(YEAR FROM date) as year,
+                EXTRACT(MONTH FROM date) as month
+            FROM `{PROJECT}.{DATASET}.gold_price_spread_analysis`
+            ORDER BY date, hour
+        """)
 
     if df.empty:
         st.warning("Veri bulunamadı.")
@@ -430,20 +435,20 @@ elif page == "🌱 Üretim Karışımı":
     """, unsafe_allow_html=True)
 
     df = query(f"""
-        SELECT
-            date,
-            hour,
-            total_generation,
-            renewable_generation,
-            fossil_generation,
-            renewable_ratio,
-            fossil_ratio,
-            mcp_usd,
-            EXTRACT(YEAR FROM date) as year,
-            EXTRACT(MONTH FROM date) as month
-        FROM `{PROJECT}.{DATASET}.gold_generation_mix_price_impact`
-        ORDER BY date, hour
-    """)
+            SELECT
+                date,
+                hour,
+                total_generation,
+                renewable_generation,
+                fossil_generation,
+                renewable_ratio,
+                fossil_ratio,
+                mcpUsd AS mcp_usd,
+                EXTRACT(YEAR FROM date) as year,
+                EXTRACT(MONTH FROM date) as month
+            FROM `{PROJECT}.{DATASET}.gold_generation_mix_price_impact`
+            ORDER BY date, hour
+        """)
 
     if df.empty:
         st.warning("Veri bulunamadı.")
@@ -854,29 +859,34 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
     """, unsafe_allow_html=True)
 
     df = query(f"""
-        SELECT
-            date,
-            hour,
-            time_of_day,
-            season,
-            total_generation,
-            wind,
-            sun,
-            dammed_hydro,
-            river,
-            natural_gas,
-            wind_ratio,
-            sun_ratio,
-            hydro_ratio,
-            gas_ratio,
-            coal_ratio,
-            combined_renewable_ratio,
-            mcp_usd,
-            EXTRACT(YEAR FROM date)  as year,
-            EXTRACT(MONTH FROM date) as month
-        FROM `{PROJECT}.{DATASET}.gold_renewable_deep_analysis`
-        ORDER BY date, hour
-    """)
+            SELECT
+                date,
+                hour,
+                time_of_day,
+                CASE 
+                    WHEN EXTRACT(MONTH FROM date) IN (12, 1, 2) THEN 'Kış'
+                    WHEN EXTRACT(MONTH FROM date) IN (3, 4, 5) THEN 'İlkbahar'
+                    WHEN EXTRACT(MONTH FROM date) IN (6, 7, 8) THEN 'Yaz'
+                    ELSE 'Sonbahar'
+                END AS season,
+                total_generation,
+                wind,
+                sun,
+                dammed_hydro,
+                river,
+                natural_gas,
+                wind_ratio,
+                sun_ratio,
+                hydro_ratio,
+                gas_ratio,
+                coal_ratio,
+                combined_renewable_ratio,
+                mcpUsd AS mcp_usd,
+                EXTRACT(YEAR FROM date)  as year,
+                EXTRACT(MONTH FROM date) as month
+            FROM `{PROJECT}.{DATASET}.gold_renewable_deep_analysis`
+            ORDER BY date, hour
+        """)
 
     if df.empty:
         st.warning("Veri bulunamadı.")
