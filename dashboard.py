@@ -708,49 +708,49 @@ elif page == "📉 Yük Tahmin Sapması":
 
         st.markdown("---")
 
-# ── HEATMAP GÜNCELLEME: GÜN-AY FORMATI ────────────────────────────────
-
-        # Son 28 günü al ve tarih sırasına göre diz
+# 1. Son 28 günü al ve MUTLAKA tarihe göre sırala
         df_recent = df_y.sort_values("date").tail(28 * 24).copy()
         
-        # Y ekseni için '02-04' (Gün-Ay) formatında etiket oluştur
+        # 2. Etiketi oluştur (Örn: 31-03)
         df_recent["day_label"] = df_recent["date"].dt.strftime("%d-%m")
 
-        # Pivot tabloyu oluştur - sort=False ile tarih sırasını bozma
+        # 3. Pivot tabloyu oluştur - sort=False hayati önem taşır
         pivot = df_recent.pivot_table(
             index="day_label",
             columns="hour_num",
             values="deviation",
             aggfunc="mean",
-            sort=False # Verinin tarih sırasıyla (01-04, 02-04...) gelmesini sağlar
+            sort=False  # Tarihsel sırayı korumak için
         )
 
         fig_heat = go.Figure(go.Heatmap(
             z=pivot.values,
             x=[f"{int(h):02d}:00" for h in pivot.columns],
-            y=pivot.index,
+            y=pivot.index, # Artık '31-03' gibi değerler gelecek
             colorscale=[
-                [0.0,  "#1e40af"], # Negatif sapma (Az Tüketim)
-                [0.4,  "#3b82f6"],
-                [0.5,  "#1a2235"], # Nötr
-                [0.6,  "#f97316"],
-                [1.0,  "#dc2626"], # Pozitif sapma (Fazla Tüketim)
+                [0.0,  "#1e40af"], # Mavi: Tahminden az tüketim
+                [0.5,  "#111827"], # Koyu: Dengeli
+                [1.0,  "#dc2626"], # Kırmızı: Tahminden fazla tüketim
             ],
             zmid=0,
-            hoverongaps=False,
             hovertemplate="Tarih: %{y}<br>Saat: %{x}<br>Sapma: %{z:,.0f} MWh<extra></extra>",
         ))
 
         fig_heat.update_layout(
-            title="Saatlere Göre Tüketim Sapması (Son 28 Gün) — Mavi: Az Tüketim / Kırmızı: Fazla Tüketim",
+            title="Saatlere Göre Tüketim Sapması (Son 28 Gün)",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0", family="DM Sans"),
-            xaxis=dict(title="Saat", gridcolor="rgba(255,255,255,0.05)", dtick=2),
-            yaxis=dict(title="Tarih (Gün-Ay)", gridcolor="rgba(255,255,255,0.05)"),
-            height=650, # Daha okunaklı olması için yüksekliği biraz artırdım
+            font=dict(color="#e2e8f0"),
+            xaxis=dict(title="Saat", dtick=2),
+            # --- KRİTİK DÜZELTME BURASI ---
+            yaxis=dict(
+                title="Gün-Ay",
+                type='category', # Plotly'nin sayısal ölçek uydurmasını engeller
+                autorange="reversed" # En yeni günü en üstte veya altta görmek için (tercihe göre silinebilir)
+            ),
+            height=700,
         )
-        st.plotly_chart(fig_heat, use_container_width=True, key="chart_11_updated")
+        st.plotly_chart(fig_heat, use_container_width=True)
 
         col_l, col_r = st.columns(2)
 
