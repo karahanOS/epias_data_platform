@@ -1,7 +1,7 @@
 {{ config(materialized='table') }}
 
 WITH base_metrics AS (
-    -- Fiyat ve Spread metriklerini hesapla
+    -- Fiyat ve Spread metriklerini ana tablodan çek ve grupla
     SELECT
         EXTRACT(YEAR FROM date) AS year,
         EXTRACT(MONTH FROM date) AS month,
@@ -16,7 +16,7 @@ WITH base_metrics AS (
 ),
 
 consumption_metrics AS (
-    -- Tüketim metriklerini hesapla
+    -- Tüketim metriklerini tüketim tablosundan çek ve grupla
     SELECT
         EXTRACT(YEAR FROM date) AS year,
         EXTRACT(MONTH FROM date) AS month,
@@ -27,14 +27,14 @@ consumption_metrics AS (
 ),
 
 final_joined AS (
-    -- İki kaynağı birleştir
+    -- İki metrik grubunu yıl ve ay bazında birleştir
     SELECT
         p.*,
         c.total_consumption,
         c.avg_hourly_consumption,
-        -- Dashboard için Yıl-Ay formatı
+        -- Dashboard'un beklediği Yıl-Ay formatı (Örn: 2026-03)
         CONCAT(CAST(p.year AS STRING), '-', LPAD(CAST(p.month AS STRING), 2, '0')) AS year_month,
-        -- Dashboard'daki KeyError: 'season' hatasını çözen kısım
+        -- Streamlit hatasını (KeyError: 'season') çözen mevsim kolonu
         CASE 
             WHEN p.month IN (12, 1, 2) THEN 'Kış'
             WHEN p.month IN (3, 4, 5) THEN 'İlkbahar'
