@@ -14,3 +14,21 @@ sources:
       - name: ml_features
       - name: gold_price_spread_analysis
       - name: gold_load_vs_actual
+# Airflow'un gold_ ön ekiyle yüklediği yeni ana tablolar
+      - name: gold_price_spread_analysis
+        description: "PTF ve SMF verilerinin karşılaştırmalı analizi"
+      
+      - name: gold_load_vs_actual
+        description: "Tahmin edilen ve gerçekleşen tüketim verileri"
+
+      - name: gold_generation_mix_price_impact
+        description: "Üretim kırılımının fiyat üzerindeki etkisi"
+
+      - name: gold_supply_demand_summary
+        description: "Arz ve talep dengesi özeti"
+
+      - name: gold_renewable_deep_analysis
+        description: "Yenilenebilir enerji üretim detayları"
+
+      - name: gold_ml_features
+        description: "XGBoost modeli için hazırlanan özellik seti"
