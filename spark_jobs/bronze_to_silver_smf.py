@@ -14,10 +14,12 @@ BUCKET = "epias-data-lake"
 BRONZE_PATH = f"gs://{BUCKET}/bronze/smf/{target_date}.parquet"
 SILVER_PATH = f"gs://{BUCKET}/silver/smf/"
 
+# --- 1. ŞEMAYA smpUsd EKLENDİ ---
 schema = StructType([
     StructField("date", StringType(), True),
     StructField("hour", StringType(), True),
     StructField("systemMarginalPrice", DoubleType(), True),
+    StructField("smpUsd", DoubleType(), True), # YENİ
 ])
 
 print(f"{target_date} tarihi için Bronze okunuyor: {BRONZE_PATH}")
@@ -30,7 +32,8 @@ df_silver = df \
     .withColumn("date", F.to_utc_timestamp(F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"), "Europe/Istanbul")) \
     .withColumn("hour", F.date_format(F.to_timestamp(F.col("hour"), "yyyy-MM-dd'T'HH:mm:ssXXX"), "HH:mm")) \
     .withColumn("system_marginal_price", F.round(F.col("systemMarginalPrice").cast(DoubleType()), 2)) \
-    .drop("systemMarginalPrice") \
+    .withColumn("smp_usd", F.round(F.col("smpUsd").cast(DoubleType()), 4)) \
+    .drop("systemMarginalPrice", "smpUsd") \
     .withColumn("year", F.year(F.col("date"))) \
     .withColumn("month", F.month(F.col("date"))) \
     .withColumn("day", F.dayofmonth(F.col("date")))

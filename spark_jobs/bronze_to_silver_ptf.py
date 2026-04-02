@@ -35,8 +35,8 @@ df_silver = df \
     ) \
     .withColumn("hour", F.lpad(F.col("hour"), 5, "0")) \
     .withColumn("price", F.round(F.col("price").cast(DoubleType()), 2)) \
-    .withColumn("price_usd", F.round(F.col("priceUsd").cast(DoubleType()), 4)) \
-    .withColumn("price_eur", F.round(F.col("priceEur").cast(DoubleType()), 4)) \
+    .withColumn("price_usd", F.round(F.col("mcpUsd").cast(DoubleType()), 4)) \
+    .withColumn("price_eur", F.round(F.col("mcpEur").cast(DoubleType()), 4)) \
     .drop("priceUsd", "priceEur") \
     .withColumn("year", F.year(F.col("date"))) \
     .withColumn("month", F.month(F.col("date"))) \

@@ -56,7 +56,7 @@ print("\n[1/7] gold_price_spread_analysis oluşturuluyor...")
 gold_price_spread = ptf_clean.alias("ptf").join(
     smf_clean.alias("smf"), on=["join_key"], how="inner"
 ) \
-.withColumn("price_spread", F.round(F.col("ptf.price") - F.col("smf.system_marginal_price"), 2)) \
+.withColumn("price_spread", F.round(F.col("ptf.mcpUsd") - F.col("smf.smpUsd"), 2)) \
 .withColumn("system_direction",
     F.when(F.col("price_spread") > 0, "Enerji Açığı")
      .when(F.col("price_spread") < 0, "Enerji Fazlası")
@@ -98,7 +98,7 @@ gold_gen_mix = gen_with_ratios.alias("gen").join(
     F.col("gen.date").alias("date"), F.col("gen.hour").alias("hour"),
     F.col("gen.total").alias("total_generation"),
     "renewable_generation", "fossil_generation", "renewable_ratio", "fossil_ratio",
-    F.col("ptf.price").alias("ptf"),
+    F.col("ptf.mcp_usd").alias("mcpUsd"),
     F.col("gen.year").alias("year"), F.col("gen.month").alias("month"), F.col("gen.day").alias("day")
 )
 
@@ -186,6 +186,7 @@ gold_renewable_deep = gen_clean.alias("gen").join(
     F.col("gen.dammed_hydro").alias("dammed_hydro"), F.col("gen.river").alias("river"), F.col("gen.natural_gas").alias("natural_gas"),
     "wind_ratio", "sun_ratio", "hydro_ratio", "gas_ratio", "coal_ratio", "combined_renewable_ratio",
     F.col("ptf.price").alias("ptf"),
+    F.col("ptf.price_usd").alias("mcpUsd"),
     F.col("gen.year").alias("year"), F.col("gen.month").alias("month"), F.col("gen.day").alias("day")
 )
 
