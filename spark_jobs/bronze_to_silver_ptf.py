@@ -1,98 +1,55 @@
-from pyspark.sql import SparkSession
+import sys
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType
-import os
+from spark_utils import get_spark_session
 
-# ── SPARK SESSION ─────────────────────────────────────────────────────────────
+# ── 1. DIŞARIDAN GELEN TARİH PARAMETRESİNİ YAKALA ─────────────────────────────
+if len(sys.argv) < 2:
+    raise ValueError("Tarih parametresi eksik! Lütfen YYYY-MM-DD formatında bir tarih gönderin.")
 
-spark = SparkSession.builder \
-    .appName("epias_bronze_to_silver_ptf") \
-    .config("spark.jars.packages", "com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.5") \
-    .config("spark.hadoop.google.cloud.auth.service.account.enable", "true") \
-    .config("spark.hadoop.google.cloud.auth.service.account.json.keyfile",
-            "/opt/credentials/gcp-key.json") \
-    .config("spark.hadoop.fs.gs.impl",
-            "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem") \
-    .getOrCreate()
+target_date = sys.argv[1]  # Airflow'dan gelecek olan tarih (Örn: "2024-01-03")
 
+spark = get_spark_session("epias_bronze_to_silver_ptf")
 spark.sparkContext.setLogLevel("WARN")
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-
 BUCKET = "epias-data-lake"
-BRONZE_PATH = f"gs://{BUCKET}/bronze/ptf/"
+
+# DİKKAT: Artık tüm klasörü değil, SADECE o günün dosyasını okuyoruz!
+# Senin save_to_gcs fonksiyonun dosyaları "2024-01-03.parquet" formatında kaydediyordu.
+BRONZE_PATH = f"gs://{BUCKET}/bronze/ptf/{target_date}.parquet"
 SILVER_PATH = f"gs://{BUCKET}/silver/ptf/"
 
-# ── 1. BRONZE'U OKU ───────────────────────────────────────────────────────────
-
-print("Bronze okunuyor...")
+# ── 2. BRONZE'U OKU ───────────────────────────────────────────────────────────
+print(f"{target_date} tarihi için Bronze okunuyor: {BRONZE_PATH}")
 df = spark.read.parquet(BRONZE_PATH)
 
 print(f"Bronze kayıt sayısı: {df.count()}")
-print("Bronze schema:")
-df.printSchema()
-df.show(5)
 
-# ── 2. DÖNÜŞÜMLER ─────────────────────────────────────────────────────────────
-
-print("Dönüşümler uygulanıyor...")
-
+# ── 3. DÖNÜŞÜMLER (Aynı kalıyor) ──────────────────────────────────────────────
 df_silver = df \
     .dropDuplicates() \
     .dropna(subset=["date", "price"]) \
     .withColumn(
-    "date", F.to_utc_timestamp(
-        F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"),
-        "Europe/Istanbul")
+        "date", F.to_utc_timestamp(F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"), "Europe/Istanbul")
     ) \
-    .withColumn(
-        # hour: "00:00" formatını standart tut, 24 saatlik sisteme çevir
-        "hour", F.lpad(F.col("hour"), 5, "0")
-    ) \
-    .withColumn(
-        # price: 2 ondalık basamak
-        "price", F.round(F.col("price").cast(DoubleType()), 2)
-    ) \
-    .withColumn(
-        # priceUsd → price_usd (snake_case standardizasyonu)
-        "price_usd", F.round(F.col("priceUsd").cast(DoubleType()), 4)
-    ) \
-    .withColumn(
-        # priceEur → price_eur
-        "price_eur", F.round(F.col("priceEur").cast(DoubleType()), 4)
-    ) \
+    .withColumn("hour", F.lpad(F.col("hour"), 5, "0")) \
+    .withColumn("price", F.round(F.col("price").cast(DoubleType()), 2)) \
+    .withColumn("price_usd", F.round(F.col("priceUsd").cast(DoubleType()), 4)) \
+    .withColumn("price_eur", F.round(F.col("priceEur").cast(DoubleType()), 4)) \
     .drop("priceUsd", "priceEur") \
-    .withColumn(
-        # partition için yıl/ay/gün kolonları ekle
-        "year", F.year(F.col("date"))
-    ) \
-    .withColumn(
-        "month", F.month(F.col("date"))
-    ) \
-    .withColumn(
-        "day", F.dayofmonth(F.col("date"))
-    )
+    .withColumn("year", F.year(F.col("date"))) \
+    .withColumn("month", F.month(F.col("date"))) \
+    .withColumn("day", F.dayofmonth(F.col("date"))) # Gün kırılımı önemli!
 
-# ── 3. NULL KONTROL RAPORU ────────────────────────────────────────────────────
-
-print("\nNull kontrol raporu:")
-df_silver.select([
-    F.count(F.when(F.col(c).isNull(), c)).alias(c)
-    for c in df_silver.columns
-]).show()
-
-# ── 4. SILVER'A YAZ ───────────────────────────────────────────────────────────
-
+# ── 4. SILVER'A YAZ (Dinamik Ezme) ────────────────────────────────────────────
 print(f"\nSilver'a yazılıyor: {SILVER_PATH}")
-print(f"Silver kayıt sayısı: {df_silver.count()}")
 
-df_silver.show(5)
-
+# Dinamik partition overwrite sayesinde, sadece işlediğimiz ayın/günün verisi ezilir.
 df_silver.write \
     .mode("overwrite") \
-    .partitionBy("year", "month") \
+    .partitionBy("year", "month", "day") \
     .parquet(SILVER_PATH)
 
-print("Bronze → Silver dönüşümü tamamlandı!")
-
+print(f"{target_date} için Bronze → Silver dönüşümü tamamlandı!")
 spark.stop()

@@ -42,3 +42,21 @@ models:
       - name: coverage_ratio
         tests:
           - not_null
+
+  - name: mart_ptf_lag_features
+    description: "XGBoost modeline giren ana girdi tablosu"
+    columns:
+      - name: date
+        tests:
+          - not_null
+          - unique # Saatlik veride mükerrer kayıt felakettir
+      - name: ptf
+        tests:
+          - not_null
+          # Türkiye piyasasında PTF 0-10000 TL arasındadır, eksi olamaz
+          - dbt_utils.accepted_range:
+              max_value: 4500
+      - name: ptf_lag_1h
+        description: "1 saat önceki fiyat"
+        tests:
+          - not_null # Gecikmeli veriler boş gelirse model çöker

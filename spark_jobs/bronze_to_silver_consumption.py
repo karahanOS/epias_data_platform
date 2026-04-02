@@ -1,77 +1,39 @@
-from pyspark.sql import SparkSession
+import sys
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType
+from spark_utils import get_spark_session
 
-# ── SPARK SESSION ─────────────────────────────────────────────────────────────
+if len(sys.argv) < 2:
+    raise ValueError("Tarih parametresi eksik! Lütfen YYYY-MM-DD formatında bir tarih gönderin.")
 
-spark = SparkSession.builder \
-    .appName("epias_bronze_to_silver_consumption") \
-    .config("spark.hadoop.google.cloud.auth.service.account.enable", "true") \
-    .config("spark.hadoop.google.cloud.auth.service.account.json.keyfile",
-            "/opt/credentials/gcp-key.json") \
-    .config("spark.hadoop.fs.gs.impl",
-            "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem") \
-    .getOrCreate()
-
+target_date = sys.argv[1]
+spark = get_spark_session("epias_bronze_to_silver_consumption")
 spark.sparkContext.setLogLevel("WARN")
 
-# ── CONFIG ────────────────────────────────────────────────────────────────────
-
 BUCKET = "epias-data-lake"
-BRONZE_PATH = f"gs://{BUCKET}/bronze/consumption/"
+BRONZE_PATH = f"gs://{BUCKET}/bronze/consumption/{target_date}.parquet"
 SILVER_PATH = f"gs://{BUCKET}/silver/consumption/"
 
-# ── 1. BRONZE'U OKU ───────────────────────────────────────────────────────────
-
-print("Bronze okunuyor...")
+print(f"{target_date} tarihi için Bronze okunuyor: {BRONZE_PATH}")
 df = spark.read.parquet(BRONZE_PATH)
 
-print(f"Bronze kayıt sayısı: {df.count()}")
-df.printSchema()
-df.show(5)
-
-# ── 2. DÖNÜŞÜMLER ─────────────────────────────────────────────────────────────
-
 print("Dönüşümler uygulanıyor...")
-
 df_silver = df \
     .dropDuplicates() \
     .dropna(subset=["date", "consumption"]) \
-    .withColumn(
-        "date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX")
-    ) \
-    .withColumn(
-        # consumption'da 'time' geliyor, PTF/SMF'deki 'hour' ile standardize et
-        "hour", F.lpad(F.col("time"), 5, "0")
-    ) \
+    .withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX")) \
+    .withColumn("hour", F.lpad(F.col("time"), 5, "0")) \
     .drop("time") \
-    .withColumn(
-        "consumption", F.round(F.col("consumption").cast(DoubleType()), 2)
-    ) \
+    .withColumn("consumption", F.round(F.col("consumption").cast(DoubleType()), 2)) \
     .withColumn("year", F.year(F.col("date"))) \
     .withColumn("month", F.month(F.col("date"))) \
     .withColumn("day", F.dayofmonth(F.col("date")))
 
-# ── 3. NULL KONTROL RAPORU ────────────────────────────────────────────────────
-
-print("\nNull kontrol raporu:")
-df_silver.select([
-    F.count(F.when(F.col(c).isNull(), c)).alias(c)
-    for c in df_silver.columns
-]).show()
-
-# ── 4. SILVER'A YAZ ───────────────────────────────────────────────────────────
-
 print(f"\nSilver'a yazılıyor: {SILVER_PATH}")
-print(f"Silver kayıt sayısı: {df_silver.count()}")
-
-df_silver.show(5)
-
 df_silver.write \
     .mode("overwrite") \
-    .partitionBy("year", "month") \
+    .partitionBy("year", "month", "day") \
     .parquet(SILVER_PATH)
 
-print("Bronze → Silver Consumption dönüşümü tamamlandı!")
-
+print(f"{target_date} için Bronze → Silver Consumption dönüşümü tamamlandı!")
 spark.stop()

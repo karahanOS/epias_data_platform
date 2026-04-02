@@ -1,0 +1,11 @@
+epias_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: service-account
+      project: epias-data-platform  # <-- DİKKAT: Burayı değiştirmelisin!
+      dataset: epias_gold
+      threads: 4
+      keyfile: /opt/airflow/credentials/gcp-key.json
+      location: EU  # Veya BigQuery dataset'in US'te ise US yap

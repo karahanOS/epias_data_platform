@@ -1,7 +1,8 @@
 version: '3.8'
 
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.8.0
+  # image: apache/airflow:2.8.0  <-- Bu satırı sildik veya yoruma aldık
+  build: .                       # <-- Yerine bunu ekledik
   env_file:
     - .env
   environment:
@@ -17,6 +18,8 @@ x-airflow-common: &airflow-common
     - ./src:/opt/airflow/src
     - ./logs:/opt/airflow/logs
     - ./credentials:/opt/airflow/credentials
+    - /var/run/docker.sock:/var/run/docker.sock
+    - ./epias_dbt:/opt/airflow/epias_dbt
 
 services:
   postgres:

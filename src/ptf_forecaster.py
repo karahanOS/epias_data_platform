@@ -16,6 +16,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import joblib
 import json
 from datetime import datetime, timedelta
+import holidays
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -93,7 +94,21 @@ def load_features() -> pd.DataFrame:
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """Ek feature'lar ekle."""
 
-    # Mevsim encoding (one-hot yerine cyclical)
+    # Türkiye resmi tatilleri
+    tr_holidays = holidays.Turkey(years=range(2024, 2027))
+    df["is_holiday"] = df["date"].dt.date.astype(str).map(
+        lambda d: 1 if d in tr_holidays else 0
+    )
+    # Tatil öncesi gün — sanayi önceden kapanır
+    df["is_pre_holiday"] = df["date"].apply(
+        lambda d: 1 if (d + pd.Timedelta(days=1)).date().isoformat() in tr_holidays else 0
+    )
+    # Tatil sonrası gün — sanayi yeniden açılır, tüketim artar
+    df["is_post_holiday"] = df["date"].apply(
+        lambda d: 1 if (d - pd.Timedelta(days=1)).date().isoformat() in tr_holidays else 0
+    )
+
+    # Cyclical encoding
     df["month_sin"] = np.sin(2 * np.pi * df["month_of_year"] / 12)
     df["month_cos"] = np.cos(2 * np.pi * df["month_of_year"] / 12)
     df["hour_sin"]  = np.sin(2 * np.pi * df["hour_of_day"] / 24)
@@ -109,7 +124,55 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     # PTF volatilite
     df["ptf_range_24h"] = df["ptf_rolling_max_24h"] - df["ptf_rolling_min_24h"]
 
+    # Tüketim sapması
+    df["consumption_deviation"] = (
+        df["actual_consumption"] - df["forecast_consumption"]
+    ) if "forecast_consumption" in df.columns else 0
+
     return df
+
+#----MODEL OPTİMİZASYONU--------------------------------------------------------
+
+import optuna
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+def optimize_hyperparams(X_train, y_train, n_trials=30):
+    """Optuna ile XGBoost hiperparametrelerini optimize et."""
+
+    def objective(trial):
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 100, 800),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "max_depth": trial.suggest_int("max_depth", 3, 10),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "gamma": trial.suggest_float("gamma", 0, 5),
+            "random_state": 42,
+            "verbosity": 0,
+        }
+
+        tscv = TimeSeriesSplit(n_splits=3)
+        scores = []
+
+        for train_idx, val_idx in tscv.split(X_train):
+            X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
+            y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+
+            model = xgb.XGBRegressor(**params, early_stopping_rounds=30)
+            model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], verbose=False)
+            y_pred = model.predict(X_val)
+            scores.append(mean_absolute_error(y_val, y_pred))
+
+        return np.mean(scores)
+
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+
+    print(f"\nEn iyi MAE: {study.best_value:.2f}")
+    print(f"En iyi parametreler: {study.best_params}")
+
+    return study.best_params
 
 # ── MODEL EĞİTİMİ ─────────────────────────────────────────────────────────────
 
@@ -122,7 +185,8 @@ def train_model(df: pd.DataFrame):
     extra_features = [
         "month_sin", "month_cos", "hour_sin", "hour_cos",
         "dow_sin", "dow_cos", "renewable_ratio",
-        "ptf_range_24h"
+        "ptf_range_24h", "consumption_deviation",
+        "is_holiday", "is_pre_holiday", "is_post_holiday",  # ← yeni
     ]
     all_features = FEATURE_COLS + extra_features
 
@@ -152,12 +216,7 @@ def train_model(df: pd.DataFrame):
             random_state=42,
             verbosity=0,
         )
-
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            verbose=False,
-        )
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
 
         y_pred = model.predict(X_val)
         mae = mean_absolute_error(y_val, y_pred)
@@ -165,6 +224,12 @@ def train_model(df: pd.DataFrame):
         print(f"  Fold {fold+1}: MAE = {mae:.2f} TL/MWh")
 
     print(f"\nOrtalama CV MAE: {np.mean(cv_scores):.2f} ± {np.std(cv_scores):.2f} TL/MWh")
+
+    print("\nHiperparametre optimizasyonu başlıyor (30 trial)...")
+    best_params = optimize_hyperparams(X_train, y_train, n_trials=10)
+    best_params["random_state"] = 42
+    best_params["verbosity"] = 0
+    
 
     # Final model — tüm veri ile eğit
     print("\nFinal model eğitiliyor...")
@@ -174,22 +239,8 @@ def train_model(df: pd.DataFrame):
     X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
 
-    final_model = xgb.XGBRegressor(
-        n_estimators=500,
-        learning_rate=0.05,
-        max_depth=6,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        early_stopping_rounds=50,
-        random_state=42,
-        verbosity=0,
-    )
-
-    final_model.fit(
-        X_train, y_train,
-        eval_set=[(X_test, y_test)],
-        verbose=False,
-    )
+    final_model = xgb.XGBRegressor(**best_params, early_stopping_rounds=50)
+    final_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
 
     # Test metrikleri
     y_pred_test = final_model.predict(X_test)
@@ -245,11 +296,12 @@ def train_model(df: pd.DataFrame):
 def predict_next_day(model, df: pd.DataFrame) -> pd.DataFrame:
     """Son mevcut veriden yarınki 24 saati tahmin eder."""
 
-    df = engineer_features(df)
+    df = engineer_features(df)  # ← zaten var ama kontrol et
     extra_features = [
         "month_sin", "month_cos", "hour_sin", "hour_cos",
         "dow_sin", "dow_cos", "renewable_ratio",
-        "ptf_range_24h"
+        "ptf_range_24h", "consumption_deviation",
+        "is_holiday", "is_pre_holiday", "is_post_holiday",
     ]
     all_features = FEATURE_COLS + extra_features
 
