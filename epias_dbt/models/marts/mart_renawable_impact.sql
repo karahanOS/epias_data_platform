@@ -1,3 +1,4 @@
+-- depends_on: {{ ref('stg_generation_mix') }}
 select
     extract(year from date)         as year,
     extract(month from date)        as month,

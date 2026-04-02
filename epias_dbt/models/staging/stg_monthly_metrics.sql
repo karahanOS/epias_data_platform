@@ -1,1 +1,0 @@
-select * from {{ source('epias_gold', 'gold_monthly_executive_metrics') }}

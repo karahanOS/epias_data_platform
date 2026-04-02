@@ -5,6 +5,8 @@ sources:
     database: epias-data-platform
     schema: epias_gold
     tables:
+      - name: gold_monthly_executive_metrics
+        description: "Spark tarafından üretilen aylık özet veriler"
       # Airflow'un gold_ ön ekiyle yüklediği yeni ana tablolar
       - name: gold_price_spread_analysis
         description: "PTF ve SMF verilerinin karşılaştırmalı analizi"

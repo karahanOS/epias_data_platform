@@ -708,32 +708,37 @@ elif page == "📉 Yük Tahmin Sapması":
 
         st.markdown("---")
 
-        # Heatmap: Gün × Saat bazında sapma
-        # Son 28 günü al
-        df_recent = df_y.sort_values("date").tail(28 * 24)
-        df_recent["day_label"] = df_recent["date"].dt.strftime("%d %a")
+# ── HEATMAP GÜNCELLEME: GÜN-AY FORMATI ────────────────────────────────
 
+        # Son 28 günü al ve tarih sırasına göre diz
+        df_recent = df_y.sort_values("date").tail(28 * 24).copy()
+        
+        # Y ekseni için '02-04' (Gün-Ay) formatında etiket oluştur
+        df_recent["day_label"] = df_recent["date"].dt.strftime("%d-%m")
+
+        # Pivot tabloyu oluştur - sort=False ile tarih sırasını bozma
         pivot = df_recent.pivot_table(
             index="day_label",
             columns="hour_num",
             values="deviation",
-            aggfunc="mean"
+            aggfunc="mean",
+            sort=False # Verinin tarih sırasıyla (01-04, 02-04...) gelmesini sağlar
         )
 
         fig_heat = go.Figure(go.Heatmap(
-        z=pivot.values,
-        x=[f"{int(h):02d}:00" for h in pivot.columns],
-        y=pivot.index,
-        colorscale=[
-            [0.0,  "#1e40af"],
-            [0.4,  "#3b82f6"],
-            [0.5,  "#1a2235"],
-            [0.6,  "#f97316"],
-            [1.0,  "#dc2626"],
+            z=pivot.values,
+            x=[f"{int(h):02d}:00" for h in pivot.columns],
+            y=pivot.index,
+            colorscale=[
+                [0.0,  "#1e40af"], # Negatif sapma (Az Tüketim)
+                [0.4,  "#3b82f6"],
+                [0.5,  "#1a2235"], # Nötr
+                [0.6,  "#f97316"],
+                [1.0,  "#dc2626"], # Pozitif sapma (Fazla Tüketim)
             ],
             zmid=0,
             hoverongaps=False,
-            hovertemplate="Gün: %{y}<br>Saat: %{x}<br>Sapma: %{z:,.0f} MWh<extra></extra>",
+            hovertemplate="Tarih: %{y}<br>Saat: %{x}<br>Sapma: %{z:,.0f} MWh<extra></extra>",
         ))
 
         fig_heat.update_layout(
@@ -741,11 +746,11 @@ elif page == "📉 Yük Tahmin Sapması":
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#e2e8f0", family="DM Sans"),
-            xaxis=dict(title="Saat", gridcolor="rgba(255,255,255,0.05)"),
-            yaxis=dict(title="Gün", gridcolor="rgba(255,255,255,0.05)"),
-            height=580,
+            xaxis=dict(title="Saat", gridcolor="rgba(255,255,255,0.05)", dtick=2),
+            yaxis=dict(title="Tarih (Gün-Ay)", gridcolor="rgba(255,255,255,0.05)"),
+            height=650, # Daha okunaklı olması için yüksekliği biraz artırdım
         )
-        st.plotly_chart(fig_heat, use_container_width=True, key="chart_11")
+        st.plotly_chart(fig_heat, use_container_width=True, key="chart_11_updated")
 
         col_l, col_r = st.columns(2)
 

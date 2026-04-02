@@ -1,3 +1,4 @@
+-- depends_on: {{ ref('stg_load_vs_actual') }}
 select
     extract(year from date)                     as year,
     extract(month from date)                    as month,

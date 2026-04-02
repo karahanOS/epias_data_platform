@@ -21,7 +21,7 @@ with base as (
         forecast_consumption,
         EXTRACT(YEAR FROM date)  as year,
         EXTRACT(MONTH FROM date) as month
-    from {{ source('epias_gold', 'ml_features') }}
+    from {{ source('epias_gold', 'gold_ml_features') }}
 ),
 
 with_lags as (
