@@ -6,13 +6,22 @@ from spark_utils import get_spark_session
 if len(sys.argv) < 2:
     raise ValueError("Tarih parametresi eksik! Lütfen YYYY-MM-DD formatında bir tarih gönderin.")
 
+# ... [Önceki kısımlar aynı]
 target_date = sys.argv[1]
 spark = get_spark_session("epias_bronze_to_silver_smf")
 spark.sparkContext.setLogLevel("WARN")
 
 BUCKET = "epias-data-lake"
-BRONZE_PATH = f"gs://{BUCKET}/bronze/smf/{target_date}.parquet"
+
+# --- YENİ EKLENEN MANTIK ---
+if target_date == "ALL":
+    BRONZE_PATH = f"gs://{BUCKET}/bronze/smf/"
+else:
+    BRONZE_PATH = f"gs://{BUCKET}/bronze/smf/{target_date}.parquet"
+
 SILVER_PATH = f"gs://{BUCKET}/silver/smf/"
+
+# ... [Şema ve geri kalan dönüşümler tamamen aynı kalacak]
 
 # --- 1. ŞEMAYA smpUsd EKLENDİ ---
 schema = StructType([

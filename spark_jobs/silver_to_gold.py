@@ -9,22 +9,27 @@ if len(sys.argv) < 2:
     raise ValueError("Tarih parametresi eksik! Lütfen YYYY-MM-DD formatında bir tarih gönderin.")
 
 target_date = sys.argv[1]
-tgt_dt = datetime.strptime(target_date, "%Y-%m-%d")
-t_year, t_month, t_day = tgt_dt.year, tgt_dt.month, tgt_dt.day
+# --- YENİ EKLENEN MANTIK ---
+if target_date != "ALL":
+    tgt_dt = datetime.strptime(target_date, "%Y-%m-%d")
+    t_year, t_month, t_day = tgt_dt.year, tgt_dt.month, tgt_dt.day
 
-# ── SPARK SESSION ─────────────────────────────────────────────────────────────
 spark = get_spark_session("epias_silver_to_gold")
 spark.sparkContext.setLogLevel("WARN")
 
 BUCKET = "epias-data-lake"
 
+print(f"{target_date} tarihi için Silver veriler okunuyor...")
+
 # ── 2. SILVER'DAN SADECE İLGİLİ GÜNÜ OKU (PREDICATE PUSHDOWN) ─────────────────
 print(f"{target_date} tarihi için Silver veriler okunuyor...")
 
 def read_daily_silver(table_name):
-    return spark.read.option("mergeSchema", "true") \
-                .parquet(f"gs://{BUCKET}/silver/{table_name}/") \
-                .filter((F.col("year") == t_year) & (F.col("month") == t_month) & (F.col("day") == t_day))
+    df = spark.read.option("mergeSchema", "true").parquet(f"gs://{BUCKET}/silver/{table_name}/")
+    # Eğer "ALL" değilse, sadece o günü filtrele. "ALL" ise tümünü getir!
+    if target_date != "ALL":
+        df = df.filter((F.col("year") == t_year) & (F.col("month") == t_month) & (F.col("day") == t_day))
+    return df
 
 ptf = read_daily_silver("ptf")
 smf = read_daily_silver("smf")
