@@ -33,7 +33,6 @@ df_silver = df \
     .withColumn("hour", F.date_format(F.to_timestamp(F.col("hour"), "yyyy-MM-dd'T'HH:mm:ssXXX"), "HH:mm")) \
     .withColumn("system_marginal_price", F.round(F.col("systemMarginalPrice").cast(DoubleType()), 2)) \
     .withColumn("smp_usd", F.round(F.col("smpUsd").cast(DoubleType()), 4)) \
-    .drop("systemMarginalPrice", "smpUsd") \
     .withColumn("year", F.year(F.col("date"))) \
     .withColumn("month", F.month(F.col("date"))) \
     .withColumn("day", F.dayofmonth(F.col("date")))

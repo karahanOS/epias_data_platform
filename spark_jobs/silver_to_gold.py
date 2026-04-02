@@ -22,8 +22,8 @@ BUCKET = "epias-data-lake"
 print(f"{target_date} tarihi için Silver veriler okunuyor...")
 
 def read_daily_silver(table_name):
-    # Klasörü gösteriyoruz ama Spark sadece filtreye uyan 'year/month/day' klasörüne gidecek
-    return spark.read.parquet(f"gs://{BUCKET}/silver/{table_name}/") \
+    return spark.read.option("mergeSchema", "true") \
+                .parquet(f"gs://{BUCKET}/silver/{table_name}/") \
                 .filter((F.col("year") == t_year) & (F.col("month") == t_month) & (F.col("day") == t_day))
 
 ptf = read_daily_silver("ptf")
@@ -56,7 +56,8 @@ print("\n[1/7] gold_price_spread_analysis oluşturuluyor...")
 gold_price_spread = ptf_clean.alias("ptf").join(
     smf_clean.alias("smf"), on=["join_key"], how="inner"
 ) \
-.withColumn("price_spread", F.round(F.col("ptf.mcpUsd") - F.col("smf.smpUsd"), 2)) \
+.withColumn("price_spread", F.round(F.col("ptf.price") - F.col("smf.system_marginal_price"), 2)) \
+.withColumn("price_spread_usd", F.round(F.col("smf.smp_usd") - F.col("ptf.price_usd"), 4)) \
 .withColumn("system_direction",
     F.when(F.col("price_spread") > 0, "Enerji Açığı")
      .when(F.col("price_spread") < 0, "Enerji Fazlası")
@@ -71,9 +72,10 @@ gold_price_spread = ptf_clean.alias("ptf").join(
 .select(
     F.col("ptf.date").alias("date"), F.col("ptf.hour").alias("hour"),
     F.col("ptf.price").alias("ptf"), F.col("smf.system_marginal_price").alias("smf"),
-    "price_spread", "system_direction", "season",
+    F.col("ptf.price_usd").alias("mcpUsd"), F.col("smf.smp_usd").alias("smpUsd"), 
+    "price_spread", "price_spread_usd", "system_direction", "season",
     F.col("ptf.year").alias("year"), F.col("ptf.month").alias("month"),
-    F.col("ptf.day").alias("day") # DİKKAT: Partition için eklendi
+    F.col("ptf.day").alias("day")
 )
 
 gold_price_spread.write.mode("overwrite").partitionBy("year", "month", "day").parquet(f"gs://{BUCKET}/gold/price_spread_analysis/")
@@ -98,7 +100,7 @@ gold_gen_mix = gen_with_ratios.alias("gen").join(
     F.col("gen.date").alias("date"), F.col("gen.hour").alias("hour"),
     F.col("gen.total").alias("total_generation"),
     "renewable_generation", "fossil_generation", "renewable_ratio", "fossil_ratio",
-    F.col("ptf.mcp_usd").alias("mcpUsd"),
+    F.col("ptf.price_usd").alias("mcpUsd"),
     F.col("gen.year").alias("year"), F.col("gen.month").alias("month"), F.col("gen.day").alias("day")
 )
 
