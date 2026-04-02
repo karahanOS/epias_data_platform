@@ -204,9 +204,9 @@ if page == "🏠 Executive Summary":
     """, unsafe_allow_html=True)
 
     df = query(f"""
-        SELECT * FROM `{PROJECT}.{DATASET}.mart_gold_monthly_executive_metrics`
-        ORDER BY year, month
-    """)
+            SELECT * FROM `{PROJECT}.{DATASET}.mart_gold_monthly_executive_metrics`
+            ORDER BY year, month
+        """)
 
     if df.empty:
         st.warning("Veri bulunamadı.")
