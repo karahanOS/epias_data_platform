@@ -175,8 +175,8 @@ with st.sidebar:
     st.markdown("""
     <div style='text-align:center; padding: 16px 0 24px 0;'>
         <div style='font-size:2.5rem;'>⚡</div>
-        <div style='font-family: Space Mono, monospace; font-size: 0.9rem; color: #00d4ff; margin-top: 8px;'>EPIAŞ ANALYTICS</div>
-        <div style='font-size: 0.7rem; color: #64748b; margin-top: 4px;'>Turkish Power Market</div>
+        <div style='font-family: Space Mono, monospace; font-size: 0.9rem; color: #00d4ff; margin-top: 8px;'>EPIAŞ ANALİTİK</div>
+        <div style='font-size: 0.7rem; color: #64748b; margin-top: 4px;'>Türkiye Elektrik Piyasası</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -199,73 +199,43 @@ if page == "🏠 Executive Summary":
     <div class='page-header'>
         <span class='badge'>CANLI</span>
         <h1>Executive Summary</h1>
-        <p>Türkiye elektrik piyasasına genel bakış — aylık KPI'lar ve trendler (USD Bazlı)</p>
+        <p>Türkiye elektrik piyasasına genel bakış — aylık KPI'lar ve trendler</p>
     </div>
     """, unsafe_allow_html=True)
 
-# 1. Sayfa Executive Summary SQL Güncellemesi
     df = query(f"""
-        WITH price AS (
-            SELECT 
-                EXTRACT(YEAR FROM date) as year,
-                EXTRACT(MONTH FROM date) as month,
-                AVG(mcpUsd) as avg_mcp_usd,
-                MAX(mcpUsd) as max_mcp_usd,
-                MIN(mcpUsd) as min_mcp_usd,
-                AVG(smpUsd - mcpUsd) as avg_price_spread_usd
-            FROM `{PROJECT}.{DATASET}.gold_price_spread_analysis`
-            GROUP BY 1, 2
-        ),
-        cons AS (
-            SELECT 
-                EXTRACT(YEAR FROM date) as year,
-                EXTRACT(MONTH FROM date) as month,
-                SUM(actual_consumption) as total_consumption,
-                AVG(actual_consumption) as avg_hourly_consumption
-            FROM `{PROJECT}.{DATASET}.gold_load_vs_actual`
-            GROUP BY 1, 2
-        )
-        SELECT 
-            p.year,
-            p.month,
-            CONCAT(CAST(p.year AS STRING), '-', LPAD(CAST(p.month AS STRING), 2, '0')) AS year_month,
-            p.avg_mcp_usd,
-            p.max_mcp_usd,
-            p.min_mcp_usd,
-            p.avg_price_spread_usd,
-            c.total_consumption,
-            c.avg_hourly_consumption
-        FROM price p
-        JOIN cons c ON p.year = c.year AND p.month = c.month
+        SELECT * FROM `{PROJECT}.{DATASET}.monthly_executive_metrics`
         ORDER BY year, month
     """)
 
     if df.empty:
         st.warning("Veri bulunamadı.")
     else:
+        # Son ay metrikleri
         last = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else last
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            delta = round(last["avg_mcp_usd"] - prev["avg_mcp_usd"], 2)
-            st.metric("Avg. MCP ($/MWh)", f"${last['avg_mcp_usd']:,.2f}", f"${delta:+.2f}")
+            delta = round(last["avg_ptf"] - prev["avg_ptf"], 2)
+            st.metric("Ort. PTF (TL/MWh)", f"{last['avg_ptf']:,.2f}", f"{delta:+.2f}")
         with col2:
-            st.metric("Maks. MCP ($)", f"${last['max_mcp_usd']:,.2f}")
+            st.metric("Maks. PTF", f"{last['max_ptf']:,.2f}")
         with col3:
             total = last["total_consumption"]
             st.metric("Toplam Tüketim (MWh)", f"{total:,.0f}")
         with col4:
-            spread = last.get("avg_price_spread_usd", 0) or 0
-            st.metric("Ort. Spread ($)", f"${spread:,.2f}")
+            spread = last.get("avg_price_spread", 0) or 0
+            st.metric("Ort. Fiyat Makası", f"{spread:,.2f}")
 
         st.markdown("---")
 
+        # PTF trend
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
         fig.add_trace(go.Scatter(
-            x=df["year_month"], y=df["avg_mcp_usd"],
-            name="Ort. MCP ($)",
+            x=df["year_month"], y=df["avg_ptf"],
+            name="Ort. PTF",
             line=dict(color="#00d4ff", width=2.5),
             fill="tozeroy",
             fillcolor="rgba(0, 212, 255, 0.05)",
@@ -280,42 +250,43 @@ if page == "🏠 Executive Summary":
         ), secondary_y=True)
 
         fig.update_layout(
-            title="Aylık MCP Trendi & Tüketim",
+            title="Aylık PTF Trendi & Tüketim",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#e2e8f0", family="DM Sans"),
             legend=dict(bgcolor="rgba(0,0,0,0)"),
             xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="MCP ($/MWh)"),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="PTF (TL/MWh)"),
             yaxis2=dict(title="Tüketim (MWh)", gridcolor="rgba(0,0,0,0)"),
             height=420,
         )
 
         st.plotly_chart(fig, use_container_width=True, key="chart_1")
 
+        # Min/Max PTF band
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(
-            x=df["year_month"], y=df["max_mcp_usd"],
-            name="Maks MCP", line=dict(color="#ef4444", width=1.5, dash="dot")
+            x=df["year_month"], y=df["max_ptf"],
+            name="Maks PTF", line=dict(color="#ef4444", width=1.5, dash="dot")
         ))
         fig2.add_trace(go.Scatter(
-            x=df["year_month"], y=df["avg_mcp_usd"],
-            name="Ort MCP", line=dict(color="#00d4ff", width=2.5),
+            x=df["year_month"], y=df["avg_ptf"],
+            name="Ort PTF", line=dict(color="#00d4ff", width=2.5),
             fill="tonexty", fillcolor="rgba(0,212,255,0.05)"
         ))
         fig2.add_trace(go.Scatter(
-            x=df["year_month"], y=df["min_mcp_usd"],
-            name="Min MCP", line=dict(color="#10b981", width=1.5, dash="dot"),
+            x=df["year_month"], y=df["min_ptf"],
+            name="Min PTF", line=dict(color="#10b981", width=1.5, dash="dot"),
             fill="tonexty", fillcolor="rgba(16,185,129,0.05)"
         ))
         fig2.update_layout(
-            title="MCP Min / Ort / Maks Bandı ($)",
+            title="PTF Min / Ort / Maks Bandı",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#e2e8f0", family="DM Sans"),
             legend=dict(bgcolor="rgba(0,0,0,0)"),
             xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="MCP ($/MWh)"),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
             height=380,
         )
         st.plotly_chart(fig2, use_container_width=True, key="chart_2")
@@ -328,31 +299,26 @@ elif page == "⚖️ Fiyat Dengesizliği":
 
     st.markdown("""
     <div class='page-header'>
-        <span class='badge'>MCP vs SMP</span>
+        <span class='badge'>PTF vs SMF</span>
         <h1>Fiyat Dengesizliği Analizi</h1>
-        <p>Sistem Marjinal Fiyatı (SMP) ile Piyasa Takas Fiyatı (MCP) arasındaki makas ve sistem yönü</p>
+        <p>Sistem Marjinal Fiyatı ile Piyasa Takas Fiyatı arasındaki makas ve sistem yönü</p>
     </div>
     """, unsafe_allow_html=True)
 
     df = query(f"""
-            SELECT
-                date,
-                hour,
-                mcpUsd AS mcp_usd,
-                smpUsd AS smp_usd,
-                (smpUsd - mcpUsd) AS price_spread_usd,
-                system_direction,
-                CASE 
-                    WHEN EXTRACT(MONTH FROM date) IN (12, 1, 2) THEN 'Kış'
-                    WHEN EXTRACT(MONTH FROM date) IN (3, 4, 5) THEN 'İlkbahar'
-                    WHEN EXTRACT(MONTH FROM date) IN (6, 7, 8) THEN 'Yaz'
-                    ELSE 'Sonbahar'
-                END AS season,
-                EXTRACT(YEAR FROM date) as year,
-                EXTRACT(MONTH FROM date) as month
-            FROM `{PROJECT}.{DATASET}.gold_price_spread_analysis`
-            ORDER BY date, hour
-        """)
+        SELECT
+            date,
+            hour,
+            ptf,
+            smf,
+            price_spread,
+            system_direction,
+            season,
+            EXTRACT(YEAR FROM date) as year,
+            EXTRACT(MONTH FROM date) as month
+        FROM `{PROJECT}.{DATASET}.price_spread_analysis`
+        ORDER BY date, hour
+    """)
 
     if df.empty:
         st.warning("Veri bulunamadı.")
@@ -361,9 +327,10 @@ elif page == "⚖️ Fiyat Dengesizliği":
         selected_year = st.selectbox("Yıl Seç", years)
         df_y = df[df["year"] == selected_year]
 
+        # KPI
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Ort. Fiyat Makası ($)", f"${df_y['price_spread_usd'].mean():,.2f}")
+            st.metric("Ort. Fiyat Makası", f"{df_y['price_spread'].mean():,.2f} TL")
         with col2:
             deficit_pct = (df_y["system_direction"] == "Enerji Açığı").mean() * 100
             st.metric("Enerji Açığı Saatleri", f"%{deficit_pct:.1f}")
@@ -371,16 +338,17 @@ elif page == "⚖️ Fiyat Dengesizliği":
             surplus_pct = (df_y["system_direction"] == "Enerji Fazlası").mean() * 100
             st.metric("Enerji Fazlası Saatleri", f"%{surplus_pct:.1f}")
         with col4:
-            st.metric("Maks. Makas ($)", f"${df_y['price_spread_usd'].max():,.2f}")
+            st.metric("Maks. Makas", f"{df_y['price_spread'].max():,.2f} TL")
 
         st.markdown("---")
 
         col_left, col_right = st.columns([2, 1])
 
         with col_left:
+            # PTF vs SMF scatter
             fig = px.scatter(
                 df_y.sample(min(3000, len(df_y))),
-                x="mcp_usd", y="smp_usd",
+                x="ptf", y="smf",
                 color="system_direction",
                 color_discrete_map={
                     "Enerji Açığı": "#ef4444",
@@ -388,10 +356,11 @@ elif page == "⚖️ Fiyat Dengesizliği":
                     "Dengeli": "#00d4ff"
                 },
                 opacity=0.6,
-                title="MCP vs SMP Dağılımı ($)",
-                labels={"mcp_usd": "MCP ($/MWh)", "smp_usd": "SMP ($/MWh)"}
+                title="PTF vs SMF Dağılımı",
+                labels={"ptf": "PTF (TL/MWh)", "smf": "SMF (TL/MWh)"}
             )
-            max_val = max(df_y["mcp_usd"].max(), df_y["smp_usd"].max())
+            # 45 derece çizgisi
+            max_val = max(df_y["ptf"].max(), df_y["smf"].max())
             fig.add_trace(go.Scatter(
                 x=[0, max_val], y=[0, max_val],
                 mode="lines",
@@ -410,6 +379,7 @@ elif page == "⚖️ Fiyat Dengesizliği":
             st.plotly_chart(fig, use_container_width=True, key="chart_3")
 
         with col_right:
+            # Sistem yönü pie
             direction_counts = df_y["system_direction"].value_counts()
             fig2 = go.Figure(go.Pie(
                 labels=direction_counts.index,
@@ -433,13 +403,14 @@ elif page == "⚖️ Fiyat Dengesizliği":
             )
             st.plotly_chart(fig2, use_container_width=True, key="chart_4")
 
-        seasonal = df_y.groupby("season")["price_spread_usd"].mean().reset_index()
+        # Mevsimsel spread
+        seasonal = df_y.groupby("season")["price_spread"].mean().reset_index()
         fig3 = px.bar(
-            seasonal, x="season", y="price_spread_usd",
-            title="Mevsimsel Ortalama Fiyat Makası ($)",
-            color="price_spread_usd",
+            seasonal, x="season", y="price_spread",
+            title="Mevsimsel Ortalama Fiyat Makası",
+            color="price_spread",
             color_continuous_scale=["#10b981", "#00d4ff", "#7c3aed", "#ef4444"],
-            labels={"price_spread_usd": "Ort. Makas ($/MWh)", "season": "Mevsim"}
+            labels={"price_spread": "Ort. Makas (TL/MWh)", "season": "Mevsim"}
         )
         fig3.update_layout(
             paper_bgcolor="rgba(0,0,0,0)",
@@ -462,25 +433,25 @@ elif page == "🌱 Üretim Karışımı":
     <div class='page-header'>
         <span class='badge'>MERIT ORDER</span>
         <h1>Üretim Karışımı & Fiyat Etkisi</h1>
-        <p>Yenilenebilir enerji oranı arttıkça global fiyatlar (MCP) nasıl tepki veriyor?</p>
+        <p>Yenilenebilir enerji oranı arttıkça fiyatlar nasıl tepki veriyor?</p>
     </div>
     """, unsafe_allow_html=True)
 
     df = query(f"""
-            SELECT
-                date,
-                hour,
-                total_generation,
-                renewable_generation,
-                fossil_generation,
-                renewable_ratio,
-                fossil_ratio,
-                mcpUsd AS mcp_usd,
-                EXTRACT(YEAR FROM date) as year,
-                EXTRACT(MONTH FROM date) as month
-            FROM `{PROJECT}.{DATASET}.gold_generation_mix_price_impact`
-            ORDER BY date, hour
-        """)
+        SELECT
+            date,
+            hour,
+            total_generation,
+            renewable_generation,
+            fossil_generation,
+            renewable_ratio,
+            fossil_ratio,
+            ptf,
+            EXTRACT(YEAR FROM date) as year,
+            EXTRACT(MONTH FROM date) as month
+        FROM `{PROJECT}.{DATASET}.generation_mix_price_impact`
+        ORDER BY date, hour
+    """)
 
     if df.empty:
         st.warning("Veri bulunamadı.")
@@ -497,20 +468,21 @@ elif page == "🌱 Üretim Karışımı":
         with col3:
             st.metric("Ort. Toplam Üretim", f"{df_y['total_generation'].mean():,.0f} MWh")
         with col4:
-            corr = df_y["renewable_ratio"].corr(df_y["mcp_usd"])
-            st.metric("Korelasyon (Yenilenebilir~MCP)", f"{corr:.3f}")
+            corr = df_y["renewable_ratio"].corr(df_y["ptf"])
+            st.metric("Korelasyon (Yenilenebilir~PTF)", f"{corr:.3f}")
 
         st.markdown("---")
 
+        # Scatter: Yenilenebilir oranı vs PTF
         fig = px.scatter(
             df_y.sample(min(3000, len(df_y))),
-            x="renewable_ratio", y="mcp_usd",
-            color="mcp_usd",
+            x="renewable_ratio", y="ptf",
+            color="ptf",
             color_continuous_scale=["#10b981", "#00d4ff", "#ef4444"],
             opacity=0.5,
             trendline="lowess",
-            title="Yenilenebilir Üretim Oranı → MCP İlişkisi (Merit Order Effect)",
-            labels={"renewable_ratio": "Yenilenebilir Oranı (%)", "mcp_usd": "MCP ($/MWh)"}
+            title="Yenilenebilir Üretim Oranı → PTF İlişkisi (Merit Order Effect)",
+            labels={"renewable_ratio": "Yenilenebilir Oranı (%)", "ptf": "PTF (TL/MWh)"}
         )
         fig.update_layout(
             paper_bgcolor="rgba(0,0,0,0)",
@@ -523,9 +495,10 @@ elif page == "🌱 Üretim Karışımı":
         )
         st.plotly_chart(fig, use_container_width=True, key="chart_6")
 
+        # Aylık yenilenebilir vs PTF trend
         monthly = df_y.groupby("month").agg(
             avg_renewable=("renewable_ratio", "mean"),
-            avg_mcp_usd=("mcp_usd", "mean")
+            avg_ptf=("ptf", "mean")
         ).reset_index()
 
         fig2 = make_subplots(specs=[[{"secondary_y": True}]])
@@ -537,22 +510,22 @@ elif page == "🌱 Üretim Karışımı":
             marker_line_width=1,
         ))
         fig2.add_trace(go.Scatter(
-            x=monthly["month"], y=monthly["avg_mcp_usd"],
-            name="Ort. MCP ($)",
+            x=monthly["month"], y=monthly["avg_ptf"],
+            name="Ort. PTF",
             line=dict(color="#00d4ff", width=2.5),
             mode="lines+markers",
             marker=dict(size=8),
         ), secondary_y=True)
 
         fig2.update_layout(
-            title=f"{selected_year} — Aylık Yenilenebilir Oranı vs MCP",
+            title=f"{selected_year} — Aylık Yenilenebilir Oranı vs PTF",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#e2e8f0"),
             legend=dict(bgcolor="rgba(0,0,0,0)"),
             xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickmode="linear"),
             yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Yenilenebilir %"),
-            yaxis2=dict(title="MCP ($/MWh)", gridcolor="rgba(0,0,0,0)"),
+            yaxis2=dict(title="PTF (TL/MWh)", gridcolor="rgba(0,0,0,0)"),
             height=380,
         )
         st.plotly_chart(fig2, use_container_width=True, key="chart_7")
@@ -581,7 +554,7 @@ elif page == "🔋 Arz-Talep Analizi":
             coverage_ratio,
             EXTRACT(YEAR FROM date) as year,
             EXTRACT(MONTH FROM date) as month
-        FROM `{PROJECT}.{DATASET}.gold_supply_demand_summary`
+        FROM `{PROJECT}.{DATASET}.supply_demand_summary`
         ORDER BY date, hour
     """)
 
@@ -604,6 +577,7 @@ elif page == "🔋 Arz-Talep Analizi":
 
         st.markdown("---")
 
+        # Saat dilimine göre karşılama oranı
         tod = df_y.groupby("time_of_day").agg(
             avg_coverage=("coverage_ratio", "mean"),
             avg_gen=("total_generation", "mean"),
@@ -654,6 +628,7 @@ elif page == "🔋 Arz-Talep Analizi":
             )
             st.plotly_chart(fig2, use_container_width=True, key="chart_9")
 
+        # Aylık karşılama oranı trend
         monthly_cov = df_y.groupby("month")["coverage_ratio"].mean().reset_index()
         fig3 = go.Figure()
         fig3.add_trace(go.Scatter(
@@ -684,9 +659,6 @@ elif page == "🔋 Arz-Talep Analizi":
         )
         st.plotly_chart(fig3, use_container_width=True, key="chart_10")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 5: Yük Tahmin Sapması
-# ═════════════════════════════════════════════════════════════════════════════
 
 elif page == "📉 Yük Tahmin Sapması":
 
@@ -711,7 +683,7 @@ elif page == "📉 Yük Tahmin Sapması":
             EXTRACT(MONTH FROM date)      as month,
             EXTRACT(DAY FROM date)        as day,
             EXTRACT(HOUR FROM date)       as hour_num
-        FROM `{PROJECT}.{DATASET}.gold_load_vs_actual`
+        FROM `{PROJECT}.{DATASET}.load_vs_actual`
         ORDER BY date, hour
     """)
 
@@ -722,6 +694,7 @@ elif page == "📉 Yük Tahmin Sapması":
         selected_year = st.selectbox("Yıl Seç", years)
         df_y = df[df["year"] == selected_year]
 
+        # KPI kartları
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Ort. Mutlak Sapma", f"{df_y['deviation'].abs().mean():,.0f} MWh")
@@ -735,48 +708,54 @@ elif page == "📉 Yük Tahmin Sapması":
 
         st.markdown("---")
 
+# ── HEATMAP GÜNCELLEME: GÜN-AY FORMATI ────────────────────────────────
+
+        # Son 28 günü al ve tarih sırasına göre diz
         df_recent = df_y.sort_values("date").tail(28 * 24).copy()
+        
+        # Y ekseni için '02-04' (Gün-Ay) formatında etiket oluştur
         df_recent["day_label"] = df_recent["date"].dt.strftime("%d-%m")
 
+        # Pivot tabloyu oluştur - sort=False ile tarih sırasını bozma
         pivot = df_recent.pivot_table(
             index="day_label",
             columns="hour_num",
             values="deviation",
             aggfunc="mean",
-            sort=False
+            sort=False # Verinin tarih sırasıyla (01-04, 02-04...) gelmesini sağlar
         )
 
         fig_heat = go.Figure(go.Heatmap(
             z=pivot.values,
             x=[f"{int(h):02d}:00" for h in pivot.columns],
-            y=pivot.index, 
+            y=pivot.index,
             colorscale=[
-                [0.0,  "#1e40af"], 
-                [0.5,  "#111827"], 
-                [1.0,  "#dc2626"], 
+                [0.0,  "#1e40af"], # Negatif sapma (Az Tüketim)
+                [0.4,  "#3b82f6"],
+                [0.5,  "#1a2235"], # Nötr
+                [0.6,  "#f97316"],
+                [1.0,  "#dc2626"], # Pozitif sapma (Fazla Tüketim)
             ],
             zmid=0,
+            hoverongaps=False,
             hovertemplate="Tarih: %{y}<br>Saat: %{x}<br>Sapma: %{z:,.0f} MWh<extra></extra>",
         ))
 
         fig_heat.update_layout(
-            title="Saatlere Göre Tüketim Sapması (Son 28 Gün)",
+            title="Saatlere Göre Tüketim Sapması (Son 28 Gün) — Mavi: Az Tüketim / Kırmızı: Fazla Tüketim",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(title="Saat", dtick=2),
-            yaxis=dict(
-                title="Gün-Ay",
-                type='category', 
-                autorange="reversed" 
-            ),
-            height=700,
+            font=dict(color="#e2e8f0", family="DM Sans"),
+            xaxis=dict(title="Saat", gridcolor="rgba(255,255,255,0.05)", dtick=2),
+            yaxis=dict(title="Tarih (Gün-Ay)", gridcolor="rgba(255,255,255,0.05)"),
+            height=650, # Daha okunaklı olması için yüksekliği biraz artırdım
         )
-        st.plotly_chart(fig_heat, use_container_width=True)
+        st.plotly_chart(fig_heat, use_container_width=True, key="chart_11_updated")
 
         col_l, col_r = st.columns(2)
 
         with col_l:
+            # Saatlik ortalama sapma
             hourly = df_y.groupby("hour_num").agg(
                 avg_dev=("deviation", "mean"),
                 avg_abs_dev=("deviation", lambda x: x.abs().mean()),
@@ -813,6 +792,7 @@ elif page == "📉 Yük Tahmin Sapması":
             st.plotly_chart(fig2, use_container_width=True, key="chart_12")
 
         with col_r:
+            # Sapma yönü dağılımı
             direction_counts = df_y["deviation_direction"].value_counts()
             fig3 = go.Figure(go.Pie(
                 labels=direction_counts.index,
@@ -836,6 +816,7 @@ elif page == "📉 Yük Tahmin Sapması":
             )
             st.plotly_chart(fig3, use_container_width=True, key="chart_13")
 
+        # Tahmin vs Gerçekleşen trend
         monthly = df_y.groupby("month").agg(
             avg_forecast=("forecast_consumption", "mean"),
             avg_actual=("actual_consumption", "mean"),
@@ -876,9 +857,6 @@ elif page == "📉 Yük Tahmin Sapması":
         )
         st.plotly_chart(fig4, use_container_width=True, key="load_monthly_fig4")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 6: Yenilenebilir Derinlemesine
-# ═════════════════════════════════════════════════════════════════════════════
 
 elif page == "🌬️ Yenilenebilir Derinlemesine":
 
@@ -886,39 +864,34 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
     <div class='page-header'>
         <span class='badge'>MERIT ORDER</span>
         <h1>Yenilenebilir Enerji Derinlemesine Analiz</h1>
-        <p>Rüzgar, güneş ve hidrolik üretimin global fiyatlar (MCP) üzerindeki etkisi</p>
+        <p>Rüzgar, güneş ve hidrolik üretimin fiyat üzerindeki etkisi — kaynak bazında Merit Order</p>
     </div>
     """, unsafe_allow_html=True)
 
     df = query(f"""
-            SELECT
-                date,
-                hour,
-                time_of_day,
-                CASE 
-                    WHEN EXTRACT(MONTH FROM date) IN (12, 1, 2) THEN 'Kış'
-                    WHEN EXTRACT(MONTH FROM date) IN (3, 4, 5) THEN 'İlkbahar'
-                    WHEN EXTRACT(MONTH FROM date) IN (6, 7, 8) THEN 'Yaz'
-                    ELSE 'Sonbahar'
-                END AS season,
-                total_generation,
-                wind,
-                sun,
-                dammed_hydro,
-                river,
-                natural_gas,
-                wind_ratio,
-                sun_ratio,
-                hydro_ratio,
-                gas_ratio,
-                coal_ratio,
-                combined_renewable_ratio,
-                mcpUsd AS mcp_usd,
-                EXTRACT(YEAR FROM date)  as year,
-                EXTRACT(MONTH FROM date) as month
-            FROM `{PROJECT}.{DATASET}.gold_renewable_deep_analysis`
-            ORDER BY date, hour
-        """)
+        SELECT
+            date,
+            hour,
+            time_of_day,
+            season,
+            total_generation,
+            wind,
+            sun,
+            dammed_hydro,
+            river,
+            natural_gas,
+            wind_ratio,
+            sun_ratio,
+            hydro_ratio,
+            gas_ratio,
+            coal_ratio,
+            combined_renewable_ratio,
+            ptf,
+            EXTRACT(YEAR FROM date)  as year,
+            EXTRACT(MONTH FROM date) as month
+        FROM `{PROJECT}.{DATASET}.renewable_deep_analysis`
+        ORDER BY date, hour
+    """)
 
     if df.empty:
         st.warning("Veri bulunamadı.")
@@ -937,27 +910,29 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
         if selected_season != "Tümü":
             df_y = df_y[df_y["season"] == selected_season]
 
+        # KPI kartları
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            corr_wind = df_y["wind_ratio"].corr(df_y["mcp_usd"])
-            st.metric("Rüzgar-MCP Korelasyonu", f"{corr_wind:.3f}")
+            corr_wind = df_y["wind_ratio"].corr(df_y["ptf"])
+            st.metric("Rüzgar-PTF Korelasyonu", f"{corr_wind:.3f}")
         with col2:
-            corr_sun = df_y["sun_ratio"].corr(df_y["mcp_usd"])
-            st.metric("Güneş-MCP Korelasyonu", f"{corr_sun:.3f}")
+            corr_sun = df_y["sun_ratio"].corr(df_y["ptf"])
+            st.metric("Güneş-PTF Korelasyonu", f"{corr_sun:.3f}")
         with col3:
-            corr_hydro = df_y["hydro_ratio"].corr(df_y["mcp_usd"])
-            st.metric("Hidrolik-MCP Korelasyonu", f"{corr_hydro:.3f}")
+            corr_hydro = df_y["hydro_ratio"].corr(df_y["ptf"])
+            st.metric("Hidrolik-PTF Korelasyonu", f"{corr_hydro:.3f}")
         with col4:
             st.metric("Ort. Yenilenebilir Oranı", f"%{df_y['combined_renewable_ratio'].mean():.1f}")
 
         st.markdown("---")
 
+        # Kaynak bazında scatter plotlar
         col_l, col_r = st.columns(2)
 
         with col_l:
             fig1 = px.scatter(
                 df_y.sample(min(2000, len(df_y))),
-                x="wind_ratio", y="mcp_usd",
+                x="wind_ratio", y="ptf",
                 color="season",
                 color_discrete_map={
                     "Kış": "#3b82f6",
@@ -967,8 +942,8 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
                 },
                 opacity=0.5,
                 trendline="lowess",
-                title="🌬️ Rüzgar Oranı → MCP",
-                labels={"wind_ratio": "Rüzgar Oranı (%)", "mcp_usd": "MCP ($/MWh)"}
+                title="🌬️ Rüzgar Oranı → PTF",
+                labels={"wind_ratio": "Rüzgar Oranı (%)", "ptf": "PTF (TL/MWh)"}
             )
             fig1.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
@@ -984,7 +959,7 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
         with col_r:
             fig2 = px.scatter(
                 df_y.sample(min(2000, len(df_y))),
-                x="hydro_ratio", y="mcp_usd",
+                x="hydro_ratio", y="ptf",
                 color="season",
                 color_discrete_map={
                     "Kış": "#3b82f6",
@@ -994,8 +969,8 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
                 },
                 opacity=0.5,
                 trendline="lowess",
-                title="💧 Hidrolik Oranı → MCP",
-                labels={"hydro_ratio": "Hidrolik Oranı (%)", "mcp_usd": "MCP ($/MWh)"}
+                title="💧 Hidrolik Oranı → PTF",
+                labels={"hydro_ratio": "Hidrolik Oranı (%)", "ptf": "PTF (TL/MWh)"}
             )
             fig2.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
@@ -1008,9 +983,10 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             )
             st.plotly_chart(fig2, use_container_width=True, key="chart_15")
 
+        # Güneş etkisi — saat dilimine göre
         sun_tod = df_y.groupby("time_of_day").agg(
             avg_sun_ratio=("sun_ratio", "mean"),
-            avg_mcp_usd=("mcp_usd", "mean"),
+            avg_ptf=("ptf", "mean"),
         ).reset_index()
 
         col_l2, col_r2 = st.columns(2)
@@ -1027,26 +1003,27 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             ))
             fig3.add_trace(go.Scatter(
                 x=sun_tod["time_of_day"],
-                y=sun_tod["avg_mcp_usd"],
-                name="Ort. MCP ($)",
+                y=sun_tod["avg_ptf"],
+                name="Ort. PTF",
                 line=dict(color="#00d4ff", width=2.5),
                 mode="lines+markers",
                 marker=dict(size=8),
             ), secondary_y=True)
             fig3.update_layout(
-                title="☀️ Güneş Üretimi ve MCP — Saat Dilimine Göre",
+                title="☀️ Güneş Üretimi ve PTF — Saat Dilimine Göre",
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#e2e8f0"),
                 legend=dict(bgcolor="rgba(0,0,0,0)"),
                 xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Güneş %"),
-                yaxis2=dict(title="MCP ($/MWh)", gridcolor="rgba(0,0,0,0)"),
+                yaxis2=dict(title="PTF (TL/MWh)", gridcolor="rgba(0,0,0,0)"),
                 height=380,
             )
             st.plotly_chart(fig3, use_container_width=True, key="chart_16")
 
         with col_r2:
+            # Aylık üretim karışımı stacked bar
             monthly_mix = df_y.groupby("month").agg(
                 wind=("wind_ratio", "mean"),
                 sun=("sun_ratio", "mean"),
@@ -1081,13 +1058,14 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             )
             st.plotly_chart(fig4, use_container_width=True, key="chart_17")
 
-        st.markdown("#### Kaynak Bazında MCP Korelasyonu — Mevsimsel")
+        # Mevsimsel korelasyon tablosu
+        st.markdown("#### Kaynak Bazında PTF Korelasyonu — Mevsimsel")
         seasonal_corr = df_y.groupby("season").apply(lambda x: {
             "Mevsim": x["season"].iloc[0],
-            "Rüzgar": round(x["wind_ratio"].corr(x["mcp_usd"]), 3),
-            "Güneş": round(x["sun_ratio"].corr(x["mcp_usd"]), 3),
-            "Hidrolik": round(x["hydro_ratio"].corr(x["mcp_usd"]), 3),
-            "Doğalgaz": round(x["gas_ratio"].corr(x["mcp_usd"]), 3),
+            "Rüzgar": round(x["wind_ratio"].corr(x["ptf"]), 3),
+            "Güneş": round(x["sun_ratio"].corr(x["ptf"]), 3),
+            "Hidrolik": round(x["hydro_ratio"].corr(x["ptf"]), 3),
+            "Doğalgaz": round(x["gas_ratio"].corr(x["ptf"]), 3),
         }).reset_index(drop=True)
 
         corr_df = pd.DataFrame(seasonal_corr.tolist())
