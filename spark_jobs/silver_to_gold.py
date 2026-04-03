@@ -224,7 +224,7 @@ gold_ml = ptf_clean.alias("ptf").join(
      .otherwise("Sonbahar")
 ) \
 .select(
-    F.col("ptf.date").alias("date"), F.col("ptf.hour").alias("hour"), F.col("ptf.price").alias("ptf"),
+    F.col("ptf.date").alias("date"), F.col("ptf.hour").alias("hour"), F.col("ptf.price").alias("ptf"),F.col("ptf.price_usd").alias("mcpUsd"),
     "hour_of_day", "day_of_week", "is_weekend", "month_of_year", "season",
     F.col("w.weighted_temperature_2m").alias("temperature"), F.col("w.weighted_wind_speed_10m").alias("wind_speed"),
     F.col("w.weighted_shortwave_radiation").alias("solar_radiation"), F.col("w.weighted_relative_humidity_2m").alias("humidity"),
