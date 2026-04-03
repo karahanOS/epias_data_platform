@@ -248,24 +248,27 @@ def load_bigquery_callable(**context):
         ]
 
     for table_name in tables:
-        uris = list_parquet_files(f"gold/{table_name}/")
-        if not uris:
-            logger.warning(f"{table_name} için dosya bulunamadı, atlanıyor.")
-            continue
-
+        # Dosyaları tek tek listelemek yerine GCS wildcard (*) kullanıyoruz
+        uri = f"gs://{BUCKET_NAME}/gold/{table_name}/*.parquet"
+        
+        logger.info(f"{table_name} için wildcard yükleme başlıyor: {uri}")
+    
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.PARQUET,
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
             autodetect=True,
         )
-
+    
+        # uris (liste) yerine doğrudan uri (string wildcard) gönderiyoruz
         load_job = bq_client.load_table_from_uri(
-                    source_uris=uris,
-                    destination=f"{DATASET}.gold_{table_name}", # <-- DÜZELTİLDİ
+                    uri,
+                    destination=f"{DATASET}.gold_{table_name}",
                     job_config=job_config,
         )
-        load_job.result()
-        logger.info(f"{table_name} BigQuery'e yüklendi!")
+        
+        # result() kısmına 1 saatlik (3600 sn) bir limit koyuyoruz
+        load_job.result(timeout=3600) 
+        logger.info(f"{table_name} BigQuery'e başarıyla yüklendi!")
 
 
 def run_dbt_callable(**context):

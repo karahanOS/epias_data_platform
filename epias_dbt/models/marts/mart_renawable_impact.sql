@@ -1,11 +1,20 @@
--- depends_on: {{ ref('stg_generation_mix') }}
-select
-    extract(year from date)         as year,
-    extract(month from date)        as month,
-    round(avg(renewable_ratio), 2)  as avg_renewable_ratio,
-    round(avg(fossil_ratio), 2)     as avg_fossil_ratio,
-    round(avg(ptf), 2)              as avg_ptf,
-    round(corr(renewable_ratio, ptf), 4) as renewable_price_correlation
-from {{ ref('stg_generation_mix') }}
-group by 1, 2
-order by 1, 2
+{{ config(materialized='table') }}
+
+WITH gen_ptf AS (
+    SELECT 
+        g.*,
+        p.mcp_usd -- ptf yerine mcp_usd kullanıyoruz
+    FROM {{ ref('stg_generation_mix') }} g
+    JOIN {{ ref('stg_price_spread') }} p ON g.join_key = p.join_key
+)
+
+SELECT
+    date,
+    hour,
+    total_generation,
+    renewable_ratio,
+    fossil_ratio,
+    mcp_usd, -- yeni kolon adı
+    year,
+    month
+FROM gen_ptf
