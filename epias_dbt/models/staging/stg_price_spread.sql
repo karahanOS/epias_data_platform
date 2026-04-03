@@ -1,4 +1,6 @@
 SELECT
+    -- JOIN işlemleri için join_key kolonunu buraya da ekliyoruz
+    CONCAT(CAST(date AS STRING), ' ', hour) as join_key,
     date,
     hour,
     ptf as mcp_tl,
@@ -7,7 +9,6 @@ SELECT
     smpUsd as smp_usd,
     price_spread_usd,
     system_direction,
-    -- Yine date üzerinden extract
     EXTRACT(YEAR FROM date) as year,
     EXTRACT(MONTH FROM date) as month,
     CASE 
