@@ -683,7 +683,7 @@ elif page == "📉 Yük Tahmin Sapması":
             EXTRACT(MONTH FROM date)      as month,
             EXTRACT(DAY FROM date)        as day,
             EXTRACT(HOUR FROM date)       as hour_num
-        FROM `{PROJECT}.{DATASET}.load_vs_actual`
+        FROM `{PROJECT}.{DATASET}.gold_load_vs_actual`
         ORDER BY date, hour
     """)
 
@@ -694,7 +694,6 @@ elif page == "📉 Yük Tahmin Sapması":
         selected_year = st.selectbox("Yıl Seç", years)
         df_y = df[df["year"] == selected_year]
 
-        # KPI kartları
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Ort. Mutlak Sapma", f"{df_y['deviation'].abs().mean():,.0f} MWh")
@@ -708,54 +707,48 @@ elif page == "📉 Yük Tahmin Sapması":
 
         st.markdown("---")
 
-# ── HEATMAP GÜNCELLEME: GÜN-AY FORMATI ────────────────────────────────
-
-        # Son 28 günü al ve tarih sırasına göre diz
         df_recent = df_y.sort_values("date").tail(28 * 24).copy()
-        
-        # Y ekseni için '02-04' (Gün-Ay) formatında etiket oluştur
         df_recent["day_label"] = df_recent["date"].dt.strftime("%d-%m")
 
-        # Pivot tabloyu oluştur - sort=False ile tarih sırasını bozma
         pivot = df_recent.pivot_table(
             index="day_label",
             columns="hour_num",
             values="deviation",
             aggfunc="mean",
-            sort=False # Verinin tarih sırasıyla (01-04, 02-04...) gelmesini sağlar
+            sort=False
         )
 
         fig_heat = go.Figure(go.Heatmap(
             z=pivot.values,
             x=[f"{int(h):02d}:00" for h in pivot.columns],
-            y=pivot.index,
+            y=pivot.index, 
             colorscale=[
-                [0.0,  "#1e40af"], # Negatif sapma (Az Tüketim)
-                [0.4,  "#3b82f6"],
-                [0.5,  "#1a2235"], # Nötr
-                [0.6,  "#f97316"],
-                [1.0,  "#dc2626"], # Pozitif sapma (Fazla Tüketim)
+                [0.0,  "#1e40af"], 
+                [0.5,  "#111827"], 
+                [1.0,  "#dc2626"], 
             ],
             zmid=0,
-            hoverongaps=False,
             hovertemplate="Tarih: %{y}<br>Saat: %{x}<br>Sapma: %{z:,.0f} MWh<extra></extra>",
         ))
 
         fig_heat.update_layout(
-            title="Saatlere Göre Tüketim Sapması (Son 28 Gün) — Mavi: Az Tüketim / Kırmızı: Fazla Tüketim",
+            title="Saatlere Göre Tüketim Sapması (Son 28 Gün)",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0", family="DM Sans"),
-            xaxis=dict(title="Saat", gridcolor="rgba(255,255,255,0.05)", dtick=2),
-            yaxis=dict(title="Tarih (Gün-Ay)", gridcolor="rgba(255,255,255,0.05)"),
-            height=650, # Daha okunaklı olması için yüksekliği biraz artırdım
+            font=dict(color="#e2e8f0"),
+            xaxis=dict(title="Saat", dtick=2),
+            yaxis=dict(
+                title="Gün-Ay",
+                type='category', 
+                autorange="reversed" 
+            ),
+            height=700,
         )
-        st.plotly_chart(fig_heat, use_container_width=True, key="chart_11_updated")
+        st.plotly_chart(fig_heat, use_container_width=True)
 
         col_l, col_r = st.columns(2)
 
         with col_l:
-            # Saatlik ortalama sapma
             hourly = df_y.groupby("hour_num").agg(
                 avg_dev=("deviation", "mean"),
                 avg_abs_dev=("deviation", lambda x: x.abs().mean()),
@@ -792,7 +785,6 @@ elif page == "📉 Yük Tahmin Sapması":
             st.plotly_chart(fig2, use_container_width=True, key="chart_12")
 
         with col_r:
-            # Sapma yönü dağılımı
             direction_counts = df_y["deviation_direction"].value_counts()
             fig3 = go.Figure(go.Pie(
                 labels=direction_counts.index,
@@ -816,7 +808,6 @@ elif page == "📉 Yük Tahmin Sapması":
             )
             st.plotly_chart(fig3, use_container_width=True, key="chart_13")
 
-        # Tahmin vs Gerçekleşen trend
         monthly = df_y.groupby("month").agg(
             avg_forecast=("forecast_consumption", "mean"),
             avg_actual=("actual_consumption", "mean"),
