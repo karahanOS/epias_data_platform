@@ -1,22 +1,22 @@
 {{ config(materialized='table') }}
 
 WITH base_metrics AS (
-    -- Fiyat ve Spread metriklerini USD üzerinden çek ve grupla
+    -- Fiyat ve Spread metriklerini ana tablodan çek ve grupla
     SELECT
         EXTRACT(YEAR FROM date) AS year,
         EXTRACT(MONTH FROM date) AS month,
-        ROUND(AVG(mcp_usd), 2) AS avg_mcp_usd,
-        ROUND(MAX(mcp_usd), 2) AS max_mcp_usd,
-        ROUND(MIN(mcp_usd), 2) AS min_mcp_usd,
-        ROUND(AVG(price_spread_usd), 2) AS avg_price_spread_usd,
+        ROUND(AVG(ptf), 2) AS avg_ptf,
+        ROUND(MAX(ptf), 2) AS max_ptf,
+        ROUND(MIN(ptf), 2) AS min_ptf,
+        ROUND(AVG(price_spread), 2) AS avg_price_spread,
         COUNTIF(system_direction = 'Enerji Açığı') AS energy_deficit_hours,
         COUNTIF(system_direction = 'Enerji Fazlası') AS energy_surplus_hours
-    FROM {{ ref('stg_price_spread') }}
+    FROM {{ source('epias_gold', 'gold_price_spread_analysis') }}
     GROUP BY 1, 2
 ),
 
 consumption_metrics AS (
-    -- Tüketim metrikleri aynı kalıyor (MWh evrensel birimdir)
+    -- Tüketim metriklerini tüketim tablosundan çek ve grupla
     SELECT
         EXTRACT(YEAR FROM date) AS year,
         EXTRACT(MONTH FROM date) AS month,
@@ -27,11 +27,14 @@ consumption_metrics AS (
 ),
 
 final_joined AS (
+    -- İki metrik grubunu yıl ve ay bazında birleştir
     SELECT
         p.*,
         c.total_consumption,
         c.avg_hourly_consumption,
+        -- Dashboard'un beklediği Yıl-Ay formatı (Örn: 2026-03)
         CONCAT(CAST(p.year AS STRING), '-', LPAD(CAST(p.month AS STRING), 2, '0')) AS year_month,
+        -- Streamlit hatasını (KeyError: 'season') çözen mevsim kolonu
         CASE 
             WHEN p.month IN (12, 1, 2) THEN 'Kış'
             WHEN p.month IN (3, 4, 5) THEN 'İlkbahar'
