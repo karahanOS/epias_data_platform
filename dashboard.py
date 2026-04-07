@@ -426,7 +426,7 @@ if page == "🏠 Executive Summary":
             st.caption("SHAP değerleri, modelin bir tahmini yaparken hangi değişkene ne kadar güvendiğini gösterir.")
         
         except FileNotFoundError:
-            st.info("SHAP verisi henüz oluşturulmamış. Lütfen ptf_forecaster.py'ı çalıştırın.")st.markdown("---")
+            st.info("SHAP verisi henüz oluşturulmamış. Lütfen ptf_forecaster.py'ı çalıştırın.")
             st.markdown("### 🎯 Model Başarımı: Saatlik PTF Backtesting (2026)")
         
 
