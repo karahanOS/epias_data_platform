@@ -76,32 +76,36 @@ def load_features() -> pd.DataFrame:
     print(f"Toplam kayıt: {len(df)}")
     return df
 
-# ptf_forecaster.py içine eklenecek kısım
-# ptf_forecaster.py içine eklenecek fonksiyon
 def save_predictions_to_bq(predictions_df: pd.DataFrame):
     """Tahminleri BigQuery'deki gold katmanına yazar."""
     client = get_bq_client()
-    # predicted_date kolonunu datetime objesine çevirelim (BQ uyumu için)
-    predictions_df["predicted_date"] = pd.to_datetime(predictions_df["predicted_date"])
+    
+    # --- KRİTİK DÜZELTME BAŞLANGICI ---
+    # DataFrame'i kopyalayıp tipleri BQ şemasına uyduruyoruz
+    df_to_load = predictions_df.copy()
+    df_to_load["predicted_date"] = pd.to_datetime(df_to_load["predicted_date"])
+    
+    # 'hour' kolonunu açıkça STRING (object) tipine çeviriyoruz
+    df_to_load["hour"] = df_to_load["hour"].astype(str)
+    # --- KRİTİK DÜZELTME BITIŞI ---
     
     table_id = f"{PROJECT}.epias_gold.gold_ptf_predictions"
     
     job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_APPEND", # Her çalıştığında üzerine eklesin
+        write_disposition="WRITE_APPEND",
         schema=[
             bigquery.SchemaField("predicted_date", "TIMESTAMP"),
-            bigquery.SchemaField("hour", "STRING"),
+            bigquery.SchemaField("hour", "STRING"), # Burası STRING beklediği için yukarıda çevirdik
             bigquery.SchemaField("predicted_ptf", "FLOAT"),
         ],
     )
     
     print(f"Tahminler BigQuery'ye yazılıyor: {table_id}...")
-    job = client.load_table_from_dataframe(predictions_df, table_id, job_config=job_config)
-    job.result() # İşlemin bitmesini bekle
-    print("Yazma işlemi başarılı.")
+    # predictions_df yerine tipini düzelttiğimiz df_to_load'u gönderiyoruz
+    job = client.load_table_from_dataframe(df_to_load, table_id, job_config=job_config)
+    job.result()
+    print("✅ Yazma işlemi başarılı.")
 
-# if __name__ == "__main__": bloğunun sonuna şu satırı ekle:
-# save_predictions_to_bq(predictions)
 
 # ── FEATURE ENGINEERING ───────────────────────────────────────────────────────
 

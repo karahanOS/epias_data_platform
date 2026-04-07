@@ -315,30 +315,63 @@ if page == "🏠 Executive Summary":
         st.markdown("### 🎯 Kendi Modelimizin Başarımı: Tahmin vs. Gerçekleşen")
         fig_bt = go.Figure()
         
-        # Çizgi 1: Gerçekleşen PTF (Piyasa Verisi)
-        fig_bt.add_trace(go.Scatter(
-            x=df["year_month"], y=df["avg_ptf"],
-            name="Gerçekleşen PTF (TL)", 
-            mode='lines+markers',
-            line=dict(color="#00d4ff", width=2.5)
-        ))
+        # dashboard.py - Model Başarımı Sayfası veya Executive Summary altı
+        st.markdown("### 🔍 Saatlik PTF Backtesting (2026'dan İtibaren)")
         
-        # Çizgi 2: Sizin XGBoost Modelinizin Tahminleri
-        if "avg_my_model_ptf" in df.columns:
-            fig_bt.add_trace(go.Scatter(
-                x=df["year_month"], y=df["avg_my_model_ptf"],
-                name="XGBoost Model Tahminimiz", 
-                mode='lines+markers',
-                line=dict(color="#ff6b35", dash="dash", width=2),
-                marker=dict(size=8, symbol="diamond")
+        # 1. Saatlik Veriyi Çeken Query
+        hourly_query = f"""
+            SELECT 
+                TIMESTAMP(CONCAT(CAST(DATE(p.predicted_date) AS STRING), ' ', LPAD(p.hour, 2, '0'), ':00:00')) as full_datetime,
+                p.predicted_ptf,
+                f.ptf as actual_ptf
+            FROM `{PROJECT}.{DATASET}.gold_ptf_predictions` p
+            JOIN `{PROJECT}.{DATASET}.mart_ptf_lag_features` f 
+                ON DATE(p.predicted_date) = f.date 
+                AND CAST(p.hour AS INT64) = f.hour_of_day
+            WHERE p.predicted_date >= '2026-01-01'
+            ORDER BY full_datetime
+        """
+        
+        hourly_df = query(hourly_query)
+        
+        if not hourly_df.empty:
+            fig_hourly = go.Figure()
+        
+            # Gerçekleşen PTF (Mavi)
+            fig_hourly.add_trace(go.Scatter(
+                x=hourly_df["full_datetime"], 
+                y=hourly_df["actual_ptf"],
+                name="Gerçekleşen PTF (TL)", 
+                line=dict(color="#00d4ff", width=1.5)
             ))
         
-        fig_bt.update_layout(
-            title="PTF Backtesting: Aylık Ortalama Hata Analizi",
-            yaxis_title="TL / MWh",
-            # ... tasarım ayarları kalsın ...
-        )
-        st.plotly_chart(fig_bt, use_container_width=True)
+            # Model Tahmini (Turuncu Kesikli)
+            fig_hourly.add_trace(go.Scatter(
+                x=hourly_df["full_datetime"], 
+                y=hourly_df["predicted_ptf"],
+                name="XGBoost Tahminimiz", 
+                line=dict(color="#ff6b35", dash="dash", width=1.5)
+            ))
+        
+            fig_hourly.update_layout(
+                title="2026 Saatlik Fiyat Tahmin Başarımı",
+                xaxis_title="Zaman (Saatlik)",
+                yaxis_title="TL / MWh",
+                hovermode="x unified",
+                height=500,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e2e8f0"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+        
+            st.plotly_chart(fig_hourly, use_container_width=True)
+            
+            # Hata Metrikleri Özeti
+            mae = (hourly_df["actual_ptf"] - hourly_df["predicted_ptf"]).abs().mean()
+            st.info(f"💡 2026 Yılı Ortalama Tahmin Hatası (MAE): **{mae:,.2f} TL**")
+        else:
+            st.warning("2026 yılına ait saatlik tahmin verisi bulunamadı. Lütfen ptf_forecaster.py'ı çalıştırdığınızdan emin olun.")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 2: Fiyat Dengesizliği
