@@ -315,9 +315,15 @@ if page == "🏠 Executive Summary":
         # 2. Model Başarımı (Backtesting) Grafiği
         st.markdown("### 🎯 Model Başarımı: Tahmin vs. Gerçekleşen (Backtesting)")
         fig_bt = go.Figure()
-        fig_bt.add_trace(go.Scatter(x=df["year_month"], y=df["avg_hourly_consumption"], name="Gerçekleşen", line=dict(color="#00d4ff")))
-        fig_bt.add_trace(go.Scatter(x=df["year_month"], y=df["avg_forecast_consumption"], name="Tahmin (Backtest)", line=dict(color="#ff9f00", dash="dot")))
-        st.plotly_chart(fig_bt, use_container_width=True)
+        if "avg_forecast_consumption" in df.columns:
+            fig_bt.add_trace(go.Scatter(
+                x=df["year_month"], 
+                y=df["avg_forecast_consumption"], 
+                name="Tahmin (Backtest)", 
+                line=dict(color="#ff9f00", dash="dot")
+            ))
+        else:
+            st.info("Tahmin verisi (backtest) henüz hazır değil.")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 2: Fiyat Dengesizliği
