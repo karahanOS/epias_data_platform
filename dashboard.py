@@ -130,4 +130,48 @@ elif page == "⚖️ Fiyat Dengesizliği":
 elif page == "🌱 Üretim Karışımı":
     st.markdown("<div class='page-header'><h1>Üretim Karışımı & Merit Order</h1><p>Kaynak bazlı üretim ve fiyat ilişkisi</p></div>", unsafe_allow_html=True)
     df_gen = query(f"SELECT *, EXTRACT(YEAR FROM date) as year FROM `{PROJECT}.{DATASET}.generation_mix_price_impact`")
-    if not
+    if not df_gen.empty:
+        sel_year = st.selectbox("Yıl", sorted(df_gen["year"].unique(), reverse=True))
+        df_y = df_gen[df_gen["year"] == sel_year]
+        st.plotly_chart(px.scatter(df_y.sample(min(2000, len(df_y))), x="renewable_ratio", y="ptf", color="ptf", trendline="lowess", template="plotly_dark", height=450), use_container_width=True)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE 4: ARZ-TALEP ANALİZİ
+# ═════════════════════════════════════════════════════════════════════════════
+elif page == "🔋 Arz-Talep Analizi":
+    st.markdown("<div class='page-header'><h1>Arz-Talep Analizi</h1><p>Tüketim zirveleri ve karşılama oranları</p></div>", unsafe_allow_html=True)
+    df_sd = query(f"SELECT *, EXTRACT(YEAR FROM date) as year FROM `{PROJECT}.{DATASET}.supply_demand_summary`")
+    if not df_sd.empty:
+        sel_year = st.selectbox("Yıl Seçiniz", sorted(df_sd["year"].unique(), reverse=True))
+        df_y = df_sd[df_sd["year"] == sel_year]
+        st.plotly_chart(px.bar(df_y.groupby("time_of_day")["coverage_ratio"].mean().reset_index(), x="time_of_day", y="coverage_ratio", color="coverage_ratio", template="plotly_dark", height=450), use_container_width=True)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE 5: YÜK TAHMİN SAPMASI
+# ═════════════════════════════════════════════════════════════════════════════
+elif page == "📉 Yük Tahmin Sapması":
+    st.markdown("<div class='page-header'><h1>Yük Tahmin Sapması</h1><p>Tahmin (LEP) vs Gerçekleşen Tüketim</p></div>", unsafe_allow_html=True)
+    df_load = query(f"SELECT *, EXTRACT(YEAR FROM date) as year FROM `{PROJECT}.{DATASET}.gold_load_vs_actual`")
+    if not df_load.empty:
+        sel_year = st.selectbox("Yıl", sorted(df_load["year"].unique(), reverse=True))
+        df_y = df_load[df_load["year"] == sel_year]
+        st.metric("Ort. Sapma %", f"%{df_y['deviation_pct'].abs().mean():.2f}")
+        st.plotly_chart(px.line(df_y.tail(168), x="hour", y=["forecast_consumption", "actual_consumption"], template="plotly_dark", height=450), use_container_width=True)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE 6: YENİLENEBİLİR DERİNLERİNESİNE
+# ═════════════════════════════════════════════════════════════════════════════
+elif page == "🌬️ Yenilenebilir Derinlemesine":
+    st.markdown("<div class='page-header'><h1>Yenilenebilir Enerji Derinlemesine</h1><p>Kaynak bazlı Merit Order etkisi</p></div>", unsafe_allow_html=True)
+    df_deep = query(f"SELECT *, EXTRACT(YEAR FROM date) as year FROM `{PROJECT}.{DATASET}.renewable_deep_analysis` WHERE date >= '2026-01-01'")
+    if not df_deep.empty:
+        # MEVSİMSEL KORELASYON (KeyError/AttributeError Fix)
+        st.markdown("#### Kaynak Bazında PTF Korelasyonu — Mevsimsel")
+        corr_df = df_deep.groupby("season").apply(lambda x: pd.Series({
+            "Mevsim": x.name,
+            "Rüzgar": round(x["wind_ratio"].corr(x["ptf"]), 3) if "wind_ratio" in x else 0,
+            "Güneş": round(x["sun_ratio"].corr(x["ptf"]), 3) if "sun_ratio" in x else 0,
+            "Hidrolik": round(x["hydro_ratio"].corr(x["ptf"]), 3) if "hydro_ratio" in x else 0,
+            "Doğalgaz": round(x["gas_ratio"].corr(x["ptf"]), 3) if "gas_ratio" in x else 0,
+        }), include_groups=False).reset_index(drop=True)
+        st.dataframe(corr_df.style.background_gradient(subset=["Rüzgar", "Güneş", "Hidrolik", "Doğalgaz"], cmap="RdYlGn"), use_container_width=True, hide_index=True)
