@@ -26,8 +26,10 @@ sources:
       - name: gold_ml_features
         description: "XGBoost modeli için hazırlanan özellik seti"
 
-      - name: gold_price_spread_analysis
-      - name: gold_load_vs_actual
+      # Geriye dönük uyumluluk için eski isimler (opsiyonel)
+      - name: price_spread_analysis
+      - name: load_vs_actual
+
       # YENİ TABLO: Diğer tablolarla AYNI hizada olmalı
       - name: gold_ptf_predictions
         description: "XGBoost modelimizden gelen PTF tahmin sonuçları"
