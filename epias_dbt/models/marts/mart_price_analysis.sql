@@ -1,10 +1,10 @@
-{{ config(materialized='view') }} -- Canlı veri için view yapıyoruz
+{{ config(materialized='table') }}
 
 SELECT
     date,
     hour,
-    ptf,          
-    smf,           
+    ptf, 
+    smf, 
     price_spread, 
     system_direction,
     season
