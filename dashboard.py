@@ -315,6 +315,16 @@ if page == "🏠 Executive Summary":
         # 2. Model Başarımı (Backtesting) Grafiği
         st.markdown("### 🎯 Model Başarımı: Tahmin vs. Gerçekleşen (Backtesting)")
         fig_bt = go.Figure()
+        chart_df = df.dropna(subset=['avg_forecast_consumption']) # Sadece verisi olan ayları çiz
+
+        if not chart_df.empty:
+            fig_bt.add_trace(go.Scatter(
+                x=chart_df["year_month"], 
+                y=chart_df["avg_forecast_consumption"], 
+                name="Tahmin (Backtest)", 
+                line=dict(color="#ff9f00", dash="dot")
+            ))
+            
         if "avg_forecast_consumption" in df.columns:
             fig_bt.add_trace(go.Scatter(
                 x=df["year_month"], 
