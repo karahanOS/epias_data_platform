@@ -1150,15 +1150,26 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             )
             st.plotly_chart(fig4, use_container_width=True, key="chart_17")
 
-        # Mevsimsel korelasyon tablosu
+        # Mevsimsel korelasyon tablosu - GÜNCELLENMİŞ
         st.markdown("#### Kaynak Bazında PTF Korelasyonu — Mevsimsel")
-        seasonal_corr = df_y.groupby("season").apply(lambda x: {
-            "Mevsim": x["season"].iloc[0],
-            "Rüzgar": round(x["wind_ratio"].corr(x["ptf"]), 3),
-            "Güneş": round(x["sun_ratio"].corr(x["ptf"]), 3),
-            "Hidrolik": round(x["hydro_ratio"].corr(x["ptf"]), 3),
-            "Doğalgaz": round(x["gas_ratio"].corr(x["ptf"]), 3),
-        }).reset_index(drop=True)
+        
+        # apply içindeki x["season"] yerine x.name kullanıyoruz
+        seasonal_corr = df_y.groupby("season").apply(lambda x: pd.Series({
+            "Mevsim": x.name,
+            "Rüzgar": round(x["wind_ratio"].corr(x["ptf"]), 3) if not x["wind_ratio"].isnull().all() else 0,
+            "Güneş": round(x["sun_ratio"].corr(x["ptf"]), 3) if not x["sun_ratio"].isnull().all() else 0,
+            "Hidrolik": round(x["hydro_ratio"].corr(x["ptf"]), 3) if not x["hydro_ratio"].isnull().all() else 0,
+            "Doğalgaz": round(x["gas_ratio"].corr(x["ptf"]), 3) if not x["gas_ratio"].isnull().all() else 0,
+        }), include_groups=False).reset_index(drop=True)
+
+        st.dataframe(
+            seasonal_corr.style.background_gradient(
+                subset=["Rüzgar", "Güneş", "Hidrolik", "Doğalgaz"],
+                cmap="RdYlGn"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 
         corr_df = pd.DataFrame(seasonal_corr.tolist())
         st.dataframe(
