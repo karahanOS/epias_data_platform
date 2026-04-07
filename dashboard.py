@@ -316,33 +316,35 @@ if page == "🏠 Executive Summary":
         st.markdown("---")
         st.markdown("### 🎯 Model Başarımı: Saatlik PTF Backtesting (2026)")
         
-        # Daha güvenli ve sağlam SQL sorgusu
+# dashboard.py içindeki hourly_query bloğunu bununla değiştirin
         hourly_query = f"""
             WITH clean_predictions AS (
                 SELECT 
-                    -- Hour kolonunu her türlü ihtimale karşı (1.0 veya "1") temizleyip sayıya çeviriyoruz
-                    CAST(FLOOR(SAFE_CAST(hour AS FLOAT64)) AS INT64) as hour_int,
+                    SAFE_CAST(SAFE_CAST(hour AS FLOAT64) AS INT64) as h_int,
                     DATE(predicted_date) as p_date,
-                    predicted_ptf
+                    AVG(predicted_ptf) as predicted_ptf -- Mükerrer kayıtları engellemek için
                 FROM `{PROJECT}.{DATASET}.gold_ptf_predictions`
                 WHERE predicted_date >= '2026-01-01'
+                GROUP BY 1, 2
             ),
             actual_features AS (
                 SELECT 
-                    date as f_date,
-                    hour_of_day as hour_int,
-                    ptf as actual_ptf
+                    DATE(date) as f_date,
+                    CAST(hour_of_day AS INT64) as h_int,
+                    AVG(ptf) as actual_ptf
                 FROM `{PROJECT}.{DATASET}.mart_ptf_lag_features`
                 WHERE date >= '2026-01-01'
+                GROUP BY 1, 2
             )
             SELECT 
-                TIMESTAMP(DATETIME(p_date, TIME(p.hour_int, 0, 0))) as full_datetime,
+                -- En sağlam zaman damgası oluşturma yöntemi:
+                TIMESTAMP_ADD(TIMESTAMP(p.p_date), INTERVAL p.h_int HOUR) as full_datetime,
                 p.predicted_ptf,
                 f.actual_ptf
             FROM clean_predictions p
             JOIN actual_features f 
                 ON p.p_date = f.f_date 
-                AND p.hour_int = f.hour_int
+                AND p.h_int = f.h_int
             ORDER BY full_datetime
         """
         
