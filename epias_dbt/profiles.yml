@@ -1,11 +1,22 @@
 epias_dbt:
   target: dev
   outputs:
+    # 1. Kendi bilgisayarın için (Windows)
     dev:
       type: bigquery
       method: service-account
-      project: epias-data-platform  # <-- DİKKAT: Burayı değiştirmelisin!
+      project: epias-data-platform
       dataset: epias_gold
       threads: 4
-      keyfile: C:\epias_data_platform\credentials\gcp-key.json
-      location: EU  # Veya BigQuery dataset'in US'te ise US yap
+      keyfile: C:\epias_data_platform\credentials\gcp-key.json # Windows yolu
+      location: EU
+
+    # 2. Airflow/Docker için (Linux)
+    prod:
+      type: bigquery
+      method: service-account
+      project: epias-data-platform
+      dataset: epias_gold
+      threads: 4
+      keyfile: /opt/airflow/credentials/gcp-key.json # Linux/Docker yolu
+      location: EU

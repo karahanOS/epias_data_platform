@@ -277,12 +277,12 @@ def run_dbt_callable(**context):
     dbt_dir = "/opt/airflow/epias_dbt"
     dbt_executable = "/home/airflow/.local/bin/dbt"
     
-    # Hata durumunda manuel müdahale yerine full-refresh denemek için:
     cmd = [
         dbt_executable, "run", 
         "--project-dir", dbt_dir, 
         "--profiles-dir", dbt_dir,
-        "--full-refresh"  # <-- Bu bayrak tabloyu silip view yapmasını sağlar
+        "--target", "prod",  # <--- BU SATIRI EKLEDİK: Hedefin prod (Airflow) olduğunu belirtir
+        "--full-refresh"
     ]
    
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)

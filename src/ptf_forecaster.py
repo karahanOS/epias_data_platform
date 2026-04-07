@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 import holidays
 import warnings
 import optuna
+import shap
 
 warnings.filterwarnings("ignore")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -52,23 +53,29 @@ def get_bq_client():
         return bigquery.Client.from_service_account_json(creds_path)
     return bigquery.Client(project=PROJECT)
 
-def load_features() -> pd.DataFrame:
-    print(f"BigQuery'den {TABLE} tablosu yükleniyor...")
+def load_features(limit_days: int = None) -> pd.DataFrame:
+    """BigQuery'den özellikleri yükler. Opsiyonel olarak gün sınırlaması yapar."""
     client = get_bq_client()
 
-    # ptf_usd referanslarını ptf olarak düzelttik
+    # TIMESTAMP olan date kolonunu DATE() ile sarmalayarak tip uyumunu sağlıyoruz
+    where_clause = "WHERE date IS NOT NULL"
+    if limit_days:
+        where_clause += f" AND DATE(date) >= DATE_SUB(CURRENT_DATE(), INTERVAL {limit_days} DAY)"
+
     query = f"""
         SELECT
             date,
             {', '.join(FEATURE_COLS)},
             {TARGET_COL}
         FROM `{PROJECT}.{DATASET}.{TABLE}`
-        WHERE date IS NOT NULL
+        {where_clause}
         ORDER BY date
     """
 
+    print(f"Sorgu çalıştırılıyor: {limit_days} günlük veri hedefleniyor...")
     df = client.query(query).to_dataframe()
-    # BigQuery'deki float64'leri Python uyumlu float'a çekiyoruz
+    
+    # Mevcut tip dönüşüm mantığı...
     for col in FEATURE_COLS + [TARGET_COL]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -202,16 +209,20 @@ def train_model(df: pd.DataFrame):
     with open(METRICS_PATH, "w") as f:
         json.dump(metrics, f)
     save_shap_importance(final_model, X_test)
-        
+
     return final_model, metrics
 
 # ── MAIN ───────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # 1. Veriyi yükle
-    df = load_features()
+    df = load_features(limit_days=30) 
     
-    # 2. Modeli eğit
-    model, metrics = train_model(df)
+    try:
+        # Mevcut modeli yükle (Eğitim adımını atla)
+        model = joblib.load(MODEL_PATH)
+        print("✅ Kayıtlı model yüklendi, sadece tahmin yapılıyor...")
+    except FileNotFoundError:
+        # Model yoksa bir kez eğit
+        model, metrics = train_model(df)
     
     # 3. Backtesting için tahminleri üret
     processed_df = engineer_features(df)
@@ -230,5 +241,5 @@ if __name__ == "__main__":
     
     # 4. KRİTİK ÇAĞRI: Veriyi BigQuery'ye gönder
     save_predictions_to_bq(predictions_to_save)
-    
+    save_shap_importance(model, test_data[all_features])
     print("✅ Tahminler başarıyla BigQuery'ye (gold_ptf_predictions) aktarıldı!")
