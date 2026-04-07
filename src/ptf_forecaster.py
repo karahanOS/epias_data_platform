@@ -77,12 +77,31 @@ def load_features() -> pd.DataFrame:
     return df
 
 # ptf_forecaster.py içine eklenecek kısım
-def save_predictions_to_bq(predictions_df):
+# ptf_forecaster.py içine eklenecek fonksiyon
+def save_predictions_to_bq(predictions_df: pd.DataFrame):
+    """Tahminleri BigQuery'deki gold katmanına yazar."""
     client = get_bq_client()
-    table_id = f"{PROJECT}.{DATASET}.gold_ptf_predictions"
+    # predicted_date kolonunu datetime objesine çevirelim (BQ uyumu için)
+    predictions_df["predicted_date"] = pd.to_datetime(predictions_df["predicted_date"])
     
-    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
-    client.load_table_from_dataframe(predictions_df, table_id, job_config=job_config)
+    table_id = f"{PROJECT}.epias_gold.gold_ptf_predictions"
+    
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_APPEND", # Her çalıştığında üzerine eklesin
+        schema=[
+            bigquery.SchemaField("predicted_date", "TIMESTAMP"),
+            bigquery.SchemaField("hour", "STRING"),
+            bigquery.SchemaField("predicted_ptf", "FLOAT"),
+        ],
+    )
+    
+    print(f"Tahminler BigQuery'ye yazılıyor: {table_id}...")
+    job = client.load_table_from_dataframe(predictions_df, table_id, job_config=job_config)
+    job.result() # İşlemin bitmesini bekle
+    print("Yazma işlemi başarılı.")
+
+# if __name__ == "__main__": bloğunun sonuna şu satırı ekle:
+# save_predictions_to_bq(predictions)
 
 # ── FEATURE ENGINEERING ───────────────────────────────────────────────────────
 

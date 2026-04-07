@@ -25,12 +25,12 @@ consumption_metrics AS (
 ),
 
 -- dbt modelindeki forecast_metrics kısmını şu şekilde revize etmeliyiz:
-ptf_model_forecasts AS (
+my_model_forecasts AS (
     SELECT 
         EXTRACT(YEAR FROM predicted_date) AS year,
         EXTRACT(MONTH FROM predicted_date) AS month,
-        ROUND(AVG(predicted_ptf), 2) AS avg_model_predicted_ptf
-    FROM {{ source('epias_gold', 'gold_ptf_predictions') }} -- Senin modelinin tablosu
+        ROUND(AVG(predicted_ptf), 2) AS avg_my_model_ptf
+    FROM {{ source('epias_gold', 'gold_ptf_predictions') }}
     GROUP BY 1, 2
 ),
 
@@ -39,18 +39,13 @@ final_joined AS (
         p.*,
         c.total_consumption,
         c.avg_hourly_consumption,
-        f.avg_forecast_consumption, -- Dashboard'un beklediği kolon
-        CONCAT(CAST(p.year AS STRING), '-', LPAD(CAST(p.month AS STRING), 2, '0')) AS year_month,
-        CASE 
-            WHEN p.month IN (12, 1, 2) THEN 'Kış'
-            WHEN p.month IN (3, 4, 5) THEN 'İlkbahar'
-            WHEN p.month IN (6, 7, 8) THEN 'Yaz'
-            ELSE 'Sonbahar'
-        END AS season
+        f.avg_forecast_consumption,
+        m.avg_my_model_ptf, -- Dashboard'da görünecek yeni kolon
+        CONCAT(CAST(p.year AS STRING), '-', LPAD(CAST(p.month AS STRING), 2, '0')) AS year_month
+        -- ... season case'i kalsın ...
     FROM base_metrics p
     LEFT JOIN consumption_metrics c ON p.year = c.year AND p.month = c.month
     LEFT JOIN forecast_metrics f ON p.year = f.year AND p.month = f.month
+    LEFT JOIN my_model_forecasts m ON p.year = m.year AND p.month = m.month
 )
-
 SELECT * FROM final_joined
-ORDER BY year DESC, month DESC

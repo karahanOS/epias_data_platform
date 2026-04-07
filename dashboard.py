@@ -312,23 +312,33 @@ if page == "🏠 Executive Summary":
         )
         st.plotly_chart(fig2, use_container_width=True, key="chart_2")
 
-        # 2. Model Başarımı (Backtesting) Grafiği
-        # dashboard.py içindeki Backtesting kısmını şu şekilde güncelle:
-        st.markdown("### 🎯 Kendi Modelimizin Başarımı (PTF Backtesting)")
-        
+        st.markdown("### 🎯 Kendi Modelimizin Başarımı: Tahmin vs. Gerçekleşen")
         fig_bt = go.Figure()
         
-        # Gerçekleşen PTF (TL)
+        # Çizgi 1: Gerçekleşen PTF (Piyasa Verisi)
         fig_bt.add_trace(go.Scatter(
             x=df["year_month"], y=df["avg_ptf"],
-            name="Gerçekleşen PTF", line=dict(color="#00d4ff")
+            name="Gerçekleşen PTF (TL)", 
+            mode='lines+markers',
+            line=dict(color="#00d4ff", width=2.5)
         ))
         
-        # Senin Modelinin Tahmin Ettikleri
-        fig_bt.add_trace(go.Scatter(
-            x=df["year_month"], y=df["avg_model_predicted_ptf"],
-            name="XGBoost Tahminimiz", line=dict(color="#ff6b35", dash="dash")
-        ))
+        # Çizgi 2: Sizin XGBoost Modelinizin Tahminleri
+        if "avg_my_model_ptf" in df.columns:
+            fig_bt.add_trace(go.Scatter(
+                x=df["year_month"], y=df["avg_my_model_ptf"],
+                name="XGBoost Model Tahminimiz", 
+                mode='lines+markers',
+                line=dict(color="#ff6b35", dash="dash", width=2),
+                marker=dict(size=8, symbol="diamond")
+            ))
+        
+        fig_bt.update_layout(
+            title="PTF Backtesting: Aylık Ortalama Hata Analizi",
+            yaxis_title="TL / MWh",
+            # ... tasarım ayarları kalsın ...
+        )
+        st.plotly_chart(fig_bt, use_container_width=True)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 2: Fiyat Dengesizliği
