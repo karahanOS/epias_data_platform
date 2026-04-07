@@ -215,7 +215,7 @@ if page == "🏠 Executive Summary":
     </div>
     """, unsafe_allow_html=True)
 
-    df = query(f"SELECT * FROM `{PROJECT}.{DATASET}.monthly_executive_metrics` ORDER BY year_month")
+    df = query(f"SELECT * FROM `{PROJECT}.{DATASET}.mart_gold_monthly_executive_metrics` ORDER BY year_month")
 
     if not df.empty:
         last = df.iloc[-1]
