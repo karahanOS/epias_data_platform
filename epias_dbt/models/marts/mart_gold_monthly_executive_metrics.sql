@@ -13,6 +13,7 @@ WITH base_metrics AS (
     FROM {{ source('epias_gold', 'gold_price_spread_analysis') }}
     GROUP BY 1, 2
 ),
+
 consumption_metrics AS (
     SELECT
         EXTRACT(YEAR FROM date) AS year,
@@ -22,6 +23,8 @@ consumption_metrics AS (
     FROM {{ source('epias_gold', 'gold_load_vs_actual') }}
     GROUP BY 1, 2
 ),
+
+-- EKSİK OLAN KISIM: Backtesting için ML tahminlerini ekliyoruz
 forecast_metrics AS (
     SELECT 
         EXTRACT(YEAR FROM date) AS year,
@@ -30,12 +33,13 @@ forecast_metrics AS (
     FROM {{ source('epias_gold', 'gold_load_vs_actual') }}
     GROUP BY 1, 2
 ),
+
 final_joined AS (
     SELECT
         p.*,
         c.total_consumption,
         c.avg_hourly_consumption,
-        f.avg_forecast_consumption,
+        f.avg_forecast_consumption, -- Dashboard'un beklediği kolon
         CONCAT(CAST(p.year AS STRING), '-', LPAD(CAST(p.month AS STRING), 2, '0')) AS year_month,
         CASE 
             WHEN p.month IN (12, 1, 2) THEN 'Kış'
@@ -47,5 +51,6 @@ final_joined AS (
     LEFT JOIN consumption_metrics c ON p.year = c.year AND p.month = c.month
     LEFT JOIN forecast_metrics f ON p.year = f.year AND p.month = f.month
 )
+
 SELECT * FROM final_joined
 ORDER BY year DESC, month DESC
