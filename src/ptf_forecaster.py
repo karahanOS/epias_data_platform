@@ -105,6 +105,18 @@ def save_predictions_to_bq(predictions_df: pd.DataFrame):
     job.result()
     print("✅ Yazma işlemi başarılı.")
 
+def save_shap_importance(model, X):
+    """SHAP değerlerini hesaplar ve global önem düzeylerini kaydeder."""
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X)
+    
+    # Global önem: Her özelliğin mutlak SHAP değerlerinin ortalaması
+    vals = np.abs(shap_values).mean(0)
+    feature_importance = pd.DataFrame(list(zip(X.columns, vals)), columns=['col_name', 'feature_importance_vals'])
+    feature_importance.sort_values(by=['feature_importance_vals'], ascending=False, inplace=True)
+    
+    feature_importance.to_csv("models/ptf_shap_importance.csv", index=False)
+    print("✅ SHAP önem değerleri 'models/ptf_shap_importance.csv' olarak kaydedildi.")
 
 # ── FEATURE ENGINEERING ───────────────────────────────────────────────────────
 
@@ -189,6 +201,7 @@ def train_model(df: pd.DataFrame):
     joblib.dump(final_model, MODEL_PATH)
     with open(METRICS_PATH, "w") as f:
         json.dump(metrics, f)
+    save_shap_importance(final_model, X_test)
         
     return final_model, metrics
 

@@ -313,9 +313,10 @@ if page == "🏠 Executive Summary":
         st.plotly_chart(fig2, use_container_width=True, key="chart_2")
 
         # 2. Model Başarımı (Backtesting) - SAATLİK VE 2026 ODAKLI
-        st.markdown("---")
-        st.markdown("### 🎯 Model Başarımı: Saatlik PTF Backtesting (2026)")
-        
+    st.markdown("---")
+    col_bt, col_shap = st.columns([1.2, 0.8])
+
+    with col_bt:
 # dashboard.py içindeki hourly_query bloğunu bununla değiştirin
         hourly_query = f"""
             WITH clean_predictions AS (
@@ -392,6 +393,44 @@ if page == "🏠 Executive Summary":
                 
         except Exception as e:
             st.error(f"Sorgu çalıştırılırken bir hata oluştu. Lütfen veri tiplerini kontrol edin.")
+
+    pass
+
+    with col_shap:
+        st.markdown("### 🤖 Model Karar Yapısı (SHAP)")
+        try:
+            shap_df = pd.read_csv("models/ptf_shap_importance.csv")
+        
+            fig_shap = px.bar(
+            shap_df.head(10), # En önemli 10 özelliği gösterelim
+            x='feature_importance_vals',
+            y='col_name',
+            orientation='h',
+            title="Özelliklerin Tahmine Etki Gücü",
+            labels={'feature_importance_vals': 'Etki Skoru (SHAP)', 'col_name': 'Özellik'},
+            color='feature_importance_vals',
+            color_continuous_scale='Blues'
+            )
+        
+            fig_shap.update_layout(
+                yaxis={'categoryorder':'total ascending'},
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e2e8f0"),
+                coloraxis_showscale=False,
+                height=450,
+                margin=dict(l=10, r=10, t=40, b=10)
+            )
+        
+            st.plotly_chart(fig_shap, use_container_width=True)
+            st.caption("SHAP değerleri, modelin bir tahmini yaparken hangi değişkene ne kadar güvendiğini gösterir.")
+        
+        except FileNotFoundError:
+            st.info("SHAP verisi henüz oluşturulmamış. Lütfen ptf_forecaster.py'ı çalıştırın.")st.markdown("---")
+            st.markdown("### 🎯 Model Başarımı: Saatlik PTF Backtesting (2026)")
+        
+
+            
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 2: Fiyat Dengesizliği
 # ═════════════════════════════════════════════════════════════════════════════
