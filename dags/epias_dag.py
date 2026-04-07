@@ -271,20 +271,20 @@ def load_bigquery_callable(**context):
         logger.info(f"{table_name} BigQuery'e başarıyla yüklendi!")
 
 
+# epias_dag.py içindeki ilgili kısım
 def run_dbt_callable(**context):
     """dbt modellerini çalıştırır."""
     dbt_dir = "/opt/airflow/epias_dbt"
-    
-    # dbt'nin Python içindeki kesin yolunu veriyoruz ki kafası karışmasın
     dbt_executable = "/home/airflow/.local/bin/dbt"
     
-    # --profiles-dir olarak /root/ yerine, dbt projesinin kendi klasörünü gösteriyoruz
+    # Hata durumunda manuel müdahale yerine full-refresh denemek için:
     cmd = [
         dbt_executable, "run", 
         "--project-dir", dbt_dir, 
-        "--profiles-dir", dbt_dir
+        "--profiles-dir", dbt_dir,
+        "--full-refresh"  # <-- Bu bayrak tabloyu silip view yapmasını sağlar
     ]
-    
+   
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
     if result.returncode != 0:
