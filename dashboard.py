@@ -1154,7 +1154,7 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
         st.markdown("#### Kaynak Bazında PTF Korelasyonu — Mevsimsel")
         
         # apply içindeki x["season"] yerine x.name kullanıyoruz
-        seasonal_corr = df_y.groupby("season").apply(lambda x: pd.Series({
+        corr_df = df_y.groupby("season").apply(lambda x: pd.Series({
             "Mevsim": x.name,
             "Rüzgar": round(x["wind_ratio"].corr(x["ptf"]), 3) if not x["wind_ratio"].isnull().all() else 0,
             "Güneş": round(x["sun_ratio"].corr(x["ptf"]), 3) if not x["sun_ratio"].isnull().all() else 0,
@@ -1162,8 +1162,9 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             "Doğalgaz": round(x["gas_ratio"].corr(x["ptf"]), 3) if not x["gas_ratio"].isnull().all() else 0,
         }), include_groups=False).reset_index(drop=True)
 
+        # Artık corr_df doğrudan kullanılabilir
         st.dataframe(
-            seasonal_corr.style.background_gradient(
+            corr_df.style.background_gradient(
                 subset=["Rüzgar", "Güneş", "Hidrolik", "Doğalgaz"],
                 cmap="RdYlGn"
             ),
@@ -1171,7 +1172,7 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             hide_index=True,
         )
 
-        corr_df = pd.DataFrame(seasonal_corr.tolist())
+        corr_df = pd.DataFrame(corr_df.tolist())
         st.dataframe(
             corr_df.style.background_gradient(
                 subset=["Rüzgar", "Güneş", "Hidrolik", "Doğalgaz"],
