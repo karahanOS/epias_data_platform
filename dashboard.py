@@ -215,10 +215,19 @@ if page == "🏠 Executive Summary":
     </div>
     """, unsafe_allow_html=True)
 
-    df = query(f"""
-        SELECT * FROM `{PROJECT}.{DATASET}.monthly_executive_metrics`
-        ORDER BY year, month
-    """)
+    df = query(f"SELECT * FROM `{PROJECT}.{DATASET}.monthly_executive_metrics` ORDER BY year_month")
+
+    if not df.empty:
+        last = df.iloc[-1]
+        
+        # 1. API Export Butonu (Sidebar'da)
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.sidebar.download_button(
+            label="📥 Dataseti CSV Olarak İndir",
+            data=csv,
+            file_name=f"epias_data_{last['year_month']}.csv",
+            mime='text/csv'
+        )
 
     if df.empty:
         st.warning("Veri bulunamadı.")
@@ -302,6 +311,13 @@ if page == "🏠 Executive Summary":
             height=380,
         )
         st.plotly_chart(fig2, use_container_width=True, key="chart_2")
+
+        # 2. Model Başarımı (Backtesting) Grafiği
+        st.markdown("### 🎯 Model Başarımı: Tahmin vs. Gerçekleşen (Backtesting)")
+        fig_bt = go.Figure()
+        fig_bt.add_trace(go.Scatter(x=df["year_month"], y=df["avg_hourly_consumption"], name="Gerçekleşen", line=dict(color="#00d4ff")))
+        fig_bt.add_trace(go.Scatter(x=df["year_month"], y=df["avg_forecast_consumption"], name="Tahmin (Backtest)", line=dict(color="#ff9f00", dash="dot")))
+        st.plotly_chart(fig_bt, use_container_width=True)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 2: Fiyat Dengesizliği

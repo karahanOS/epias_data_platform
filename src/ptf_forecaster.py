@@ -31,33 +31,18 @@ TABLE        = "mart_ptf_lag_features"
 MODEL_PATH   = "models/ptf_xgb_model.joblib"
 METRICS_PATH = "models/ptf_model_metrics.json"
 
-# Kolon isimlerini "ptf_usd" yerine "ptf" olarak güncelledik
+# ptf_forecaster.py içindeki ilgili kısımlar
 FEATURE_COLS = [
-    "hour_of_day",
-    "day_of_week",
-    "is_weekend",
-    "month_of_year",
-    "temperature",
-    "wind_speed",
-    "solar_radiation",
-    "humidity",
-    "wind_generation",
-    "solar_generation",
-    "hydro_generation",
-    "gas_generation",
-    "total_generation",
-    "actual_consumption",
-    "forecast_consumption",  # Artık dbt modelinde mevcut, aktif ettik
-    "ptf_lag_1h",
-    "ptf_lag_24h",
-    "ptf_lag_168h",
-    "ptf_rolling_avg_24h",
-    "ptf_rolling_avg_168h",
-    "ptf_rolling_max_24h",
-    "ptf_rolling_min_24h",
+    "hour_of_day", "day_of_week", "is_weekend", "month_of_year",
+    "temperature", "wind_speed", "solar_radiation", "humidity",
+    "wind_generation", "solar_generation", "hydro_generation",
+    "gas_generation", "total_generation", "actual_consumption",
+    "forecast_consumption", # Artık dbt'de var, aktif ettik
+    "ptf_lag_1h", "ptf_lag_24h", "ptf_lag_168h",
+    "ptf_rolling_avg_24h", "ptf_rolling_avg_168h",
+    "ptf_rolling_max_24h", "ptf_rolling_min_24h",
 ]
-
-TARGET_COL = "ptf" # Saf TL hedefi
+TARGET_COL = "ptf"
 
 # ── BIGQUERY'DEN VERİ ÇEK ────────────────────────────────────────────────────
 
