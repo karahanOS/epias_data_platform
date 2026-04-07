@@ -59,4 +59,4 @@ services:
       - "7077:7077"
     volumes:
       - ./spark_jobs:/opt/spark_jobs
-      - ./credentials:/opt/airflow/credentials:ro
+      - ./credentials:/opt/credentials:ro
