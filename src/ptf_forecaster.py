@@ -85,9 +85,8 @@ def save_predictions_to_bq(predictions_df: pd.DataFrame):
     df_to_load = predictions_df.copy()
     df_to_load["predicted_date"] = pd.to_datetime(df_to_load["predicted_date"])
     
-    # 'hour' kolonunu açıkça STRING (object) tipine çeviriyoruz
-    df_to_load["hour"] = df_to_load["hour"].astype(str)
-    # --- KRİTİK DÜZELTME BITIŞI ---
+
+    df_to_load["hour"] = df_to_load["hour"].astype(int).astype(str)
     
     table_id = f"{PROJECT}.epias_gold.gold_ptf_predictions"
     
