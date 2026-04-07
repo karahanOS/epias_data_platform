@@ -1172,7 +1172,7 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             hide_index=True,
         )
 
-        corr_df = pd.DataFrame(corr_df.tolist())
+        
         st.dataframe(
             corr_df.style.background_gradient(
                 subset=["Rüzgar", "Güneş", "Hidrolik", "Doğalgaz"],
