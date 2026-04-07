@@ -24,7 +24,7 @@ consumption_metrics AS (
     GROUP BY 1, 2
 ),
 
--- EKSİK OLAN KISIM: Backtesting için ML tahminlerini ekliyoruz
+-- BURASI KRİTİK: Tahmin verilerini (LEP) bu CTE ile ekliyoruz
 forecast_metrics AS (
     SELECT 
         EXTRACT(YEAR FROM date) AS year,
