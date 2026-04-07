@@ -24,13 +24,13 @@ consumption_metrics AS (
     GROUP BY 1, 2
 ),
 
--- BURASI KRİTİK: Tahmin verilerini (LEP) bu CTE ile ekliyoruz
-forecast_metrics AS (
+-- dbt modelindeki forecast_metrics kısmını şu şekilde revize etmeliyiz:
+ptf_model_forecasts AS (
     SELECT 
-        EXTRACT(YEAR FROM date) AS year,
-        EXTRACT(MONTH FROM date) AS month,
-        ROUND(AVG(forecast_consumption), 2) AS avg_forecast_consumption
-    FROM {{ source('epias_gold', 'gold_load_vs_actual') }}
+        EXTRACT(YEAR FROM predicted_date) AS year,
+        EXTRACT(MONTH FROM predicted_date) AS month,
+        ROUND(AVG(predicted_ptf), 2) AS avg_model_predicted_ptf
+    FROM {{ source('epias_gold', 'gold_ptf_predictions') }} -- Senin modelinin tablosu
     GROUP BY 1, 2
 ),
 
