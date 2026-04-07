@@ -189,9 +189,34 @@ def train_model(df: pd.DataFrame):
         
     return final_model, metrics
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
+# ── MAIN ───────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # 1. Veriyi Yükle
     df = load_features()
+    
+    # 2. Modeli Eğit ve Metrikleri Al
     model, metrics = train_model(df)
-    print("İşlem başarıyla tamamlandı. Model ve metrikler kaydedildi.")
+    
+    # 3. Tahminleri Oluştur (Backtesting için Test Seti Üzerinden)
+    # engineer_features'ı tekrar çağırıp test setini hazırlıyoruz
+    processed_df = engineer_features(df)
+    extra_features = ["hour_sin", "hour_cos", "renewable_ratio", "consumption_error", "is_holiday"]
+    all_features = FEATURE_COLS + extra_features
+    processed_df = processed_df.dropna(subset=all_features)
+    
+    # Test seti için tahminler (Eğitilen son %20'lik kısım)
+    test_data = processed_df.iloc[int(len(processed_df) * 0.8):].copy()
+    X_test = test_data[all_features]
+    
+    test_data["predicted_ptf"] = model.predict(X_test)
+    
+    # BigQuery'nin beklediği formata getiriyoruz
+    predictions_to_save = test_data[["date", "hour_of_day", "predicted_ptf"]].rename(
+        columns={"date": "predicted_date", "hour_of_day": "hour"}
+    )
+    
+    # 4. KRİTİK ADIM: BigQuery'e Yaz
+    save_predictions_to_bq(predictions_to_save)
+    
+    print("🚀 İşlem başarıyla tamamlandı. Tahminler BigQuery'e (gold_ptf_predictions) yazıldı.")
