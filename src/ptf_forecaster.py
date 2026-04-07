@@ -76,6 +76,14 @@ def load_features() -> pd.DataFrame:
     print(f"Toplam kayıt: {len(df)}")
     return df
 
+# ptf_forecaster.py içine eklenecek kısım
+def save_predictions_to_bq(predictions_df):
+    client = get_bq_client()
+    table_id = f"{PROJECT}.{DATASET}.gold_ptf_predictions"
+    
+    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
+    client.load_table_from_dataframe(predictions_df, table_id, job_config=job_config)
+
 # ── FEATURE ENGINEERING ───────────────────────────────────────────────────────
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
