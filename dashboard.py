@@ -1171,13 +1171,3 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             use_container_width=True,
             hide_index=True,
         )
-
-        
-        st.dataframe(
-            corr_df.style.background_gradient(
-                subset=["Rüzgar", "Güneş", "Hidrolik", "Doğalgaz"],
-                cmap="RdYlGn"
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
