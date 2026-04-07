@@ -318,15 +318,31 @@ if page == "🏠 Executive Summary":
         
         # Daha güvenli ve sağlam SQL sorgusu
         hourly_query = f"""
+            WITH clean_predictions AS (
+                SELECT 
+                    -- Hour kolonunu her türlü ihtimale karşı (1.0 veya "1") temizleyip sayıya çeviriyoruz
+                    CAST(FLOOR(SAFE_CAST(hour AS FLOAT64)) AS INT64) as hour_int,
+                    DATE(predicted_date) as p_date,
+                    predicted_ptf
+                FROM `{PROJECT}.{DATASET}.gold_ptf_predictions`
+                WHERE predicted_date >= '2026-01-01'
+            ),
+            actual_features AS (
+                SELECT 
+                    date as f_date,
+                    hour_of_day as hour_int,
+                    ptf as actual_ptf
+                FROM `{PROJECT}.{DATASET}.mart_ptf_lag_features`
+                WHERE date >= '2026-01-01'
+            )
             SELECT 
-                TIMESTAMP(DATETIME(DATE(p.predicted_date), TIME(CAST(SAFE_CAST(p.hour AS FLOAT64) AS INT64), 0, 0))) as full_datetime,
+                TIMESTAMP(DATETIME(p_date, TIME(p.hour_int, 0, 0))) as full_datetime,
                 p.predicted_ptf,
-                f.ptf as actual_ptf
-            FROM `{PROJECT}.{DATASET}.gold_ptf_predictions` p
-            JOIN `{PROJECT}.{DATASET}.mart_ptf_lag_features` f 
-                ON DATE(p.predicted_date) = f.date 
-                AND CAST(SAFE_CAST(p.hour AS INT64) AS INT64) = f.hour_of_day
-            WHERE p.predicted_date >= '2026-01-01'
+                f.actual_ptf
+            FROM clean_predictions p
+            JOIN actual_features f 
+                ON p.p_date = f.f_date 
+                AND p.hour_int = f.hour_int
             ORDER BY full_datetime
         """
         
