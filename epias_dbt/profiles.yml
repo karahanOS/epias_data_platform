@@ -7,5 +7,5 @@ epias_dbt:
       project: epias-data-platform  # <-- DİKKAT: Burayı değiştirmelisin!
       dataset: epias_gold
       threads: 4
-      keyfile: /opt/airflow/credentials/gcp-key.json
+      keyfile: C:\epias_data_platform\credentials\gcp-key.json
       location: EU  # Veya BigQuery dataset'in US'te ise US yap
