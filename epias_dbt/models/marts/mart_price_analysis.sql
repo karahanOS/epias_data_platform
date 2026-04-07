@@ -1,11 +1,11 @@
-{{ config(materialized='table') }}
+{{ config(materialized='view') }} -- Canlı veri için view yapıyoruz
 
 SELECT
     date,
     hour,
-    mcp_usd,
-    smp_usd,
-    price_spread_usd,
+    ptf,          
+    smf,           
+    price_spread, 
     system_direction,
     season
 FROM {{ ref('stg_price_spread') }}

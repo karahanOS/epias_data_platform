@@ -153,7 +153,19 @@ hr {
 }
 </style>
 """, unsafe_allow_html=True)
+# ── API EXPORT FONKSİYONU ─────────────────────────────────────────────────────
+@st.cache_data
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
 
+# ── SIDEBAR GÜNCELLEME ────────────────────────────────────────────────────────
+with st.sidebar:
+    # ... (Logo ve Sayfa Seçimi kısımları aynı)
+    
+    st.markdown("---")
+    if st.button("🔄 Veriyi Yenile", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 # ── BIGQUERY CLIENT ───────────────────────────────────────────────────────────
 
 @st.cache_resource

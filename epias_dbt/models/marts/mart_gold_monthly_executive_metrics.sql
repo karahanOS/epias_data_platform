@@ -1,7 +1,6 @@
-{{ config(materialized='table') }}
+{{ config(materialized='view') }}
 
 WITH base_metrics AS (
-    -- Fiyat ve Spread metriklerini ana tablodan çek ve grupla
     SELECT
         EXTRACT(YEAR FROM date) AS year,
         EXTRACT(MONTH FROM date) AS month,
@@ -16,7 +15,6 @@ WITH base_metrics AS (
 ),
 
 consumption_metrics AS (
-    -- Tüketim metriklerini tüketim tablosundan çek ve grupla
     SELECT
         EXTRACT(YEAR FROM date) AS year,
         EXTRACT(MONTH FROM date) AS month,
@@ -26,15 +24,23 @@ consumption_metrics AS (
     GROUP BY 1, 2
 ),
 
+-- Backtesting için ML tahminlerini ekliyoruz
+forecast_metrics AS (
+    SELECT 
+        EXTRACT(YEAR FROM date) AS year,
+        EXTRACT(MONTH FROM date) AS month,
+        ROUND(AVG(forecast_consumption), 2) AS avg_forecast_consumption
+    FROM {{ source('epias_gold', 'gold_load_vs_actual') }}
+    GROUP BY 1, 2
+),
+
 final_joined AS (
-    -- İki metrik grubunu yıl ve ay bazında birleştir
     SELECT
         p.*,
         c.total_consumption,
         c.avg_hourly_consumption,
-        -- Dashboard'un beklediği Yıl-Ay formatı (Örn: 2026-03)
+        f.avg_forecast_consumption, -- Dashboard'daki Backtesting grafiğini besler
         CONCAT(CAST(p.year AS STRING), '-', LPAD(CAST(p.month AS STRING), 2, '0')) AS year_month,
-        -- Streamlit hatasını (KeyError: 'season') çözen mevsim kolonu
         CASE 
             WHEN p.month IN (12, 1, 2) THEN 'Kış'
             WHEN p.month IN (3, 4, 5) THEN 'İlkbahar'
@@ -42,8 +48,8 @@ final_joined AS (
             ELSE 'Sonbahar'
         END AS season
     FROM base_metrics p
-    LEFT JOIN consumption_metrics c 
-        ON p.year = c.year AND p.month = c.month
+    LEFT JOIN consumption_metrics c ON p.year = c.year AND p.month = c.month
+    LEFT JOIN forecast_metrics f ON p.year = f.year AND p.month = f.month
 )
 
 SELECT * FROM final_joined

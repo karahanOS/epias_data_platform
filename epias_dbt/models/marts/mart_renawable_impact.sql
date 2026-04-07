@@ -10,7 +10,7 @@ SELECT
     g.total_generation,
     g.renewable_ratio,
     g.fossil_ratio,
-    p.mcp_usd,
+    p.ptf, 
     g.year,
     g.month
 FROM gen_mix g
