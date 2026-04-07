@@ -313,47 +313,22 @@ if page == "🏠 Executive Summary":
         st.plotly_chart(fig2, use_container_width=True, key="chart_2")
 
         # 2. Model Başarımı (Backtesting) Grafiği
-        st.markdown("### 🎯 Model Başarımı: Tahmin vs. Gerçekleşen (Backtesting)")
+        # dashboard.py içindeki Backtesting kısmını şu şekilde güncelle:
+        st.markdown("### 🎯 Kendi Modelimizin Başarımı (PTF Backtesting)")
         
-        # Grafik nesnesini oluştur
         fig_bt = go.Figure()
-
-        # 1. Çizgi: Gerçekleşen Tüketim (Mavi Çizgi)
+        
+        # Gerçekleşen PTF (TL)
         fig_bt.add_trace(go.Scatter(
-            x=df["year_month"], 
-            y=df["avg_hourly_consumption"], 
-            name="Gerçekleşen Tüketim", 
-            mode='lines+markers',
-            line=dict(color="#00d4ff", width=2),
-            marker=dict(size=6)
+            x=df["year_month"], y=df["avg_ptf"],
+            name="Gerçekleşen PTF", line=dict(color="#00d4ff")
         ))
-
-        # 2. Çizgi: Model Tahmini (Turuncu Kesikli Çizgi)
-        if "avg_forecast_consumption" in df.columns:
-            fig_bt.add_trace(go.Scatter(
-                x=df["year_month"], 
-                y=df["avg_forecast_consumption"], 
-                name="Tahmin (Backtest)", 
-                mode='lines+markers',
-                line=dict(color="#ff9f00", dash="dot", width=2),
-                marker=dict(size=8)
-            ))
-
-        # Grafik Tasarımı (Layout)
-        fig_bt.update_layout(
-            title="Tüketim: Tahmin vs Gerçekleşen Kıyaslaması",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0", family="DM Sans"),
-            legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="MWh"),
-            height=400,
-            margin=dict(l=0, r=0, t=50, b=0)
-        )
-
-        # UNUTULAN KRİTİK KOMUT: Grafiği Streamlit'e bas
-        st.plotly_chart(fig_bt, use_container_width=True, key="backtest_chart")
+        
+        # Senin Modelinin Tahmin Ettikleri
+        fig_bt.add_trace(go.Scatter(
+            x=df["year_month"], y=df["avg_model_predicted_ptf"],
+            name="XGBoost Tahminimiz", line=dict(color="#ff6b35", dash="dash")
+        ))
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 2: Fiyat Dengesizliği
