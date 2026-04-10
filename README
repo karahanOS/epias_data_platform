@@ -1,15 +1,14 @@
-# ⚡ EPIAŞ Elektrik Piyasası Veri Platformu
+# ⚡ EPIAŞ Veri Entegrasyon ve Analiz Platformu
 
 Türkiye elektrik piyasası verilerini uçtan uca işleyen, üretim ortamına hazır bir veri mühendisliği projesi.
 
-**[🔴 Canlı Dashboard](https://epiasdataplatform.streamlit.app/)** | **[📁 Veri Kaynağı: EPIAŞ Şeffaflık Platformu](https://seffaflik.epias.com.tr/)**
+**[📁 Veri Kaynağı: EPIAŞ Şeffaflık Platformu](https://seffaflik.epias.com.tr/)** | **[📊 Dashboard: Enerji Analitiği]**
 
 ---
 
 ## 🏗️ Mimari
 
-```
-EPIAŞ API
+EPIAŞ API & Hava Durumu API
     │
     ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -35,216 +34,91 @@ EPIAŞ API
               ┌───────────────────────┐
               │    Apache Spark        │
               │   🥇 Gold Katman       │
-              │   Aggregate tablolar   │
+              │   Tahminleme (XGBoost) │
               └───────────┬───────────┘
                           │
                           ▼
               ┌───────────────────────┐
               │    Google BigQuery     │
-              │    Analitik ambar      │
+              │    Warehouse & dbt     │
               └───────────┬───────────┘
                           │
                           ▼
               ┌───────────────────────┐
-              │         dbt            │
-              │   SQL modeller +       │
-              │   Veri kalite testleri │
-              └───────────┬───────────┘
-                          │
-                          ▼
-              ┌───────────────────────┐
-              │      Streamlit         │
-              │  İnteraktif Dashboard  │
+              │    Power BI / Streamlit│
+              │    Yönetici Özeti      │
               └───────────────────────┘
-```
 
 ---
 
-## 🛠️ Teknoloji Stack
+## 🛰️ Veri Akışı (Pipeline)
 
-| Katman | Teknoloji | Amaç |
-|--------|-----------|-------|
-| Veri Kaynağı | EPIAŞ API (CAS Auth) | PTF, SMF, Üretim, Tüketim verisi |
-| Orkestrasyon | Apache Airflow | Günlük pipeline yönetimi |
-| Depolama | Google Cloud Storage | Ham ve işlenmiş Parquet dosyalar |
-| İşleme | Apache Spark 3.5 | Medallion mimari dönüşümleri |
-| Veri Ambarı | Google BigQuery | Analitik sorgular |
-| Dönüşüm | dbt | SQL modeller, testler, lineage |
-| Dashboard | Streamlit + Plotly | İnteraktif görselleştirme |
-| Konteyner | Docker Compose | Airflow + Spark ortamı |
-| Bulut | Google Cloud Platform | GCS + BigQuery |
+1. Ingestion: epias_client ve weather_client aracılığıyla veriler çekilir ve GCS üzerine "Bronze" katmanına ham olarak yazılır.
+2. Transformation: Apache Spark cluster üzerinde veriler temizlenir, şemaları normalize edilir ve "Silver" katmanına taşınır.
+3. Analytics: "Gold" katmanında veriler agrege edilir ve ML modelleri (XGBoost) için feature engineering süreçlerinden geçer.
+4. Warehouse: İşlenen veriler BigQuery'e aktarılır ve dbt modelleriyle iş mantığına göre son haline getirilir.
+5. Forecasting: Gelecek dönem PTF fiyatları tahmin edilerek operasyonel maliyet öngörüsü sağlanır.
 
 ---
 
-## 📊 Veri Katmanları
+## 🚀 Kurulum ve Başlatma
 
-### 🥉 Bronze — Ham Veri
-EPIAŞ API'den günlük olarak çekilen ham veriler Parquet formatında GCS'e yazılır. 4 veri seti:
-- **PTF** — Piyasa Takas Fiyatı (saatlik)
-- **SMF** — Sistem Marjinal Fiyatı (saatlik)
-- **Gerçek Zamanlı Üretim** — 17 kaynak bazında üretim (MWh)
-- **Gerçek Zamanlı Tüketim** — Saatlik tüketim (MWh)
+Aşağıdaki adımları takip ederek tüm platformu Docker üzerinde ayağa kaldırabilirsiniz:
 
-### 🥈 Silver — Temizlenmiş Veri
-Spark ile uygulanan dönüşümler:
-- String → Timestamp dönüşümü (timezone normalizasyonu)
-- camelCase → snake_case kolon standardizasyonu
-- Duplicate ve null temizliği
-- Sayısal kolonların float'a zorlanması (schema drift önlemi)
-- Yıl/ay bazında partition
+1. Repo'yu klonlayın ve ana dizine gidin:
+   cd epias_data_platform
 
-### 🥇 Gold — İş Soruları
+2. Kimlik bilgilerini yerleştirin:
+   credentials/gcp-key.json dosyasının mevcut olduğundan emin olun.
 
-| Tablo | Açıklama |
-|-------|----------|
-| `price_spread_analysis` | PTF-SMF fiyat makası ve sistem yönü |
-| `generation_mix_price_impact` | Yenilenebilir oran ve fiyat etkisi (Merit Order) |
-| `supply_demand_summary` | Arz-talep karşılaması ve peak saat analizi |
-| `monthly_executive_metrics` | Aylık KPI özeti |
-
----
-
-## 📈 Dashboard Sayfaları
-
-### 🏠 Executive Summary
-Üst düzey KPI kartları: aylık ortalama PTF, maks fiyat, toplam tüketim ve fiyat makası. PTF trend grafiği ve min/ortalama/maks bant görselleştirmesi.
-
-### ⚖️ Fiyat Dengesizliği (PTF vs SMF)
-Sistem dengesizlik analizi. PTF-SMF scatter plot ile denge çizgisinin altında/üstünde kalan saatler görselleştirilir. Mevsimsel fiyat makası analizi ve sistem yönü dağılımı.
-
-### 🌱 Üretim Karışımı (Merit Order Effect)
-Yenilenebilir enerji üretimi arttığında PTF'nin nasıl düştüğünü kanıtlayan scatter plot. Rüzgar ve güneş üretiminin fiyata etkisi aylık bazda incelenir. Korelasyon katsayısı doğrudan ekranda gösterilir.
-
-### 🔋 Arz-Talep Analizi
-Karşılama oranı (Üretim/Tüketim × 100) saat dilimi bazında analiz edilir. Sabah, öğle, akşam peak ve gece dilimlerinde sistemin ne kadar zorlandığı görülür.
-
----
-
-## 🚀 Kurulum
-
-### Gereksinimler
-- Docker & Docker Compose
-- Python 3.10+
-- Google Cloud hesabı (GCS + BigQuery)
-- EPIAŞ hesabı
-
-### 1. Repo'yu klonla
-```bash
-git clone https://github.com/karahanOS/epias_data_platform.git
-cd epias_data_platform
-```
-
-### 2. Ortam değişkenlerini ayarla
-```bash
-cp .env.example .env
-# .env dosyasını düzenle:
-# EPIAS_USERNAME=...
-# EPIAS_PASSWORD=...
-```
-
-### 3. GCP credentials
-```bash
-mkdir credentials
-# GCP service account key'ini credentials/gcp-key.json olarak ekle
-```
-
-### 4. Docker stack'i başlat
-```bash
-docker-compose up -d
-```
-
-Airflow UI: `http://localhost:8080` (admin/admin)  
-Spark UI: `http://localhost:8081`
-
-### 5. GCS Connector JAR
-```bash
-curl -L -o spark_jobs/jars/gcs-connector.jar \
-  "https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-hadoop3-latest.jar"
-
-docker cp spark_jobs/jars/gcs-connector.jar \
-  epias_data_platform-spark-1:/opt/spark/jars/gcs-connector.jar
-```
-
-### 6. Spark job'larını çalıştır
-```bash
-# Bronze → Silver
-docker exec -it epias_data_platform-spark-1 \
-  /opt/spark/bin/spark-submit /opt/spark_jobs/bronze_to_silver_ptf.py
-
-# Silver → Gold
-docker exec -it epias_data_platform-spark-1 \
-  /opt/spark/bin/spark-submit /opt/spark_jobs/silver_to_gold.py
-```
-
-### 7. BigQuery'e yükle
-```bash
-pip install google-cloud-bigquery google-cloud-storage
-python src/load_to_bigquery.py
-```
-
-### 8. dbt modelleri
-```bash
-cd epias_dbt
-dbt run
-dbt test
-dbt docs generate && dbt docs serve
-```
-
-### 9. Dashboard
-```bash
-pip install streamlit plotly statsmodels
-streamlit run dashboard.py
-```
+3. Sistemi inşa edin ve başlatın:
+   docker-compose up -d --build
 
 ---
 
 ## 📁 Proje Yapısı
 
-```
 epias_data_platform/
 ├── dags/
-│   └── epias_dag.py              # Airflow DAG
+│   └── epias_dag.py              # Airflow DAG (Orkestrasyon)
 ├── src/
-│   ├── epias_client.py           # EPIAŞ API wrapper
-│   └── load_to_bigquery.py       # GCS → BigQuery yükleyici
+│   ├── epias_client.py           # EPIAŞ API Wrapper
+│   └── weather_client.py         # Meteoroloji API Wrapper
 ├── spark_jobs/
-│   ├── bronze_to_silver_ptf.py
-│   ├── bronze_to_silver_smf.py
-│   ├── bronze_to_silver_generation.py
-│   ├── bronze_to_silver_consumption.py
-│   └── silver_to_gold.py
+│   ├── bronze_to_silver_ptf.py   # Spark ETL süreçleri
+│   └── gcs-connector-hadoop3.jar # GCS bağlantı köprüsü
+├── credentials/
+│   └── gcp-key.json              # Google Cloud anahtarı
 ├── epias_dbt/
-│   └── models/
-│       ├── staging/              # Kaynak tanımları + view'lar
-│       └── marts/                # Analiz modelleri
-├── dashboard.py                  # Streamlit dashboard
-├── docker-compose.yml
-├── requirements.txt
-└── .env.example
-```
+│   └── models/                   # BigQuery dbt modelleri
+├── Dockerfile                    # Özelleştirilmiş Airflow imajı
+└── docker-compose.yml            # Servis orkestrasyonu
 
 ---
 
 ## 🔑 Teknik Kararlar
 
-**Neden Medallion Mimarisi?**  
-Ham veriyi (Bronze) hiç silmeden tutmak, her dönüşümü ayrı katmanda yapmak hata ayıklamayı ve yeniden işlemeyi kolaylaştırır.
+Neden LocalExecutor ve Postgres kullanıldı? Varsayılan SequentialExecutor yerine LocalExecutor kullanılarak görevlerin paralel çalışması sağlandı ve tüm meta veriler Postgres'te kalıcı hale getirildi.
 
-**Neden Airflow + Spark birlikte?**  
-Airflow orkestrasyon için, Spark büyük veri işleme için. Her biri kendi işini yapar.
+Neden Medallion Mimarisi? Ham veriyi (Bronze) hiç silmeden tutmak, her dönüşümü ayrı katmanda yapmak hata ayıklamayı ve yeniden işlemeyi kolaylaştırır.
 
-**Schema Drift problemi nasıl çözüldü?**  
-EPIAŞ API bazen tam sayı (INT64), bazen ondalıklı (DOUBLE) döndürüyor. API wrapper'da tüm sayısal kolonlar `.float()` ile normalize edildi.
-
-**Timezone normalizasyonu:**  
-API'den gelen `date` UTC'de, `hour` Türkiye saatinde geliyor. Join için `yyyy-MM-dd HH:mm` formatında birleşik anahtar kullanıldı.
+dbt Path ve Kütüphane bağımlılıkları: Python 3.8 uyumluluğu için dbt-core < 1.8.0 sürümü sabitlendi ve ENV PATH ayarı ile dbt'nin Airflow içinden sorunsuz tetiklenmesi sağlandı.
 
 ---
 
-## 📄 Lisans
+## 🔗 Servisler ve Erişim
 
-MIT
+- Airflow UI: localhost:8080 
+- Spark Master: localhost:8081
+- Spark Worker: localhost:8082
 
 ---
 
-*Veri kaynağı: [EPIAŞ Şeffaflık Platformu](https://seffaflik.epias.com.tr/) — Türkiye Elektrik Piyasası*
+## ✉️ İletişim
+
+Mehmet Karahan - Veri Analisti
+
+---
+
+### 💡 Not
+Bu platform, enerji maliyetlerini optimize etmek ve piyasa risklerini öngörmek için tasarlanmıştır. Veri akışı sırasında "Forbidden 403" hatası alınması durumunda GCP faturalandırma hesabı kontrol edilmelidir.
