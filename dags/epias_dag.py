@@ -12,7 +12,7 @@ sys.path.insert(0, '/opt/airflow/src')
 from epias_client import EPIASClient
 from weather_client import WeatherClient
 
-
+import pandas as pd
 
 
 logger = logging.getLogger(__name__)
@@ -129,11 +129,11 @@ def get_weather_callable(**context):
 # ── CALLABLE'LAR: GCS'E KAYDET ───────────────────────────────────────────────
 
 def save_to_gcs(task_id: str, bucket_path: str, **context):
-    import pandas as pd
     data = context["ti"].xcom_pull(task_ids=task_id)
-    if not data:
-        logger.warning(f"{task_id} için veri boş, GCS'e yazılmıyor.")
-        return
+    # 💡 KRİTİK: Eğer veri yoksa task'ı FAIL et, böylece backfill'de nerede durduğunu anlarız.
+    if not data or len(data) == 0:
+        raise ValueError(f"{task_id} için veri bulunamadı! EPIAŞ boş döndü.")
+    
     execution_date = context["execution_date"]
     date_str = execution_date.strftime("%Y-%m-%d")
     gcs_path = f"gs://epias-data-lake/{bucket_path}/{date_str}.parquet"
@@ -166,7 +166,7 @@ def save_weather_callable(**context):
 def run_spark_job(script_name: str, target_date: str):
     """Spark container'ında bir job çalıştırır ve tarihi parametre olarak yollar."""
     cmd = [
-        "docker", "exec", "epias_data_platform-spark-1",
+        "docker", "exec", "spark-master",
         "/opt/spark/bin/spark-submit",
         "--jars", "/opt/spark_jobs/gcs-connector-hadoop3-2.2.22.jar",
         f"/opt/spark_jobs/{script_name}",
@@ -216,74 +216,65 @@ def run_gold_pipeline_callable(**context):
 
 # ── CALLABLE'LAR: BİGQUERY & DBT ─────────────────────────────────────────────
 
-def load_bigquery_callable(**context):
-    """Gold tablolarını BigQuery'e yükler."""
-    import os
-    from google.cloud import bigquery, storage
-
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/opt/airflow/credentials/gcp-key.json"
-
-    bq_client = bigquery.Client()
-    gcs_client = storage.Client()
-
-    BUCKET_NAME = "epias-data-lake"
-    DATASET = "epias_gold"
-
-    tables = [
-        "price_spread_analysis",
-        "generation_mix_price_impact",
-        "supply_demand_summary",
-        "load_vs_actual",
-        "renewable_deep_analysis",
-        "ml_features",
-    ]
-
-    def list_parquet_files(prefix):
-        bucket = gcs_client.bucket(BUCKET_NAME)
-        blobs = bucket.list_blobs(prefix=prefix)
-        return [
-            f"gs://{BUCKET_NAME}/{blob.name}"
-            for blob in blobs
-            if blob.name.endswith(".parquet")
-        ]
-
-    for table_name in tables:
-        # Dosyaları tek tek listelemek yerine GCS wildcard (*) kullanıyoruz
-        uri = f"gs://{BUCKET_NAME}/gold/{table_name}/*.parquet"
-        
-        logger.info(f"{table_name} için wildcard yükleme başlıyor: {uri}")
+def load_bigquery_callable(table_name, **context):
+    from google.cloud import bigquery
     
-        job_config = bigquery.LoadJobConfig(
-            source_format=bigquery.SourceFormat.PARQUET,
-            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-            autodetect=True,
-        )
+    # 1. Airflow Context'inden o anki çalışma tarihini alıyoruz
+    # execution_date, DAG'ın hangi gün için tetiklendiğini tutar.
+    exe_date = context.get("execution_date")
     
-        # uris (liste) yerine doğrudan uri (string wildcard) gönderiyoruz
-        load_job = bq_client.load_table_from_uri(
-                    uri,
-                    destination=f"{DATASET}.gold_{table_name}",
-                    job_config=job_config,
+    t_year = exe_date.strftime("%Y")
+    t_month = exe_date.strftime("%m")
+    t_day = exe_date.strftime("%d")
+    
+    client = bigquery.Client()
+    # Veri setinizin adını kontrol edin (Örn: epias_gold)
+    table_ref = client.dataset("epias_gold").table(table_name)
+
+    # 2. İşlem Yükünü Optimize Eden URI (Spesifik Klasörleme)
+    # Wildcard (*) yerine sadece o günün klasörüne giderek GCS tarama maliyetini düşürüyoruz.
+    uri = f"gs://{BUCKET_NAME}/gold/{table_name}/year={t_year}/month={t_month}/day={t_day}/*.parquet"
+
+    # 3. Profesyonel Load Job Konfigürasyonu
+    job_config = bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.PARQUET,
+        # KRİTİK: WRITE_APPEND kullanarak geçmiş verilerin silinmesini engelliyoruz (Idempotency için)
+        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+        # BigQuery tarafında veriyi tarihe göre bölüyoruz (Maliyet ve Hız için)
+        time_partitioning=bigquery.TimePartitioning(
+            field="date", # Tablonuzdaki TIMESTAMP/DATE kolonunun adı
+            type_=bigquery.TimePartitioningType.DAY
+        ),
+        autodetect=True,
+    )
+
+    logger.info(f"BigQuery Yükleme Başladı: {uri} -> {table_name}")
+    
+    try:
+        load_job = client.load_table_from_uri(
+            uri, table_ref, job_config=job_config
         )
+        load_job.result()  # İşlem tamamlanana kadar bekler
         
-        # result() kısmına 1 saatlik (3600 sn) bir limit koyuyoruz
-        load_job.result(timeout=3600) 
-        logger.info(f"{table_name} BigQuery'e başarıyla yüklendi!")
+        # Kaç satır yüklendiğini loglayalım (Görünürlük için)
+        destination_table = client.get_table(table_ref)
+        logger.info(f"Başarıyla yüklendi: {table_name}. Toplam satır: {destination_table.num_rows}")
+        
+    except Exception as e:
+        # 💡 "Sessiz Başarı"yı önlemek için: Eğer dosya bulunamazsa hata fırlatılır.
+        # Bu sayede Airflow kırmızı (Fail) yanar ve müdahale edebilirsiniz.
+        logger.error(f"Yükleme hatası (URI bulunamadı veya yetki hatası): {str(e)}")
+        raise
 
 
 # epias_dag.py içindeki ilgili kısım
+import shutil
+
 def run_dbt_callable(**context):
-    """dbt modellerini çalıştırır."""
-    dbt_dir = "/opt/airflow/epias_dbt"
-    dbt_executable = "/home/airflow/.local/bin/dbt"
+    # dbt executable'ını sistemde otomatik bulur
+    dbt_path = shutil.which("dbt") or "/home/airflow/.local/bin/dbt"
     
-    cmd = [
-        dbt_executable, "run", 
-        "--project-dir", dbt_dir, 
-        "--profiles-dir", dbt_dir,
-        "--target", "prod",  # <--- BU SATIRI EKLEDİK: Hedefin prod (Airflow) olduğunu belirtir
-        "--full-refresh"
-    ]
+    cmd = [dbt_path, "run", "--project-dir", "/opt/airflow/epias_dbt", "--profiles-dir", "/opt/airflow/epias_dbt"]
    
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 

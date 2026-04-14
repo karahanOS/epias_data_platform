@@ -1,62 +1,99 @@
 version: '3.8'
 
 x-airflow-common: &airflow-common
-  # image: apache/airflow:2.8.0  <-- Bu satırı sildik veya yoruma aldık
-  build: .                       # <-- Yerine bunu ekledik
-  env_file:
-    - .env
+  build: .
+  env_file: [.env]
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ''
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    PYTHONPATH: /opt/airflow/src
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/credentials/gcp-key.json
-    _PIP_ADDITIONAL_REQUIREMENTS: "openmeteo-requests requests-cache retry-requests"
+    # --- BURADAKİ _PIP_ADDITIONAL_REQUIREMENTS SATIRINI SİLDİK ---
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/airflow/src
     - ./logs:/opt/airflow/logs
     - ./credentials:/opt/airflow/credentials
-    - /var/run/docker.sock:/var/run/docker.sock
     - ./epias_dbt:/opt/airflow/epias_dbt
+    - /var/run/docker.sock:/var/run/docker.sock
+  # --- TEKRAR GÜVENLİ KULLANICIYA DÖNDÜK ---
+  user: "${AIRFLOW_UID:-5000}:0"
 
 services:
+  # --- SPARK VE POSTGRES AYARLARINIZ AYNI KALIYOR ---
+  spark-master:
+    image: apache/spark:3.5.0
+    container_name: spark-master
+    environment:
+      - SPARK_MODE=master
+      # Spark'ın anahtarı nerede bulacağını söyleyelim
+      - GOOGLE_APPLICATION_CREDENTIALS=/opt/credentials/gcp-key.json
+    ports:
+      - "8081:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark_jobs:/opt/spark_jobs    # JAR ve Python scriptleri için
+      - ./epias_dbt:/opt/airflow/epias_dbt
+      - ./credentials:/opt/credentials  # GCP Key dosyası için
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --ip 0.0.0.0
+    stdin_open: true
+    tty: true
+
+  spark-worker:
+    image: apache/spark:3.5.0
+    container_name: spark-worker
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - GOOGLE_APPLICATION_CREDENTIALS=/opt/credentials/gcp-key.json
+    depends_on:
+      - spark-master
+    volumes:
+      - ./spark_jobs:/opt/spark_jobs
+      - ./epias_dbt:/opt/airflow/epias_dbt
+      - ./credentials:/opt/credentials
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    stdin_open: true
+    tty: true
+      
   postgres:
     image: postgres:13
+    container_name: epias_postgres
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 5s
       retries: 5
 
   airflow-init:
-    <<: *airflow-common
-    entrypoint: /bin/bash
-    command: -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com"
+    <<: *airflow-common # Miras alma eklendi
+    container_name: airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -c "airflow db migrate &&
+      airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin"
+
   airflow-webserver:
-    <<: *airflow-common
-    command: webserver
+    <<: *airflow-common # Miras alma eklendi
+    container_name: airflow-webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
-    restart: always
+    command: bash -c "rm -f /opt/airflow/airflow-webserver.pid && airflow webserver"
 
   airflow-scheduler:
-    <<: *airflow-common
-    command: scheduler
-    restart: always
-
-  spark:
-    image: apache/spark:3.5.0
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
-    environment:
-      - SPARK_MODE=master
-    ports:
-      - "8081:8080"
-      - "7077:7077"
-    volumes:
-      - ./spark_jobs:/opt/spark_jobs
-      - ./credentials:/opt/credentials:ro
+    <<: *airflow-common # Miras alma eklendi
+    container_name: airflow-scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: airflow scheduler

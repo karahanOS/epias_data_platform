@@ -1,4 +1,4 @@
-{{ config(materialized='table') }}
+{{ config(materialized='incremental') }}
 
 WITH gen_mix AS (
     SELECT * FROM {{ ref('stg_generation_mix') }}

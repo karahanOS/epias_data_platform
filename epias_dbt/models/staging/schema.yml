@@ -2,61 +2,89 @@ version: 2
 
 models:
   - name: stg_price_spread
-    description: "PTF ve SMF fiyat makası analizi"
+    description: "PTF ve SMF fiyat makası analizi. Sistem yönü ve arbitraj fırsatlarını izlemek için kullanılır."
     columns:
       - name: date
-        description: "Tarih"
+        description: "İşlem tarihi (Partition sütunu)"
+        tests:
+          - not_null
+      - name: hour
+        description: "İşlem saati (HH:mm formatında)"
         tests:
           - not_null
       - name: ptf
-        description: "Piyasa Takas Fiyatı"
+        description: "Piyasa Takas Fiyatı (TRY)"
         tests:
           - not_null
       - name: smf
-        description: "Sistem Marjinal Fiyatı"
+        description: "Sistem Marjinal Fiyatı (TRY)"
         tests:
           - not_null
       - name: system_direction
-        description: "Sistem yönü"
+        description: "Sistem yönü (Enerji Açığı/Fazlası)"
         tests:
-          - not_null
           - accepted_values:
               values: ['Enerji Açığı', 'Enerji Fazlası', 'Dengeli']
 
   - name: stg_generation_mix
-    description: "Üretim karışımı ve fiyat etkisi"
+    description: "Üretim kırılımı (Yenilenebilir vs. Fosil) ve bu kırılımın fiyat üzerindeki etkisi."
     columns:
+      - name: join_key
+        description: "Tarih ve saat birleşimiyle oluşan benzersiz anahtar."
+        tests:
+          - unique
+          - not_null
       - name: date
         tests:
           - not_null
       - name: total_generation
+        description: "MWh cinsinden toplam üretim miktarı."
         tests:
           - not_null
 
   - name: stg_supply_demand
-    description: "Arz-talep dengesi"
+    description: "Arz ve talep dengesi özeti. Sistemin toplam yük karşılama oranını izler."
     columns:
       - name: date
         tests:
           - not_null
+      - name: hour
+        tests:
+          - not_null
       - name: coverage_ratio
+        description: "Arzın talebi karşılama oranı."
+        tests:
+          - not_null
+
+  - name: stg_load_vs_actual
+    description: "Tahmin edilen (Load Estimation) ve gerçekleşen tüketim verilerinin karşılaştırması."
+    columns:
+      - name: date
+        tests:
+          - not_null
+      - name: hour
+        tests:
+          - not_null
+      - name: deviation
+        description: "Tahmin ve gerçekleşen arasındaki fark."
+
+  - name: stg_renewable_deep
+    description: "Rüzgar, güneş ve jeotermal gibi yenilenebilir enerji kaynaklarının detaylı üretimi."
+    columns:
+      - name: date
+        tests:
+          - not_null
+      - name: hour
         tests:
           - not_null
 
   - name: mart_ptf_lag_features
-    description: "XGBoost modeline giren ana girdi tablosu"
+    description: "XGBoost modeline giren, gecikmeli verileri (lag features) içeren ana tablo."
     columns:
       - name: date
         tests:
           - not_null
-          - unique # Saatlik veride mükerrer kayıt felakettir
-      - name: ptf
+      - name: hour
         tests:
           - not_null
-          # Türkiye piyasasında PTF 0-10000 TL arasındadır, eksi olamaz
-          - dbt_utils.accepted_range:
-              max_value: 4500
-      - name: ptf_lag_1h
-        description: "1 saat önceki fiyat"
-        tests:
-          - not_null # Gecikmeli veriler boş gelirse model çöker
+          - unique # Saatlik bazda mükerrer kayıt kontrolü

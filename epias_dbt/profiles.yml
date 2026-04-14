@@ -8,7 +8,7 @@ epias_dbt:
       project: epias-data-platform
       dataset: epias_gold
       threads: 4
-      keyfile: C:\epias_data_platform\credentials\gcp-key.json # Windows yolu
+      keyfile: /opt/airflow/credentials/gcp-key.json # Bu konteyner içindeki yoldur # Windows yolu
       location: EU
 
     # 2. Airflow/Docker için (Linux)

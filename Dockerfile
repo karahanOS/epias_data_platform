@@ -1,24 +1,27 @@
 FROM apache/airflow:2.8.0
 
 USER root
-# Docker CLI kurulumu (Zaten yapmıştık, dokunma)
-RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-26.0.0.tgz -o docker.tgz \
-    && tar -xzvf docker.tgz --strip-components=1 -C /usr/local/bin docker/docker \
-    && rm docker.tgz
-
-# ... (Üst kısımlar aynı kalıyor) ...
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && apt-get clean
 
 USER airflow
+# dbt'nin yerini sisteme tanıtıyoruz
+ENV PATH="${PATH}:/home/airflow/.local/bin"
 
-# Tüm ML ve Optimizasyon kütüphanelerini tek seferde kuruyoruz
 RUN pip install --no-cache-dir --upgrade \
-    docker \
-    dbt-bigquery \
+    "dbt-bigquery<1.8.0" \
+    "dbt-core<1.8.0" \
+    openmeteo-requests \
+    requests-cache \
+    retry-requests \
+    shap \
+    xgboost \
+    scikit-learn \
     pandas \
     numpy \
-    xgboost \
+    docker \
     optuna \
-    scikit-learn \
     joblib \
     google-cloud-bigquery \
     pyarrow \
