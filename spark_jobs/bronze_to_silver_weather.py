@@ -1,68 +1,44 @@
 import sys
 from pyspark.sql import functions as F
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 from spark_utils import get_spark_session
 
 if len(sys.argv) < 2:
-    raise ValueError("Tarih parametresi eksik! Lütfen YYYY-MM-DD formatında bir tarih gönderin.")
+    raise ValueError("Tarih parametresi eksik! YYYY-MM-DD formatında gönderin.")
 
-target_date = sys.argv[1]
-spark = get_spark_session("epias_bronze_to_silver_weather")
+execution_date = sys.argv[1]
+# HATA DÜZELTİLDİ: get_session() → get_spark_session() + spark_utils ile GCS config
+spark = get_spark_session("BronzeToSilver_Weather")
 spark.sparkContext.setLogLevel("WARN")
 
 BUCKET = "epias-data-lake"
-BRONZE_PATH = f"gs://{BUCKET}/bronze/weather/{target_date}.parquet"
-SILVER_PATH = f"gs://{BUCKET}/silver/weather/"
+input_path  = f"gs://{BUCKET}/bronze/weather/{execution_date}.parquet"
+output_path = f"gs://{BUCKET}/silver/weather/"
 
-schema = StructType([
-    StructField("datetime",                     StringType(), True),
-    StructField("weighted_temperature_2m",      DoubleType(), True),
-    StructField("weighted_wind_speed_10m",      DoubleType(), True),
-    StructField("weighted_shortwave_radiation", DoubleType(), True),
-    StructField("weighted_relative_humidity_2m",DoubleType(), True),
-    StructField("istanbul_temp",                DoubleType(), True),
-    StructField("istanbul_wind",                DoubleType(), True),
-    StructField("istanbul_radiation",           DoubleType(), True),
-    StructField("izmir_temp",                   DoubleType(), True),
-    StructField("izmir_wind",                   DoubleType(), True),
-    StructField("izmir_radiation",              DoubleType(), True),
-    StructField("konya_temp",                   DoubleType(), True),
-    StructField("konya_wind",                   DoubleType(), True),
-    StructField("konya_radiation",              DoubleType(), True),
-    StructField("ankara_temp",                  DoubleType(), True),
-    StructField("ankara_wind",                  DoubleType(), True),
-    StructField("ankara_radiation",             DoubleType(), True),
-])
+print(f"Bronze okunuyor: {input_path}")
+df = spark.read.parquet(input_path)
 
-print(f"{target_date} tarihi için Bronze okunuyor: {BRONZE_PATH}")
-df = spark.read.schema(schema).parquet(BRONZE_PATH)
+# HATA DÜZELTİLDİ: Kolon isimleri WeatherClient'ın gerçek çıktısına göre düzeltildi
+# Gerçek kolonlar: datetime, city, temperature_2m, wind_speed_10m,
+#                  shortwave_radiation, relative_humidity_2m
+df_silver = df.select(
+    F.to_timestamp(F.col("datetime")).alias("datetime"),
+    F.col("city"),
+    F.col("temperature_2m").cast("double").alias("temp_c"),
+    F.col("relative_humidity_2m").cast("double").alias("humidity_pct"),
+    F.col("wind_speed_10m").cast("double").alias("wind_speed_kmh"),
+    F.col("shortwave_radiation").cast("double").alias("solar_radiation_wm2")
+).dropDuplicates(["datetime", "city"]) \
+ .withColumn("date",  F.to_date(F.col("datetime"))) \
+ .withColumn("hour",  F.hour(F.col("datetime"))) \
+ .withColumn("year",  F.year(F.col("datetime"))) \
+ .withColumn("month", F.month(F.col("datetime"))) \
+ .withColumn("day",   F.dayofmonth(F.col("datetime")))
 
-print("Dönüşümler uygulanıyor...")
-df_silver = df \
-    .dropDuplicates() \
-    .dropna(subset=["datetime", "weighted_temperature_2m"]) \
-    .withColumn("date", F.to_timestamp(F.col("datetime"), "yyyy-MM-dd'T'HH:mm:ssXXX")) \
-    .withColumn("hour", F.date_format(F.col("date"), "HH:mm")) \
-    .drop("datetime") \
-    .withColumn("year", F.year(F.col("date"))) \
-    .withColumn("month", F.month(F.col("date"))) \
-    .withColumn("day", F.dayofmonth(F.col("date")))
-
-numeric_cols = [
-    "weighted_temperature_2m", "weighted_wind_speed_10m", "weighted_shortwave_radiation", 
-    "weighted_relative_humidity_2m", "istanbul_temp", "istanbul_wind", "istanbul_radiation",
-    "izmir_temp", "izmir_wind", "izmir_radiation", "konya_temp", "konya_wind", "konya_radiation",
-    "ankara_temp", "ankara_wind", "ankara_radiation",
-]
-
-for col in numeric_cols:
-    df_silver = df_silver.withColumn(col, F.round(F.col(col), 2))
-
-print(f"\nSilver'a yazılıyor: {SILVER_PATH}")
+print(f"Silver'a yazılıyor: {output_path}")
 df_silver.write \
     .mode("overwrite") \
     .partitionBy("year", "month", "day") \
-    .parquet(SILVER_PATH)
+    .parquet(output_path)
 
-print(f"{target_date} için Bronze → Silver Weather dönüşümü tamamlandı!")
+print(f"✅ {execution_date} weather Bronze → Silver tamamlandı!")
 spark.stop()

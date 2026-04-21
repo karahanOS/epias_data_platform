@@ -1,116 +1,115 @@
 import os
+import json                          # HATA DÜZELTİLDİ: eksik import eklendi
 import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import logging
 import time
-
-load_dotenv()  # .env dosyasından USERNAME ve PASSWORD'ü yükle
-
+ 
+load_dotenv()
+ 
 logger = logging.getLogger(__name__)
-
+ 
 AUTH_URL = "https://giris.epias.com.tr/cas/v1/tickets"
 BASE_URL = "https://seffaflik.epias.com.tr/electricity-service"
-TGT_LIFETIME = timedelta(hours=1, minutes=30)  # 2 saat yerine 1.5 — güvenli tampon
-
-
+TGT_LIFETIME = timedelta(hours=1, minutes=30)
+ 
+ 
 class EPIASClient:
     def __init__(self):
         self.username = os.getenv("EPIAS_USERNAME")
         self.password = os.getenv("EPIAS_PASSWORD")
-
-        # Token bellekte tutulur — dotenv'e yazmıyoruz çünkü her oturumda değişiyor
+        self.base_url = BASE_URL
+        self.auth_url = AUTH_URL
         self._tgt = None
-        self._token_time = None  # Token'ı ne zaman aldık?
-
-    # ── AUTH ──────────────────────────────────────────────────────────────────
-
-    def _fetch_tgt(self) -> str:
-        """Auth sunucusundan yeni bir TGT token alır."""
-        logger.info("Yeni TGT alınıyor...")
+        self._token_time = None
+ 
+    def _fetch_tgt(self):
+        logger.info("EPIAŞ Auth: Yeni TGT alınıyor...")
         response = requests.post(
-            AUTH_URL,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "text/plain",
-            },
-            data={
-                "username": self.username,
-                "password": self.password,
-            },
+            self.auth_url,
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "text/plain"},
+            data={"username": self.username, "password": self.password}
         )
-        response.raise_for_status()  # 4xx/5xx hatası varsa exception fırlat
-        return response.text.strip()
-
-    def _get_valid_tgt(self) -> str:
-        """
-        Proactive refresh: token yoksa veya 1.5 saat geçtiyse yenile,
-        aksi halde mevcut token'ı döndür.
-        
-        Pasaport analojisi: seyahatten önce kontrol et, dolmuşsa önceden yenile.
-        """
+        response.raise_for_status()
+        return response.text
+ 
+    def _get_valid_tgt(self):
         now = datetime.now()
         token_expired = (
-            self._tgt is None                              # Hiç token almadık
-            or self._token_time is None                    # Zaman kaydı yok
-            or (now - self._token_time) > TGT_LIFETIME    # 1.5 saat doldu
+            self._tgt is None
+            or self._token_time is None
+            or (now - self._token_time) > TGT_LIFETIME
         )
-
         if token_expired:
             self._tgt = self._fetch_tgt()
             self._token_time = now
-            logger.info("TGT yenilendi.")
-
+            logger.info("TGT başarıyla yenilendi.")
         return self._tgt
-
-    # ── HTTP ──────────────────────────────────────────────────────────────────
-
-    def _post(self, endpoint: str, body: dict, retry: bool = True) -> dict:
-        """
-        POST isteği atar. 401 gelirse token'ı yenileyip bir kez daha dener.
-        
-        retry=True  → 401 gelince TGT yenile ve tekrar dene (retry on failure)
-        retry=False → ikinci denemede yine 401 gelirse exception fırlat
-        """
-        tgt = self._get_valid_tgt()
-
-        response = requests.post(
-            f"{BASE_URL}{endpoint}",
-            headers={"TGT": tgt, "Content-Type": "application/json"},
-            json=body,
-        )
-
-        if response.status_code == 401 and retry:
-            # Token beklenmedik şekilde expire olmuş — zorla yenile
-            logger.warning("401 alındı, TGT yenileniyor ve tekrar deneniyor...")
-            self._tgt = None  # Cache'i temizle, _get_valid_tgt yeniden alacak
-            return self._post(endpoint, body, retry=False)  # Bir kez daha dene
-
-        response.raise_for_status()
-        return response.json()
-
+ 
+    def _post(self, endpoint, payload):
+        headers = {
+            "Authorization": f"Bearer {self._get_valid_tgt()}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        url = f"{self.base_url}{endpoint}"
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(payload))
+            if response.status_code == 401:
+                logger.warning("Token beklenmedik şekilde düştü, zorla yenileniyor...")
+                self._tgt = self._fetch_tgt()
+                self._token_time = datetime.now()
+                return self._post(endpoint, payload)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"API Hatası ({endpoint}): {str(e)}")
+            return {"items": []}
+ 
+    def format_date(self, date_str):
+        """YYYY-MM-DD -> ISO 8601 (+03:00)"""
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        return dt.strftime("%Y-%m-%dT%H:%M:%S+03:00")
+ 
     # ── ENDPOINTler ───────────────────────────────────────────────────────────
-
-    def get_ptf(self, start_date: str, end_date: str) -> list:
-        body = {"startDate": start_date, "endDate": end_date}
-        result = self._post("/v1/markets/dam/data/mcp", body)
-        return result.get("items", [])
-
-    def get_smf(self, start_date: str, end_date: str) -> list:
-        body = {"startDate": start_date, "endDate": end_date}
-        result = self._post("/v1/markets/bpm/data/system-marginal-price", body)
-        data = result.get("items", [])
-        # systemMarginalPrice'ı her zaman float'a çevir
-        for row in data:
-            if "systemMarginalPrice" in row:
-                row["systemMarginalPrice"] = float(row["systemMarginalPrice"])
-        return data
-
+ 
+    # HATA DÜZELTİLDİ: DAG'da "get_ptf_smf_sdf" olarak çağrılıyor,
+    # metod adı ona göre eklendi (get_pricing_data alias'ı da korundu)
+    def get_ptf_smf_sdf(self, start_date, end_date):
+        """PTF, SMF ve SDF verilerini çeker. DAG uyumlu isim."""
+        payload = {"startDate": self.format_date(start_date), "endDate": self.format_date(end_date)}
+        return self._post("/v1/data/ptf-smf-sdf", payload).get("items", [])
+ 
+    def get_pricing_data(self, start_date, end_date):
+        """get_ptf_smf_sdf için geriye dönük uyumluluk alias'ı."""
+        return self.get_ptf_smf_sdf(start_date, end_date)
+ 
+    def get_unlicensed_generation(self, start_date, end_date):
+        payload = {"startDate": self.format_date(start_date), "endDate": self.format_date(end_date)}
+        return self._post("/v1/renewables/data/unlicensed-generation-amount", payload).get("items", [])
+ 
+    def get_imbalance_quantity(self, start_date, end_date):
+        payload = {"startDate": self.format_date(start_date), "endDate": self.format_date(end_date)}
+        return self._post("/v1/markets/imbalance/data/imbalance-quantity", payload).get("items", [])
+ 
+    def get_dpp(self, start_date, end_date, org_id=None):
+        payload = {"startDate": self.format_date(start_date), "endDate": self.format_date(end_date)}
+        if org_id:
+            payload["organizationId"] = org_id
+        return self._post("/v1/generation/data/dpp", payload).get("items", [])
+ 
+    def get_market_participants(self):
+        return self._post("/v1/markets/general-data/data/market-participants", {}).get("items", [])
+ 
+    def get_system_direction(self, start_date, end_date):
+        payload = {"startDate": self.format_date(start_date), "endDate": self.format_date(end_date)}
+        return self._post("/v1/markets/bpm/data/system-direction", payload).get("items", [])
+ 
     def get_realtime_generation(self, start_date: str, end_date: str) -> list:
         body = {"startDate": start_date, "endDate": end_date}
         result = self._post("/v1/generation/data/realtime-generation", body)
         data = result.get("items", [])
-        # Tüm sayısal kolonları float'a çevir
         numeric_cols = [
             "total", "naturalGas", "dammedHydro", "lignite", "river",
             "importCoal", "wind", "sun", "fueloil", "geothermal",
@@ -122,13 +121,12 @@ class EPIASClient:
                 if col in row and row[col] is not None:
                     row[col] = float(row[col])
         return data
-
+ 
     def get_realtime_consumption(self, start_date: str, end_date: str) -> list:
         body = {"startDate": start_date, "endDate": end_date}
         result = self._post("/v1/consumption/data/realtime-consumption", body)
-        print("CONSUMPTION RAW RESPONSE:", list(result.keys()))
         return result.get("items", [])
-
+ 
     def get_load_estimation_plan(self, start_date: str, end_date: str) -> list:
         body = {"startDate": start_date, "endDate": end_date}
         result = self._post("/v1/consumption/data/load-estimation-plan", body)
@@ -137,19 +135,17 @@ class EPIASClient:
             if "lep" in row and row["lep"] is not None:
                 row["lep"] = float(row["lep"])
         return data
-    
-# ── KULLANIM ──────────────────────────────────────────────────────────────────
-
+ 
+    def get_uevcb_list(self):
+        return self._post("/v1/generation/data/uevcb-list", {}).get("items", [])
+ 
+    def get_organization_list(self):
+        return self._post("/v1/generation/data/organization-list", {}).get("items", [])
+ 
+ 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-
     client = EPIASClient()
-
-    # Tek bir günün PTF verisini çek
-    data = client.get_ptf(
-        start_date="2024-01-01T00:00:00+03:00",
-        end_date="2024-01-01T23:00:00+03:00",
-    )
-
+    data = client.get_ptf_smf_sdf("2024-01-01", "2024-01-01")
     for row in data:
         print(row)
