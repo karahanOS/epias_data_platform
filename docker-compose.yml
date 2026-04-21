@@ -33,9 +33,9 @@ services:
       - "7077:7077"
       - "8081:8080"
     volumes:
-      - ./spark_jobs:/opt/spark_jobs
+      - ./spark_jobs:/opt/airflow/spark
       - ./epias_dbt:/opt/airflow/epias_dbt
-      - ./credentials:/opt/credentials
+      - ./credentials:/opt/airflow/credentials
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --ip 0.0.0.0
     stdin_open: true
     tty: true
@@ -50,9 +50,9 @@ services:
     depends_on:
       - spark-master
     volumes:
-      - ./spark_jobs:/opt/spark_jobs
+      - ./spark_jobs:/opt/airflow/spark
       - ./epias_dbt:/opt/airflow/epias_dbt
-      - ./credentials:/opt/credentials
+      - ./credentials:/opt/airflow/credentials
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     stdin_open: true
     tty: true

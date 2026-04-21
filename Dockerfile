@@ -19,11 +19,13 @@ ENV SPARK_VERSION=3.5.0
 ENV HADOOP_VERSION=3
 ENV SPARK_HOME=/opt/spark
 ENV PATH="/opt/spark/bin:${JAVA_HOME}/bin:$PATH"
-
+ADD https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-hadoop3-latest.jar \
+    /opt/spark/jars/
 # 3. Spark İndir ve Kur
 RUN curl -fL "https://archive.apache.org/dist/spark/spark-$SPARK_VERSION/spark-$SPARK_VERSION-bin-hadoop$HADOOP_VERSION.tgz" | tar -xz -C /opt && \
     mv "/opt/spark-$SPARK_VERSION-bin-hadoop$HADOOP_VERSION" "$SPARK_HOME"
-
+RUN curl -fL https://repo1.maven.org/maven2/com/google/cloud/bigdataoss/gcs-connector/hadoop3-2.2.22/gcs-connector-hadoop3-2.2.22-shaded.jar \
+    -o $SPARK_HOME/jars/gcs-connector.jar
 # 4. Yetki ver ve symlink oluştur
 RUN chmod -R 755 /opt/spark && \
     ln -sf /opt/spark/bin/spark-submit /usr/bin/spark-submit

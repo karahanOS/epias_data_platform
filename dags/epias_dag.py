@@ -204,24 +204,30 @@ with DAG(
         gt >> st
         bronze_tasks.append(st)
 
-    # 2. SILVER KATMANI
+    # Silver Task Tanımı
     silver_tasks = []
     for key in list(data_sources.keys()) + ["weather"]:
         silver_t = SparkSubmitOperator(
             task_id=f"silver_{key}",
-            application=f"/opt/airflow/spark_jobs/bronze_to_silver_{key}.py",
+            application=f"/opt/airflow/spark/bronze_to_silver_{key}.py",
+            py_files="/opt/airflow/spark/spark_utils.py",
+            # JAR dosyasının yolunu operatöre veriyoruz
+            jars="/opt/spark/jars/gcs-connector.jar", 
             conn_id=SPARK_CONN_ID,
             application_args=["{{ ds }}"],
             deploy_mode="client",
+            name=f"epias_silver_{key}"
         )
         silver_tasks.append(silver_t)
 
-    # 3. GOLD: Analiz Katmanı
-    run_gold = PythonOperator(
-        task_id="run_spark_gold",
-        # HATA DÜZELTİLDİ: lambda içinde run_spark_job çağrısı — artık tanımlı
-        python_callable=lambda **c: run_spark_job("silver_to_gold.py", c["ds"])
-    )
+    run_gold = SparkSubmitOperator(
+            task_id="run_spark_gold",
+            application="/opt/airflow/spark/silver_to_gold.py",
+            conn_id=SPARK_CONN_ID,
+            application_args=["{{ ds }}"],
+            name="epias_run_gold",
+            deploy_mode="client"
+        )
 
     # 4. BIGQUERY
     gold_tables = ["market_prices", "renewable_impact", "player_analysis", "imbalance_metrics"]
