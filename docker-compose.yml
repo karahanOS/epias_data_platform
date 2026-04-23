@@ -9,9 +9,6 @@ x-airflow-common: &airflow-common
     PYTHONPATH: /opt/airflow/src
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/credentials/gcp-key.json
     JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-    # KALDIRILDI: _PIP_ADDITIONAL_REQUIREMENTS
-    # Paketler artık Dockerfile içinde kurulu — her başlangıçta 317MB indirmez,
-    # izin hatası vermez, çok daha hızlı başlar.
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/airflow/src
@@ -21,11 +18,15 @@ x-airflow-common: &airflow-common
     - ./spark_jobs:/opt/airflow/spark
     - /var/run/docker.sock:/var/run/docker.sock
   user: "${AIRFLOW_UID:-50000}:0"
+  networks:
+    - epias-net
 
 services:
+
   spark-master:
     image: apache/spark:3.5.0
     container_name: spark-master
+    entrypoint: []
     environment:
       - SPARK_MODE=master
       - GOOGLE_APPLICATION_CREDENTIALS=/opt/credentials/gcp-key.json
@@ -34,28 +35,39 @@ services:
       - "8081:8080"
     volumes:
       - ./spark_jobs:/opt/airflow/spark
-      - ./epias_dbt:/opt/airflow/epias_dbt
-      - ./credentials:/opt/airflow/credentials
+      - ./credentials:/opt/credentials
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --ip 0.0.0.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
     stdin_open: true
     tty: true
+    networks:
+      - epias-net
 
   spark-worker:
     image: apache/spark:3.5.0
     container_name: spark-worker
+    entrypoint: []
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
       - GOOGLE_APPLICATION_CREDENTIALS=/opt/credentials/gcp-key.json
     depends_on:
-      - spark-master
+      spark-master:
+        condition: service_healthy
     volumes:
       - ./spark_jobs:/opt/airflow/spark
-      - ./epias_dbt:/opt/airflow/epias_dbt
-      - ./credentials:/opt/airflow/credentials
+      - ./credentials:/opt/credentials
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    restart: unless-stopped
     stdin_open: true
     tty: true
+    networks:
+      - epias-net
 
   postgres:
     image: postgres:13
@@ -68,6 +80,8 @@ services:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 5s
       retries: 5
+    networks:
+      - epias-net
 
   airflow-init:
     <<: *airflow-common
@@ -75,10 +89,22 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: >
-      bash -c "airflow db migrate &&
-      airflow users create --username admin --firstname Admin --lastname User
-      --role Admin --email admin@example.com --password admin"
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com \
+          --password admin &&
+        airflow connections add spark_default \
+          --conn-type spark \
+          --conn-host spark-master \
+          --conn-port 7077
     restart: "no"
 
   airflow-webserver:
@@ -89,20 +115,32 @@ services:
         condition: service_completed_successfully
     ports:
       - "8080:8080"
-    command: >
-     bash -c "mkdir -p /opt/airflow/logs && 
-              chmod -R 775 /opt/airflow/logs && 
-              airflow webserver"
+    command:
+      - bash
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs &&
+        chmod -R 775 /opt/airflow/logs &&
+        airflow webserver
     restart: unless-stopped
 
   airflow-scheduler:
-   <<: *airflow-common
-   container_name: airflow-scheduler
-   depends_on:
-     airflow-init:
-       condition: service_completed_successfully
-   command: >
-     bash -c "mkdir -p /opt/airflow/logs && 
-              chmod -R 775 /opt/airflow/logs && 
-              airflow scheduler"
-   restart: unless-stopped
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      spark-master:
+        condition: service_healthy
+    command:
+      - bash
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs &&
+        chmod -R 775 /opt/airflow/logs &&
+        airflow scheduler
+    restart: unless-stopped
+
+networks:
+  epias-net:
+    driver: bridge

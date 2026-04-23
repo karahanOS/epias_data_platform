@@ -75,15 +75,10 @@ class EPIASClient:
     # ── ENDPOINTler ───────────────────────────────────────────────────────────
  
     # HATA DÜZELTİLDİ: DAG'da "get_ptf_smf_sdf" olarak çağrılıyor,
-    # metod adı ona göre eklendi (get_pricing_data alias'ı da korundu)
-    def get_ptf_smf_sdf(self, start_date, end_date):
-        """PTF, SMF ve SDF verilerini çeker. DAG uyumlu isim."""
+    # metod adı ona göre eklendi (get_pricing_data alias'ı da korundu) 
+    def get_pricing_data(self, start_date, end_date):
         payload = {"startDate": self.format_date(start_date), "endDate": self.format_date(end_date)}
         return self._post("/v1/data/ptf-smf-sdf", payload).get("items", [])
- 
-    def get_pricing_data(self, start_date, end_date):
-        """get_ptf_smf_sdf için geriye dönük uyumluluk alias'ı."""
-        return self.get_ptf_smf_sdf(start_date, end_date)
  
     def get_unlicensed_generation(self, start_date, end_date):
         payload = {"startDate": self.format_date(start_date), "endDate": self.format_date(end_date)}
@@ -146,6 +141,6 @@ class EPIASClient:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     client = EPIASClient()
-    data = client.get_ptf_smf_sdf("2024-01-01", "2024-01-01")
+    data = client.get_pricing_data("2024-01-01", "2024-01-01")
     for row in data:
         print(row)

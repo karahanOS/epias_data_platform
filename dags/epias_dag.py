@@ -90,9 +90,9 @@ def get_weather_data_callable(**context):
 
 def save_to_gcs_callable(task_id: str, bucket_path: str, **context):
     data = context["ti"].xcom_pull(task_ids=task_id)
-    if not data:
-        logger.warning(f"⚠️ {task_id} için veri boş.")
-        return
+    if not data or len*(data)==0:
+        raise ValueError(f"🚨 {task_id} taskından veri gelmedi, GCS'e kayıt yapılamıyor!")
+        
 
     flattened_data = []
     if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
@@ -206,14 +206,16 @@ with DAG(
 
     # Silver Task Tanımı
     silver_tasks = []
-    for key in list(data_sources.keys()) + ["weather"]:
+    # epias_dag.py içinde Silver Task döngüsü
+    for key in data_sources:
         silver_t = SparkSubmitOperator(
             task_id=f"silver_{key}",
             application=f"/opt/airflow/spark/bronze_to_silver_{key}.py",
             py_files="/opt/airflow/spark/spark_utils.py",
-            # JAR dosyasının yolunu operatöre veriyoruz
-            jars="/opt/spark/jars/gcs-connector.jar", 
-            conn_id=SPARK_CONN_ID,
+            jars="/opt/spark/jars/gcs-connector.jar",
+            conn_id="spark_default",
+            # HATA DÜZELTME: Master URL'i burada açıkça veya Connection üzerinden protokol ile verin
+            master="spark://spark-master:7077", 
             application_args=["{{ ds }}"],
             deploy_mode="client",
             name=f"epias_silver_{key}"
