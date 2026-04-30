@@ -92,19 +92,7 @@ services:
     command:
       - bash
       - -c
-      - |
-        airflow db migrate &&
-        airflow users create \
-          --username admin \
-          --firstname Admin \
-          --lastname User \
-          --role Admin \
-          --email admin@example.com \
-          --password admin &&
-        airflow connections add spark_default \
-          --conn-type spark \
-          --conn-host spark-master \
-          --conn-port 7077
+      - "airflow db migrate && airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin; python3 -c \"from airflow.models import Connection; from airflow import settings; s=settings.Session(); existing=s.query(Connection).filter(Connection.conn_id=='spark_default').first(); c=existing or Connection(conn_id='spark_default',conn_type='spark',host='spark-master',port=7077); s.add(c) if not existing else None; s.commit(); s.close(); print('spark_default OK')\""
     restart: "no"
 
   airflow-webserver:
@@ -118,10 +106,7 @@ services:
     command:
       - bash
       - -c
-      - |
-        mkdir -p /opt/airflow/logs &&
-        chmod -R 775 /opt/airflow/logs &&
-        airflow webserver
+      - "mkdir -p /opt/airflow/logs && chmod -R 775 /opt/airflow/logs && airflow webserver"
     restart: unless-stopped
 
   airflow-scheduler:
@@ -135,10 +120,7 @@ services:
     command:
       - bash
       - -c
-      - |
-        mkdir -p /opt/airflow/logs &&
-        chmod -R 775 /opt/airflow/logs &&
-        airflow scheduler
+      - "mkdir -p /opt/airflow/logs && chmod -R 775 /opt/airflow/logs && airflow scheduler"
     restart: unless-stopped
 
 networks:
