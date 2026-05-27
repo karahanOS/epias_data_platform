@@ -14,6 +14,7 @@ x-airflow-common: &airflow-common
     - ./src:/opt/airflow/src
     - ./logs:/opt/airflow/logs
     - ./credentials:/opt/airflow/credentials
+    - ./credentials:/opt/credentials
     - ./epias_dbt:/opt/airflow/epias_dbt
     - ./spark_jobs:/opt/airflow/spark
     - /var/run/docker.sock:/var/run/docker.sock

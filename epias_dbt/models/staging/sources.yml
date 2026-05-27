@@ -1,35 +1,26 @@
+# epias_dbt/models/staging/sources.yml
 version: 2
 
 sources:
-  - name: epias_gold
-    database: epias-data-platform
-    schema: epias_gold
+  - name: silver
+    database: "{{ env_var('GCP_PROJECT_ID', 'epias-data-project') }}"
+    schema: silver
     tables:
-      - name: gold_monthly_executive_metrics
-        description: "Spark tarafından üretilen aylık özet veriler"
-      # Airflow'un gold_ ön ekiyle yüklediği yeni ana tablolar
-      - name: gold_price_spread_analysis
-        description: "PTF ve SMF verilerinin karşılaştırmalı analizi"
-      
-      - name: gold_load_vs_actual
-        description: "Tahmin edilen ve gerçekleşen tüketim verileri"
-
-      - name: gold_generation_mix_price_impact
-        description: "Üretim kırılımının fiyat üzerindeki etkisi"
-
-      - name: gold_supply_demand_summary
-        description: "Arz ve talep dengesi özeti"
-
-      - name: gold_renewable_deep_analysis
-        description: "Yenilenebilir enerji üretim detayları"
-
-      - name: gold_ml_features
-        description: "XGBoost modeli için hazırlanan özellik seti"
-
-      # Geriye dönük uyumluluk için eski isimler (opsiyonel)
-      - name: price_spread_analysis
-      - name: load_vs_actual
-
-      # YENİ TABLO: Diğer tablolarla AYNI hizada olmalı
-      - name: gold_ptf_predictions
-        description: "XGBoost modelimizden gelen PTF tahmin sonuçları"
+      - name: dam_clearing
+      - name: pricing
+      - name: idm_transactions
+      - name: participants
+      # ... önceki tablolar (dam_clearing, pricing vb.)
+      - name: smf
+      - name: system_direction
+      - name: imbalance
+      - name: order_up
+      - name: order_down
+      # ... önceki tablolar
+      - name: uevcb_list
+      - name: dams
+      - name: outages
+      - name: price_ind_bid
+      - name: load_estimation
+      - name: aic
+      - name: res_forecast

@@ -1,61 +1,111 @@
+"""
+load_to_bigquery.py — GCS Silver Katmanını BigQuery'ye Bağlama (External Tables)
+=================================================================================
+Bu script, GCS üzerindeki Hive-partitioned Parquet dosyalarını (Silver Katmanı),
+BigQuery'de "External Table" olarak yaratır/günceller. 
+Veri kopyalanmaz, dbt doğrudan bu tabloları okuyarak Gold katmanını BigQuery içinde inşa eder.
+"""
+
 import os
-from google.cloud import bigquery, storage
+import logging
+from google.cloud import bigquery
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "credentials/gcp-key.json"
+# Loglama Ayarları
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("BQLoader")
 
-bq_client = bigquery.Client()
-gcs_client = storage.Client()
+class BQExternalTableManager:
+    def __init__(self):
+        # GCP ve BigQuery Ayarları
+        self.project_id = os.getenv("GCP_PROJECT_ID", "epias-data-project")
+        self.dataset_id = os.getenv("BQ_SILVER_DATASET", "silver")
+        self.bucket_name = os.getenv("GCS_BUCKET", "epias-data-lake")
+        
+        # BigQuery İstemcisi
+        self.client = bigquery.Client(project=self.project_id)
+        
+        # Dataset yoksa oluştur
+        self._ensure_dataset_exists()
 
-BUCKET_NAME = "epias-data-lake"
-DATASET = "epias_gold"
+    def _ensure_dataset_exists(self):
+        """Silver dataset'inin BigQuery'de var olduğundan emin olur."""
+        dataset_ref = f"{self.project_id}.{self.dataset_id}"
+        try:
+            self.client.get_dataset(dataset_ref)
+            logger.info(f"Dataset '{dataset_ref}' zaten mevcut.")
+        except Exception:
+            logger.info(f"Dataset '{dataset_ref}' bulunamadı, oluşturuluyor...")
+            dataset = bigquery.Dataset(dataset_ref)
+            dataset.location = "EU" # Projenin lokasyonuna göre değiştirilebilir
+            self.client.create_dataset(dataset, timeout=30)
+            logger.info(f"✅ Dataset '{dataset_ref}' başarıyla oluşturuldu.")
 
-tables = [
-    "price_spread_analysis",
-    "generation_mix_price_impact",
-    "supply_demand_summary",
-    "monthly_executive_metrics",
-    "load_vs_actual",
-    "renewable_deep_analysis",
-    "ml_features", 
-]
+    def create_or_update_external_table(self, table_name: str):
+        """
+        Belirtilen tablo adı için GCS'teki Parquet dosyalarını gösteren 
+        bir BigQuery External (Dış) Tablosu oluşturur.
+        """
+        table_id = f"{self.project_id}.{self.dataset_id}.{table_name}"
+        gcs_uri = f"gs://{self.bucket_name}/silver/{table_name}/*"
+        source_uri_prefix = f"gs://{self.bucket_name}/silver/{table_name}"
 
-def list_parquet_files(prefix):
-    """GCS'deki tüm parquet dosyalarını listele"""
-    bucket = gcs_client.bucket(BUCKET_NAME)
-    blobs = bucket.list_blobs(prefix=prefix)
-    uris = [
-        f"gs://{BUCKET_NAME}/{blob.name}"
-        for blob in blobs
-        if blob.name.endswith(".parquet")
-    ]
-    return uris
+        logger.info(f"External Tablo ayarlanıyor: {table_id} -> {gcs_uri}")
 
-for table_name in tables:
-    print(f"\n{table_name} yükleniyor...")
+        # External Table Yapılandırması
+        external_config = bigquery.ExternalConfig("PARQUET")
+        external_config.source_uris = [gcs_uri]
+        
+        # Hive Partitioning Ayarları (year=.../month=.../day=...)
+        hive_options = bigquery.HivePartitioningOptions()
+        hive_options.mode = "AUTO" # Şemayı ve partition tiplerini otomatik algılar
+        hive_options.source_uri_prefix = source_uri_prefix
+        external_config.hive_partitioning = hive_options
 
-    prefix = f"gold/{table_name}/"
-    uris = list_parquet_files(prefix)
+        # Tablo Tanımı
+        table = bigquery.Table(table_id)
+        table.external_data_configuration = external_config
 
-    if not uris:
-        print(f"⚠️  {table_name} için dosya bulunamadı, atlanıyor.")
-        continue
+        # Tabloyu yarat veya varsa güncelle
+        try:
+            self.client.delete_table(table_id, not_found_ok=True) # Şema değişmişse diye temizle
+            table = self.client.create_table(table)
+            logger.info(f"✅ Başarılı: {table_id} dış tablosu oluşturuldu.")
+        except Exception as e:
+            logger.error(f"❌ Tablo oluşturulurken hata: {table_name} - {e}")
 
-    print(f"  {len(uris)} parquet dosyası bulundu")
+    def run_all_tables(self):
+        """Tüm Silver tablolarını BigQuery'ye bağlar."""
+        # Spark ile oluşturduğumuz tüm silver tabloların listesi
+        tables = [
+            "pricing", 
+            "dam_clearing", 
+            "unlicensed", 
+            "dpp", 
+            "idm_transactions", 
+            "weather", 
+            "injection", 
+            "order_up", 
+            "order_down", 
+            "imbalance", 
+            "generation", 
+            "supply_demand", 
+            "participants"
+        ]
+        
+        logger.info(f"Toplam {len(tables)} tablo BigQuery'ye tanımlanıyor...")
+        for table in tables:
+            self.create_or_update_external_table(table)
+            
+        logger.info("🎉 Tüm tablolar başarıyla BigQuery'ye bağlandı!")
 
-    job_config = bigquery.LoadJobConfig(
-        source_format=bigquery.SourceFormat.PARQUET,
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        autodetect=True,
-    )
-
-    load_job = bq_client.load_table_from_uri(
-        source_uris=uris,
-        destination=f"{DATASET}.{table_name}",
-        job_config=job_config,
-    )
-
-    load_job.result()
-    table = bq_client.get_table(f"{DATASET}.{table_name}")
-    print(f"✅ {table_name} tamamlandı! ({table.num_rows} satır)")
-
-print("\n🎉 Tüm tablolar BigQuery'e yüklendi!")
+if __name__ == "__main__":
+    manager = BQExternalTableManager()
+    
+    # Bu script Airflow'dan çağrıldığında dışarıdan tablo adı alabilir,
+    # Argüman yoksa tüm tabloları günceller.
+    import sys
+    if len(sys.argv) > 1:
+        target_table = sys.argv[1]
+        manager.create_or_update_external_table(target_table)
+    else:
+        manager.run_all_tables()

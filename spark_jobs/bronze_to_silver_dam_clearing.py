@@ -1,72 +1,64 @@
 # /opt/airflow/src/spark/bronze_to_silver_dam_clearing.py
-import os
+# spark_jobs/bronze_to_silver_dam_clearing.py
+
+import sys
+from pyspark.sql.types import DoubleType
 from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType, LongType
-from spark_utils import get_spark_session, get_execution_date, MarketSchemas, logger
+from spark_utils import BaseEpiasSparkJob
 
-def main():
-    # 1. Standart Spark Session Başlatma ve Tarih Argümanını Güvenli Yakalama
-    spark = get_spark_session("BronzeToSilver_DamClearing")
-    target_date = get_execution_date()
-    
-    logger.info(f"🚀 GÖP Eşleşme Miktarı (DAM Clearing) Silver katmanı dönüşümü başlatıldı. Hedef Tarih: {target_date}")
-    
-    # Projenizin GCS bucket ismini environment variable'dan veya default değerden alıyoruz
-    base_bucket = os.getenv("SPARK_GCS_BUCKET", "gs://epias-data-lake") 
-    
-    # Airflow pipeline yapınıza göre Bronze okuma ve Silver yazma yollarını tanımlıyoruz
-    # (Eğer klasör yapınız tarih partisyonlu ise path'i ona göre güncelleyebilirsiniz)
-    bronze_path = f"{base_bucket}/bronze/dam_clearing/{target_date}.parquet"
-    silver_path = f"{base_bucket}/silver/dam_clearing"
-    
-    logger.info(f"📋 Veri kaynağı okunuyor: {bronze_path}")
-    
-    # 2. Katı Şema Güvencesi (Schema Enforcement)
-    # Otomatik şema çıkarımı (inferSchema) yerine spark_utils'teki şemayı dikte ediyoruz.
-    try:
-        df_raw = spark.read.schema(MarketSchemas.DAM_CLEARING).parquet(bronze_path)
-    except Exception as e:
-        # Eğer boru hattınızın Bronze katmanı Parquet yerine ham JSON/CSV basıyorsa fallback mekanizması:
-        logger.warning(f"⚠️ Parquet formatında okuma yapılamadı, JSON formatı deneniyor. Detay: {str(e)}")
-        bronze_path_json = bronze_path.replace(".parquet", ".json")
-        df_raw = spark.read.schema(MarketSchemas.DAM_CLEARING).json(bronze_path_json)
-
-    # Boş veri kontrolü
-    if df_raw.rdd.isEmpty():
-        logger.warning(f"🛑 {target_date} tarihi için işlenecek ham veri bulunamadı. Akış durduruluyor.")
-        return
-
-    # 3. Veri Temizliği, Standardizasyon ve Tip Dönüşümleri (Deduplication & Transformation)
-    # EPİAŞ'tan gelen tarih formatı: "2025-01-01T00:00:00+03:00"
-    df_silver = df_raw \
-        .withColumn("parsed_time", F.to_timestamp("date", "yyyy-MM-dd'T'HH:mm:ssXXX")) \
-        .withColumn("partition_date", F.to_date("parsed_time")) \
-        .withColumn("hour", F.hour("parsed_time")) \
-        .withColumn("quantity", F.col("quantity").cast(DoubleType())) \
-        .withColumn("organizationId", F.col("organizationId").cast(LongType())) \
-        .withColumn("direction", F.upper(F.trim(F.col("direction")))) \
-        .filter(F.col("partition_date") == target_date) \
-        .dropDuplicates(["partition_date", "hour", "organizationId", "direction"]) \
-        .select(
-            "partition_date",
-            "hour",
-            "organizationId",
-            "quantity",
-            "direction",
-            F.current_timestamp().alias("processed_at")
+class DamClearingSilverJob(BaseEpiasSparkJob):
+    """
+    Gün Öncesi Piyasası (GÖP) Eşleşme (Clearing) verilerini işler.
+    Bu veri dbt katmanında GÖP hacim ve piyasa katılım analizlerinde kullanılacaktır.
+    """
+    def __init__(self):
+        super().__init__(
+            app_name="BronzeToSilver_DamClearing",
+            source_name="dam_clearing",
+            primary_keys=["date"]
         )
 
-    # 4. Küçük Dosya Probleminin Önlenmesi ve İdempotent Yazım (Dynamic Overwrite)
-    # coalesce(1) kullanarak her gün/partisyon için GCS üzerinde tek bir optimize Parquet dosyası üretiyoruz.
-    # spark_utils içindeki dynamic overwrite modu sayesinde sadece hedef tarihin klasörünü güvenle ezer.
-    logger.info(f"💾 Temizlenmiş veri Silver katmanına yazılıyor: {silver_path}")
-    
-    df_silver.coalesce(1).write \
-        .mode("overwrite") \
-        .partitionBy("partition_date") \
-        .parquet(silver_path)
+    def run(self, ds: str):
+        # 1. Okuma (Extract)
+        try:
+            df = self.read_bronze(ds)
+        except Exception as e:
+            self.logger.error(f"Veri okuma hatası: {e}")
+            self.spark.stop()
+            return
+
+        if df.rdd.isEmpty():
+            self.logger.warning(f"Bronze veri boş: {ds}. İşlem atlanıyor.")
+            self.spark.stop()
+            return
+
+        # 2. Dönüşüm ve Şema Dayatması (Transform)
+        self.logger.info("Dam Clearing verisi için tipler dönüştürülüyor...")
         
-    logger.info(f"✅ GÖP Eşleşme Miktarı Silver katmanına başarıyla yazıldı. Partisyon: partition_date={target_date}")
+        # Tarih formatını standartlaştır
+        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        
+        # Miktar ve hacim kolonlarını güvenli bir şekilde Double'a cast et
+        numeric_cols = [
+            "matchedBidsQuantity", 
+            "matchedOffersQuantity", 
+            "blockBidQuantity", 
+            "blockOfferQuantity"
+        ]
+        
+        for col_name in numeric_cols:
+            if col_name in df.columns:
+                df = df.withColumn(col_name, F.col(col_name).cast(DoubleType()))
+
+        # 3. Ortak İşlemler (Partitioning & Deduplication)
+        df = self.add_partition_columns(df, ds)
+        df = self.deduplicate(df)
+
+        # 4. Yazma (Load - Dynamic Overwrite)
+        self.write_silver(df)
+        self.spark.stop()
 
 if __name__ == "__main__":
-    main()
+    target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"
+    job = DamClearingSilverJob()
+    job.run(target_ds)

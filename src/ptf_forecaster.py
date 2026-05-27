@@ -1,245 +1,119 @@
 """
-PTF Day-Ahead Forecasting - Saf TL Versiyonu
-Yarınki saatlik elektrik fiyatlarını (PTF) tahmin eder.
-Model: XGBoost
-Feature kaynağı: dbt mart_ptf_lag_features (BigQuery)
+ptf_forecaster.py — XGBoost ile Gelişmiş PTF Fiyat Tahmin Modeli (v3.0)
+================================================================================
+Bu model, BigQuery'deki dbt Gold tablolarından (Özellikle 'Forecasted Residual Load' 
+ve 'Supply Shock Index') beslenerek ertesi günün PTF fiyatlarını tahminler.
 """
 
 import os
+import logging
 import pandas as pd
 import numpy as np
-from google.cloud import bigquery
-from google.oauth2 import service_account
 import xgboost as xgb
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from google.cloud import bigquery
+from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 import joblib
-import json
-from datetime import datetime, timedelta
-import holidays
-import warnings
-import optuna
-import shap
 
-warnings.filterwarnings("ignore")
-optuna.logging.set_verbosity(optuna.logging.WARNING)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("PTFForecaster")
 
-# ── CONFIG ────────────────────────────────────────────────────────────────────
+class PredictivePTFForecaster:
+    def __init__(self):
+        self.project_id = os.getenv("GCP_PROJECT_ID", "epias-data-project")
+        self.dataset_id = "epias_dbt_marts"
+        self.client = bigquery.Client(project=self.project_id)
+        self.model_path = "models/ptf_advanced_xgb_model.joblib"
+        os.makedirs("models", exist_ok=True)
 
-PROJECT      = "epias-data-platform"
-DATASET      = "epias_gold" # dbt modellerinin yazdığı dataset
-TABLE        = "mart_ptf_lag_features"
-MODEL_PATH   = "models/ptf_xgb_model.joblib"
-METRICS_PATH = "models/ptf_model_metrics.json"
+    def extract_gold_data(self) -> pd.DataFrame:
+        """Yeni dbt Gold tablolarından Gelecek Kalan Yük ve Arz Şoku verilerini çeker."""
+        logger.info("BigQuery'den Gold (Predictive) veriler çekiliyor...")
+        
+        query = f"""
+        SELECT 
+            f.date,
+            f.ptf_try,
+            f.forecasted_residual_load_mwh,
+            f.strict_demand_pct,
+            s.total_available_capacity_mwh,
+            s.total_outage_mwh,
+            s.supply_stress_pct,
+            s.avg_water_level_m
+        FROM `{self.project_id}.{self.dataset_id}.mart_forecasted_residual_load` f
+        LEFT JOIN `{self.project_id}.{self.dataset_id}.mart_supply_shock_index` s
+            ON f.date = s.date
+        ORDER BY f.date ASC
+        """
+        df = self.client.query(query).to_dataframe()
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+        return df
 
-# ptf_forecaster.py içindeki ilgili kısımlar
-FEATURE_COLS = [
-    "hour_of_day", "day_of_week", "is_weekend", "month_of_year",
-    "temperature", "wind_speed", "solar_radiation", "humidity",
-    "wind_generation", "solar_generation", "hydro_generation",
-    "gas_generation", "total_generation", "actual_consumption",
-    "forecast_consumption", # Artık dbt'de var, aktif ettik
-    "ptf_lag_1h", "ptf_lag_24h", "ptf_lag_168h",
-    "ptf_rolling_avg_24h", "ptf_rolling_avg_168h",
-    "ptf_rolling_max_24h", "ptf_rolling_min_24h",
-]
-TARGET_COL = "ptf"
+    def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Zaman serisi özelliklerini (Lags & Rolling) üretir."""
+        logger.info("Özellik Mühendisliği (Feature Engineering) uygulanıyor...")
+        
+        # Takvim Özellikleri
+        df['hour'] = df.index.hour
+        df['day_of_week'] = df.index.dayofweek
+        df['month'] = df.index.month
+        df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+        
+        # Geçmiş Fiyat Gecikmeleri (T-24, T-48, T-168)
+        df['ptf_lag_24h'] = df['ptf_try'].shift(24)
+        df['ptf_lag_168h'] = df['ptf_try'].shift(168) # 1 Hafta önceki aynı saat
+        
+        # Baraj seviyesi ve arızalar genelde günlük/haftalık trend izler
+        df['water_level_trend_7d'] = df['avg_water_level_m'].rolling(window=168).mean()
 
-# ── BIGQUERY'DEN VERİ ÇEK ────────────────────────────────────────────────────
+        # NaN değerleri temizle (İlk 168 saat laglardan dolayı boştur)
+        df.dropna(inplace=True)
+        return df
 
-def get_bq_client():
-    creds_path = "credentials/gcp-key.json"
-    if os.path.exists(creds_path):
-        return bigquery.Client.from_service_account_json(creds_path)
-    return bigquery.Client(project=PROJECT)
+    def train_and_evaluate(self, df: pd.DataFrame):
+        """XGBoost modelini eğitir ve Feature Importance (Özellik Önemi) çıkarır."""
+        logger.info("Model eğitimi başlıyor...")
+        
+        target = 'ptf_try'
+        features = [col for col in df.columns if col != target]
+        
+        # Son 30 Günü Test Seti Olarak Ayır (Time Series Split)
+        split_date = df.index.max() - pd.Timedelta(days=30)
+        
+        X_train, y_train = df.loc[df.index < split_date, features], df.loc[df.index < split_date, target]
+        X_test, y_test = df.loc[df.index >= split_date, features], df.loc[df.index >= split_date, target]
+        
+        self.model = xgb.XGBRegressor(
+            n_estimators=800,
+            learning_rate=0.03,
+            max_depth=6,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            objective='reg:squarederror'
+        )
+        
+        self.model.fit(X_train, y_train, eval_set=[(X_train, y_train), (X_test, y_test)], verbose=100)
+        
+        # Değerlendirme
+        preds = self.model.predict(X_test)
+        mae = mean_absolute_error(y_test, preds)
+        mape = mean_absolute_percentage_error(y_test, preds)
+        
+        logger.info(f"✅ Eğitim Bitti! Test MAE: {mae:.2f} TRY | MAPE: %{mape*100:.2f}")
+        
+        # Feature Importance
+        importance_df = pd.DataFrame({'Feature': features, 'Importance': self.model.feature_importances_})
+        importance_df = importance_df.sort_values(by='Importance', ascending=False)
+        importance_df.to_csv("models/ptf_feature_importance.csv", index=False)
+        
+        logger.info(f"🥇 En Önemli 3 Özellik:\n{importance_df.head(3).to_string(index=False)}")
+        joblib.dump(self.model, self.model_path)
 
-def load_features(limit_days: int = None) -> pd.DataFrame:
-    """BigQuery'den özellikleri yükler. Opsiyonel olarak gün sınırlaması yapar."""
-    client = get_bq_client()
+    def run(self):
+        df_raw = self.extract_gold_data()
+        df_engineered = self.engineer_features(df_raw)
+        self.train_and_evaluate(df_engineered)
 
-    # TIMESTAMP olan date kolonunu DATE() ile sarmalayarak tip uyumunu sağlıyoruz
-    where_clause = "WHERE date IS NOT NULL"
-    if limit_days:
-        where_clause += f" AND DATE(date) >= DATE_SUB(CURRENT_DATE(), INTERVAL {limit_days} DAY)"
-
-    query = f"""
-        SELECT
-            date,
-            {', '.join(FEATURE_COLS)},
-            {TARGET_COL}
-        FROM `{PROJECT}.{DATASET}.{TABLE}`
-        {where_clause}
-        ORDER BY date
-    """
-
-    print(f"Sorgu çalıştırılıyor: {limit_days} günlük veri hedefleniyor...")
-    df = client.query(query).to_dataframe()
-    
-    # Mevcut tip dönüşüm mantığı...
-    for col in FEATURE_COLS + [TARGET_COL]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-    print(f"Toplam kayıt: {len(df)}")
-    return df
-
-def save_predictions_to_bq(predictions_df: pd.DataFrame):
-    """Tahminleri BigQuery'deki gold katmanına yazar."""
-    client = get_bq_client()
-    
-    # --- KRİTİK DÜZELTME BAŞLANGICI ---
-    # DataFrame'i kopyalayıp tipleri BQ şemasına uyduruyoruz
-    df_to_load = predictions_df.copy()
-    df_to_load["predicted_date"] = pd.to_datetime(df_to_load["predicted_date"])
-    
-
-    df_to_load["hour"] = df_to_load["hour"].astype(int).astype(str)
-    
-    table_id = f"{PROJECT}.epias_gold.gold_ptf_predictions"
-    
-    job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_APPEND",
-        schema=[
-            bigquery.SchemaField("predicted_date", "TIMESTAMP"),
-            bigquery.SchemaField("hour", "STRING"), # Burası STRING beklediği için yukarıda çevirdik
-            bigquery.SchemaField("predicted_ptf", "FLOAT"),
-        ],
-    )
-    
-    print(f"Tahminler BigQuery'ye yazılıyor: {table_id}...")
-    # predictions_df yerine tipini düzelttiğimiz df_to_load'u gönderiyoruz
-    job = client.load_table_from_dataframe(df_to_load, table_id, job_config=job_config)
-    job.result()
-    print("✅ Yazma işlemi başarılı.")
-
-def save_shap_importance(model, X):
-    """SHAP değerlerini hesaplar ve global önem düzeylerini kaydeder."""
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X)
-    
-    # Global önem: Her özelliğin mutlak SHAP değerlerinin ortalaması
-    vals = np.abs(shap_values).mean(0)
-    feature_importance = pd.DataFrame(list(zip(X.columns, vals)), columns=['col_name', 'feature_importance_vals'])
-    feature_importance.sort_values(by=['feature_importance_vals'], ascending=False, inplace=True)
-    
-    feature_importance.to_csv("models/ptf_shap_importance.csv", index=False)
-    print("✅ SHAP önem değerleri 'models/ptf_shap_importance.csv' olarak kaydedildi.")
-
-# ── FEATURE ENGINEERING ───────────────────────────────────────────────────────
-
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Ek analitik özellikler ekler."""
-    tr_holidays = holidays.Turkey(years=range(2024, 2027))
-    df["is_holiday"] = df["date"].dt.date.apply(lambda d: 1 if d in tr_holidays else 0)
-    
-    # Cyclical Time Encoding
-    df["hour_sin"] = np.sin(2 * np.pi * df["hour_of_day"] / 24)
-    df["hour_cos"] = np.cos(2 * np.pi * df["hour_of_day"] / 24)
-    
-    # Yenilenebilir Oranı (Merit Order Etkisi için kritik)
-    df["renewable_ratio"] = (
-        (df["wind_generation"] + df["solar_generation"] + df["hydro_generation"]) / 
-        df["total_generation"].replace(0, np.nan)
-    )
-    
-    # Tüketim Sapması (Yük tahmin hatasının fiyata etkisi)
-    df["consumption_error"] = df["actual_consumption"] - df["forecast_consumption"]
-    
-    return df
-
-# ── MODEL OPTİMİZASYONU & EĞİTİM ──────────────────────────────────────────────
-
-def optimize_hyperparams(X_train, y_train):
-    """Optuna ile en iyi parametreleri bulur."""
-    def objective(trial):
-        params = {
-            "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
-            "max_depth": trial.suggest_int("max_depth", 3, 10),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-        }
-        model = xgb.XGBRegressor(**params, random_state=42)
-        tscv = TimeSeriesSplit(n_splits=3)
-        scores = []
-        for train_idx, val_idx in tscv.split(X_train):
-            model.fit(X_train.iloc[train_idx], y_train.iloc[train_idx])
-            preds = model.predict(X_train.iloc[val_idx])
-            scores.append(mean_absolute_error(y_train.iloc[val_idx], preds))
-        return np.mean(scores)
-
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=15)
-    return study.best_params
-
-def train_model(df: pd.DataFrame):
-    df = engineer_features(df)
-    
-    extra_features = ["hour_sin", "hour_cos", "renewable_ratio", "consumption_error", "is_holiday"]
-    all_features = FEATURE_COLS + extra_features
-    
-    df = df.dropna(subset=all_features + [TARGET_COL])
-    X = df[all_features]
-    y = df[TARGET_COL]
-
-    # Time Series Split (Shuffle=False kuralı)
-    split_idx = int(len(X) * 0.8)
-    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-    y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-
-    print("Hiperparametre optimizasyonu yapılıyor...")
-    best_params = optimize_hyperparams(X_train, y_train)
-    
-    final_model = xgb.XGBRegressor(**best_params, random_state=42)
-    final_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
-
-    # Metriklerin Hesaplanması (Backtesting için gerekli)
-    y_pred = final_model.predict(X_test)
-    metrics = {
-        "mae": mean_absolute_error(y_test, y_pred),
-        "rmse": np.sqrt(mean_squared_error(y_test, y_pred)),
-        "mape": np.mean(np.abs((y_test - y_pred) / y_test.replace(0, np.nan))) * 100,
-        "trained_at": datetime.now().isoformat()
-    }
-    
-    print(f"Model Eğitildi: MAE={metrics['mae']:.2f} TL/MWh")
-    
-    os.makedirs("models", exist_ok=True)
-    joblib.dump(final_model, MODEL_PATH)
-    with open(METRICS_PATH, "w") as f:
-        json.dump(metrics, f)
-    save_shap_importance(final_model, X_test)
-
-    return final_model, metrics
-
-# ── MAIN ───────────────────────────────────────────────────────
 if __name__ == "__main__":
-    df = load_features(limit_days=30) 
-    
-    try:
-        # Mevcut modeli yükle (Eğitim adımını atla)
-        model = joblib.load(MODEL_PATH)
-        print("✅ Kayıtlı model yüklendi, sadece tahmin yapılıyor...")
-    except FileNotFoundError:
-        # Model yoksa bir kez eğit
-        model, metrics = train_model(df)
-    
-    # 3. Backtesting için tahminleri üret
-    processed_df = engineer_features(df)
-    extra_features = ["hour_sin", "hour_cos", "renewable_ratio", "consumption_error", "is_holiday"]
-    all_features = FEATURE_COLS + extra_features
-    processed_df = processed_df.dropna(subset=all_features)
-    
-    # Test seti (son %20) üzerinden tahmin alıyoruz
-    test_data = processed_df.iloc[int(len(processed_df) * 0.8):].copy()
-    test_data["predicted_ptf"] = model.predict(test_data[all_features])
-    
-    # Kolonları BigQuery şemasına uygun hale getiriyoruz
-    predictions_to_save = test_data[["date", "hour_of_day", "predicted_ptf"]].rename(
-        columns={"date": "predicted_date", "hour_of_day": "hour"}
-    )
-    
-    # 4. KRİTİK ÇAĞRI: Veriyi BigQuery'ye gönder
-    save_predictions_to_bq(predictions_to_save)
-    save_shap_importance(model, test_data[all_features])
-    print("✅ Tahminler başarıyla BigQuery'ye (gold_ptf_predictions) aktarıldı!")
+    PredictivePTFForecaster().run()

@@ -153,6 +153,7 @@ hr {
 }
 </style>
 """, unsafe_allow_html=True)
+
 # ── API EXPORT FONKSİYONU ─────────────────────────────────────────────────────
 @st.cache_data
 def convert_df_to_csv(df):
@@ -160,12 +161,11 @@ def convert_df_to_csv(df):
 
 # ── SIDEBAR GÜNCELLEME ────────────────────────────────────────────────────────
 with st.sidebar:
-    # ... (Logo ve Sayfa Seçimi kısımları aynı)
-    
     st.markdown("---")
     if st.button("🔄 Veriyi Yenile", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
+
 # ── BIGQUERY CLIENT ───────────────────────────────────────────────────────────
 
 @st.cache_resource
@@ -194,8 +194,16 @@ with st.sidebar:
 
     page = st.selectbox(
         "📊 Sayfa Seç",
-        ["🏠 Executive Summary", "⚖️ Fiyat Dengesizliği", "🌱 Üretim Karışımı", "🔋 Arz-Talep Analizi", "📉 Yük Tahmin Sapması","🌬️ Yenilenebilir Derinlemesine"],
-    label_visibility="collapsed"
+        [
+            "🏠 Executive Summary", 
+            "⚖️ Fiyat Dengesizliği", 
+            "🌱 Üretim Karışımı", 
+            "🔋 Arz-Talep Analizi", 
+            "📉 Yük Tahmin Sapması",
+            "🌬️ Yenilenebilir Derinlemesine",
+            "🚨 Arz Şokları ve Risk Analizi"  # YENİ EKLENEN SAYFA
+        ],
+        label_visibility="collapsed"
     )
 
     st.markdown("---")
@@ -317,13 +325,12 @@ if page == "🏠 Executive Summary":
     col_bt, col_shap = st.columns([1.2, 0.8])
 
     with col_bt:
-# dashboard.py içindeki hourly_query bloğunu bununla değiştirin
         hourly_query = f"""
             WITH clean_predictions AS (
                 SELECT 
                     SAFE_CAST(SAFE_CAST(hour AS FLOAT64) AS INT64) as h_int,
                     DATE(predicted_date) as p_date,
-                    AVG(predicted_ptf) as predicted_ptf -- Mükerrer kayıtları engellemek için
+                    AVG(predicted_ptf) as predicted_ptf
                 FROM `{PROJECT}.{DATASET}.gold_ptf_predictions`
                 WHERE predicted_date >= '2026-01-01'
                 GROUP BY 1, 2
@@ -338,7 +345,6 @@ if page == "🏠 Executive Summary":
                 GROUP BY 1, 2
             )
             SELECT 
-                -- En sağlam zaman damgası oluşturma yöntemi:
                 TIMESTAMP_ADD(TIMESTAMP(p.p_date), INTERVAL p.h_int HOUR) as full_datetime,
                 p.predicted_ptf,
                 f.actual_ptf
@@ -402,14 +408,14 @@ if page == "🏠 Executive Summary":
             shap_df = pd.read_csv("models/ptf_shap_importance.csv")
         
             fig_shap = px.bar(
-            shap_df.head(10), # En önemli 10 özelliği gösterelim
-            x='feature_importance_vals',
-            y='col_name',
-            orientation='h',
-            title="Özelliklerin Tahmine Etki Gücü",
-            labels={'feature_importance_vals': 'Etki Skoru (SHAP)', 'col_name': 'Özellik'},
-            color='feature_importance_vals',
-            color_continuous_scale='Blues'
+                shap_df.head(10), # En önemli 10 özelliği gösterelim
+                x='feature_importance_vals',
+                y='col_name',
+                orientation='h',
+                title="Özelliklerin Tahmine Etki Gücü",
+                labels={'feature_importance_vals': 'Etki Skoru (SHAP)', 'col_name': 'Özellik'},
+                color='feature_importance_vals',
+                color_continuous_scale='Blues'
             )
         
             fig_shap.update_layout(
@@ -428,9 +434,7 @@ if page == "🏠 Executive Summary":
         except FileNotFoundError:
             st.info("SHAP verisi henüz oluşturulmamış. Lütfen ptf_forecaster.py'ı çalıştırın.")
             st.markdown("### 🎯 Model Başarımı: Saatlik PTF Backtesting (2026)")
-        
 
-            
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE 2: Fiyat Dengesizliği
 # ═════════════════════════════════════════════════════════════════════════════
@@ -799,6 +803,9 @@ elif page == "🔋 Arz-Talep Analizi":
         )
         st.plotly_chart(fig3, use_container_width=True, key="chart_10")
 
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE 5: Yük Tahmin Sapması
+# ═════════════════════════════════════════════════════════════════════════════
 
 elif page == "📉 Yük Tahmin Sapması":
 
@@ -988,6 +995,9 @@ elif page == "📉 Yük Tahmin Sapması":
         )
         st.plotly_chart(fig4, use_container_width=True, key="load_monthly_fig4")
 
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE 6: Yenilenebilir Derinlemesine
+# ═════════════════════════════════════════════════════════════════════════════
 
 elif page == "🌬️ Yenilenebilir Derinlemesine":
 
@@ -1210,3 +1220,106 @@ elif page == "🌬️ Yenilenebilir Derinlemesine":
             use_container_width=True,
             hide_index=True,
         )
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE 7: Arz Şokları ve Risk Analizi (YENİ EKLENEN KISIM)
+# ═════════════════════════════════════════════════════════════════════════════
+
+elif page == "🚨 Arz Şokları ve Risk Analizi":
+
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>RİSK & ŞOK</span>
+        <h1>Arz Şokları ve Risk Analizi</h1>
+        <p>Sistem Arz Stresi, Arızalar ve Katı Talep Analizi ile kriz anlarını tespit edin</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Bu modül spesifik günlük veri incelemesi gerektirdiği için sayfa içi tarih filtresi ekliyoruz
+    col_date, _ = st.columns([1, 3])
+    with col_date:
+        selected_date = st.date_input("Analiz Tarihini Seçin (Saatlik Dağılım)", value=pd.to_datetime("2026-01-01"))
+    target_date_str = selected_date.strftime("%Y-%m-%d")
+
+    # BigQuery'den yeni dbt Gold Modellerini çekme
+    query_sql = f"""
+        SELECT 
+            f.date, f.ptf_try, f.forecasted_residual_load_mwh, f.strict_demand_pct,
+            s.total_available_capacity_mwh, s.total_outage_mwh, s.supply_stress_pct, s.avg_water_level_m
+        FROM `{PROJECT}.epias_dbt_marts.mart_forecasted_residual_load` f
+        JOIN `{PROJECT}.epias_dbt_marts.mart_supply_shock_index` s ON f.date = s.date
+        WHERE DATE(f.date) = '{target_date_str}'
+        ORDER BY f.date ASC
+    """
+    
+    try:
+        df_risk = query(query_sql)
+        
+        if df_risk.empty:
+            st.warning(f"Bu tarih ({target_date_str}) için Arz/Şok risk verisi bulunamadı.")
+        else:
+            # ÜST METRİKLER
+            col1, col2, col3 = st.columns(3)
+            
+            # Günlük Maksimum Stres (Arıza Oranı)
+            max_stress = df_risk['supply_stress_pct'].max()
+            with col1:
+                st.metric("Maks. Santral Arıza/Bakım Oranı", f"%{max_stress:.2f}", 
+                          delta="Riskli" if max_stress > 10 else "Normal", delta_color="inverse")
+            
+            # Katı Talep (Price Ind. Bids)
+            avg_strict_demand = df_risk['strict_demand_pct'].mean()
+            with col2:
+                st.metric("Ort. Katı Talep Oranı", f"%{avg_strict_demand:.2f}",
+                          help="Fiyat ne olursa olsun sistemden çekilecek elektriğin talebe oranı.")
+            
+            # Baraj Seviyesi
+            avg_water = df_risk['avg_water_level_m'].mean()
+            with col3:
+                st.metric("Ort. Baraj Su Seviyesi", f"{avg_water:.1f} Metre")
+
+            st.markdown("---")
+
+            col_l, col_r = st.columns(2)
+
+            with col_l:
+                # 1. GRAFİK: Arızalar ve Emre Amade Kapasite
+                st.subheader("Santral Kapasite Kayıpları (Outages)")
+                fig_outage = px.area(df_risk, x='date', y=['total_available_capacity_mwh', 'total_outage_mwh'],
+                                     labels={'value': 'Kapasite (MWh)', 'date': 'Saat'},
+                                     title="Emre Amade Kapasite vs Kesinti (Outage)",
+                                     color_discrete_sequence=['#10b981', '#ef4444'])
+                fig_outage.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#e2e8f0"),
+                    legend=dict(bgcolor="rgba(0,0,0,0)"),
+                    xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                    yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                    height=380
+                )
+                st.plotly_chart(fig_outage, use_container_width=True)
+
+            with col_r:
+                # 2. GRAFİK: Beklenen Kalan Yük ve PTF Fırlamaları
+                st.subheader("Beklenen Kalan Yük vs Gerçekleşen PTF")
+                fig_residual = go.Figure()
+                fig_residual.add_trace(go.Bar(x=df_risk['date'], y=df_risk['forecasted_residual_load_mwh'], 
+                                              name='Beklenen Kalan Yük', marker_color='rgba(0, 212, 255, 0.7)'))
+                fig_residual.add_trace(go.Scatter(x=df_risk['date'], y=df_risk['ptf_try'], 
+                                                  name='PTF (TRY)', yaxis='y2', line=dict(color='#ff6b35', width=3)))
+                
+                fig_residual.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#e2e8f0"),
+                    legend=dict(bgcolor="rgba(0,0,0,0)"),
+                    xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                    yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
+                    yaxis2=dict(title="TRY/MWh", overlaying='y', side='right'),
+                    height=380
+                )
+                st.plotly_chart(fig_residual, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Sorgu çalıştırılırken bir hata oluştu. Veri tablosu BigQuery üzerinde oluşturulmamış olabilir. Hata: {str(e)}")

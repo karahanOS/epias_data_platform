@@ -3,15 +3,15 @@ from pyspark.sql.types import DoubleType
 from pyspark.sql import functions as F
 from spark_utils import BaseEpiasSparkJob
 
-class LoadEstimationSilverJob(BaseEpiasSparkJob):
+class PriceIndBidSilverJob(BaseEpiasSparkJob):
     """
-    Yük Tahmin Planı (LEP) verilerini işler.
-    Ertesi günün beklenen enerji talebini (tüketimini) gösterir.
+    Fiyattan Bağımsız Alış Teklifleri (Must-Take Demand).
+    Piyasadaki katı/esneksiz talebi ölçmek için kullanılır.
     """
     def __init__(self):
         super().__init__(
-            app_name="BronzeToSilver_LoadEstimation",
-            source_name="load_estimation",
+            app_name="BronzeToSilver_PriceIndBid",
+            source_name="price_ind_bid", 
             primary_keys=["date"]
         )
 
@@ -21,8 +21,8 @@ class LoadEstimationSilverJob(BaseEpiasSparkJob):
 
         df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
         
-        if "lep" in df.columns:
-            df = df.withColumn("lep", F.col("lep").cast(DoubleType()))
+        if "priceIndependentBidAmount" in df.columns:
+            df = df.withColumn("priceIndependentBidAmount", F.col("priceIndependentBidAmount").cast(DoubleType()))
 
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
@@ -31,4 +31,4 @@ class LoadEstimationSilverJob(BaseEpiasSparkJob):
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"
-    LoadEstimationSilverJob().run(target_ds)
+    PriceIndBidSilverJob().run(target_ds)

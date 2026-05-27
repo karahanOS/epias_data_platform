@@ -1,90 +1,30 @@
+# epias_dbt/models/marts/schema.yml
 version: 2
 
 models:
-  - name: stg_price_spread
-    description: "PTF ve SMF fiyat makası analizi. Sistem yönü ve arbitraj fırsatlarını izlemek için kullanılır."
+  - name: mart_gop_volume_analysis
+    description: "GÖP işlem hacimleri ve blok teklif analizleri"
     columns:
       - name: date
-        description: "İşlem tarihi (Partition sütunu)"
-        tests:
-          - not_null
-      - name: hour
-        description: "İşlem saati (HH:mm formatında)"
-        tests:
-          - not_null
-      - name: ptf
-        description: "Piyasa Takas Fiyatı (TRY)"
-        tests:
-          - not_null
-      - name: smf
-        description: "Sistem Marjinal Fiyatı (TRY)"
-        tests:
-          - not_null
-      - name: system_direction
-        description: "Sistem yönü (Enerji Açığı/Fazlası)"
-        tests:
-          - accepted_values:
-              values: ['Enerji Açığı', 'Enerji Fazlası', 'Dengeli']
-
-  - name: stg_generation_mix
-    description: "Üretim kırılımı (Yenilenebilir vs. Fosil) ve bu kırılımın fiyat üzerindeki etkisi."
-    columns:
-      - name: join_key
-        description: "Tarih ve saat birleşimiyle oluşan benzersiz anahtar."
         tests:
           - unique
           - not_null
-      - name: date
+      - name: ptf_try
         tests:
           - not_null
-      - name: total_generation
-        description: "MWh cinsinden toplam üretim miktarı."
-        tests:
-          - not_null
-
-  - name: stg_supply_demand
-    description: "Arz ve talep dengesi özeti. Sistemin toplam yük karşılama oranını izler."
-    columns:
-      - name: date
-        tests:
-          - not_null
-      - name: hour
-        tests:
-          - not_null
-      - name: coverage_ratio
-        description: "Arzın talebi karşılama oranı."
+      - name: total_buy_mwh
         tests:
           - not_null
 
-  - name: stg_load_vs_actual
-    description: "Tahmin edilen (Load Estimation) ve gerçekleşen tüketim verilerinin karşılaştırması."
+  - name: mart_ptf_drivers
+    description: "PTF tavan/taban sürücüleri ve Yenilenebilir penetrasyonu"
     columns:
       - name: date
         tests:
+          - unique
           - not_null
-      - name: hour
+      - name: renewable_penetration_pct
         tests:
-          - not_null
-      - name: deviation
-        description: "Tahmin ve gerçekleşen arasındaki fark."
-
-  - name: stg_renewable_deep
-    description: "Rüzgar, güneş ve jeotermal gibi yenilenebilir enerji kaynaklarının detaylı üretimi."
-    columns:
-      - name: date
-        tests:
-          - not_null
-      - name: hour
-        tests:
-          - not_null
-
-  - name: mart_ptf_lag_features
-    description: "XGBoost modeline giren, gecikmeli verileri (lag features) içeren ana tablo."
-    columns:
-      - name: date
-        tests:
-          - not_null
-      - name: hour
-        tests:
-          - not_null
-          - unique # Saatlik bazda mükerrer kayıt kontrolü
+          - dbt_utils.accepted_range: # Yenilenebilir oranı %0 ile %100 arasında olmalıdır
+              min_value: 0
+              max_value: 100
