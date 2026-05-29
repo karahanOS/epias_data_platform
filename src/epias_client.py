@@ -37,6 +37,7 @@ class EPIASClient:
             raise EnvironmentError(
                 "EPIAS_USERNAME ve EPIAS_PASSWORD .env dosyasında tanımlı olmalı."
             )
+        self.logger = logger
         self._tgt: Optional[str]        = None
         self._token_time: Optional[datetime] = None
 
@@ -404,9 +405,42 @@ class EPIASClient:
         """Organizasyon referans listesi. POST /v1/generation/data/organization-list"""
         return self._post("/v1/generation/data/organization-list", {}).get("items", [])
 
-    def get_uevcb_list(self) -> list:
-        """UEVCB referans listesi. POST /v1/generation/data/uevcb-list"""
-        return self._post("/v1/generation/data/uevcb-list", {}).get("items", [])
+    def get_uevcb_list(self, start_date: str, end_date: str) -> list:
+        self.logger.info("⚡ UEVCB listesi çekiliyor... (BULK ENDPOINT kullanılarak yüksek hızda)")
+        import time
+        
+        # 1. Önce sistemdeki organizasyon (şirket) listesini al
+        orgs = self.get_market_participants()
+        org_ids = [org["id"] for org in orgs if "id" in org]
+        
+        all_uevcbs = []
+        batch_size = 100 # Güvenlik için 100'erli paketler halinde gönderiyoruz
+        
+        self.logger.info(f"Toplam {len(org_ids)} şirket bulundu. 100'erli paketler halinde Bulk API'ye gönderiliyor...")
+
+        # 2. Şirket ID'lerini paketlere (chunk) böl ve topluca gönder
+        for i in range(0, len(org_ids), batch_size):
+            chunk_ids = org_ids[i:i + batch_size]
+            
+            payload = {
+                "startDate": f"{start_date}T00:00:00+03:00",
+                "organizationIdList": chunk_ids  # Bulk endpoint'in beklediği liste parametresi
+            }
+            
+            try:
+                # DİKKAT: Eski uevcb-list yerine yeni uevcb-list-bulk kullanıyoruz!
+                res = self._post("/v1/generation/data/uevcb-list-bulk", payload)
+                items = res.get("items", [])
+                all_uevcbs.extend(items)
+                
+            except Exception as e:
+                self.logger.error(f"Bulk istek sırasında hata (Paket {i}-{i+batch_size}): {e}")
+                
+            # Rate limit'e (80 req/min) takılmamak için paketler arası çok kısa bir bekleme
+            time.sleep(0.5)
+            
+        self.logger.info(f"✅ İşlem saniyeler içinde tamamlandı! Toplam {len(all_uevcbs)} adet UEVCB bulundu.")
+        return all_uevcbs
 
     # ── TÜKETİM ───────────────────────────────────────────────────────────────
 

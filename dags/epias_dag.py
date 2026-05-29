@@ -51,11 +51,12 @@ DATA_DELAYS: Dict[str, int] = {
     "get_licensed_realtime_generation": 0,
     "get_load_estimation_plan":         0,
     "get_unlicensed_generation":        35,
+    "get_uevcb_list":                   0
 }
 
 NO_DATE_METHODS: frozenset = frozenset({
     "get_market_participants",
-    "get_uevcb_list",
+    
 })
 
 # ── HATA YÖNETİMİ ─────────────────────────────────────────────────────────────
@@ -159,18 +160,18 @@ with DAG(
         "order_down":       ("get_order_summary_down",           "bronze/order_down",       False),
         "system_direction": ("get_system_direction",             "bronze/system_direction", False),
         "dpp":              ("get_dpp",                          "bronze/dpp",              False),
-        "injection":        ("get_injection_quantity",           "bronze/injection",        False),
+        "injection":        ("get_injection_quantity",           "bronze/injection",        True),
         "aic":              ("get_aic",                          "bronze/aic",              False),
         "imbalance":        ("get_imbalance_quantity",           "bronze/imbalance",        False),
         "unlicensed":       ("get_unlicensed_generation",        "bronze/unlicensed",       False),
         "res_forecast":     ("get_res_generation_and_forecast",  "bronze/res_forecast",     False),
         "generation":       ("get_licensed_realtime_generation", "bronze/generation",       False),
         "load_estimation":  ("get_load_estimation_plan",         "bronze/load_estimation",  False),
+        "uevcb_list":       ("get_uevcb_list",                   "bronze/uevcb_list",       True)
     }
 
     STATIC_SOURCES: Dict[str, Tuple[str, str, bool]] = {
         "participants": ("get_market_participants", "bronze/participants", True),
-        "uevcb_list":   ("get_uevcb_list",          "bronze/uevcb_list",   True),
     }
 
     ALL_SOURCES = {**HOURLY_SOURCES, **STATIC_SOURCES}

@@ -1,60 +1,36 @@
 {{ config(
     materialized='table',
-    partition_by={
-      "field": "date",
-      "data_type": "timestamp",
-      "granularity": "day"
-    }
+    partition_by={"field": "date", "data_type": "date"}
 ) }}
 
-WITH generation AS (
+WITH licensed_gen AS (
     SELECT 
         date,
-        total AS total_licensed_generation_mwh,
-        (COALESCE(wind, 0) + COALESCE(solar, 0) + COALESCE(river, 0) + COALESCE(geothermal, 0) + COALESCE(biomass, 0)) AS licensed_renewable_mwh
-    FROM {{ source('silver', 'generation') }}
+        hour,
+        total_generation_mwh AS total_licensed_mwh,
+        (COALESCE(wind_generation_mwh, 0) + COALESCE(solar_generation_mwh, 0) + COALESCE(river_generation_mwh, 0) + COALESCE(geothermal_generation_mwh, 0) + COALESCE(biomass_generation_mwh, 0)) AS licensed_renewable_mwh
+    FROM {{ ref('stg_generation') }}
 ),
-
-unlicensed AS (
-    SELECT
-        TIMESTAMP_TRUNC(date, HOUR) AS date,
-        SUM(total) AS total_unlicensed_mwh
-    FROM {{ source('silver', 'unlicensed') }}
-    GROUP BY 1
+unlicensed_gen AS (
+    SELECT date, hour, total_unlicensed_generation_mwh FROM {{ ref('stg_unlicensed_generation') }}
 ),
-
 dam_demand AS (
-    -- GÖP Eşleşen Miktarı piyasanın toplam talebi olarak kabul ediyoruz
-    SELECT date, matchedBidsQuantity AS total_demand_mwh
-    FROM {{ source('silver', 'dam_clearing') }}
+    SELECT date, hour, matched_bids_mwh AS total_demand_mwh FROM {{ ref('stg_dam_clearing') }}
 ),
-
 pricing AS (
-    SELECT date, marketTradePrice AS ptf_try FROM {{ source('silver', 'pricing') }}
-),
-
-residual_load_analysis AS (
-    SELECT
-        g.date,
-        p.ptf_try,
-        d.total_demand_mwh,
-        g.licensed_renewable_mwh,
-        COALESCE(u.total_unlicensed_mwh, 0) AS total_unlicensed_mwh,
-        
-        -- Toplam Yenilenebilir (Lisanslı + Lisanssız)
-        (g.licensed_renewable_mwh + COALESCE(u.total_unlicensed_mwh, 0)) AS total_green_energy_mwh,
-        
-        -- KRİTİK METRİK: Residual Load (Kalan Yük)
-        -- Fosil yakıtlı santrallerin karşılamak zorunda olduğu asıl net talep.
-        (d.total_demand_mwh - (g.licensed_renewable_mwh + COALESCE(u.total_unlicensed_mwh, 0))) AS residual_load_mwh,
-        
-        -- Yenilenebilirin Talebi Karşılama Oranı (Merit Order Effect Gücü)
-        SAFE_DIVIDE((g.licensed_renewable_mwh + COALESCE(u.total_unlicensed_mwh, 0)), d.total_demand_mwh) * 100 AS green_coverage_pct
-
-    FROM generation g
-    LEFT JOIN unlicensed u ON g.date = u.date
-    LEFT JOIN dam_demand d ON g.date = d.date
-    LEFT JOIN pricing p ON g.date = p.date
+    SELECT date, hour, ptf_try FROM {{ ref('stg_pricing') }}
 )
 
-SELECT * FROM residual_load_analysis
+SELECT
+    lg.date,
+    lg.hour,
+    p.ptf_try,
+    d.total_demand_mwh,
+    lg.licensed_renewable_mwh,
+    COALESCE(ug.total_unlicensed_generation_mwh, 0) AS total_unlicensed_mwh,
+    (lg.licensed_renewable_mwh + COALESCE(ug.total_unlicensed_generation_mwh, 0)) AS total_green_energy_mwh,
+    (d.total_demand_mwh - (lg.licensed_renewable_mwh + COALESCE(ug.total_unlicensed_generation_mwh, 0))) AS residual_load_mwh
+FROM licensed_gen lg
+LEFT JOIN unlicensed_gen ug ON lg.date = ug.date AND lg.hour = ug.hour
+LEFT JOIN dam_demand d ON lg.date = d.date AND lg.hour = d.hour
+LEFT JOIN pricing p ON lg.date = p.date AND lg.hour = p.hour

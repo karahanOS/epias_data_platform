@@ -9,6 +9,7 @@ Veri kopyalanmaz, dbt doğrudan bu tabloları okuyarak Gold katmanını BigQuery
 import os
 import logging
 from google.cloud import bigquery
+from google.api_core.exceptions import NotFound
 
 # Loglama Ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,27 +17,26 @@ logger = logging.getLogger("BQLoader")
 
 class BQExternalTableManager:
     def __init__(self):
-        # GCP ve BigQuery Ayarları
-        self.project_id = os.getenv("GCP_PROJECT_ID", "epias-data-project")
-        self.dataset_id = os.getenv("BQ_SILVER_DATASET", "silver")
-        self.bucket_name = os.getenv("GCS_BUCKET", "epias-data-lake")
+        # 1. FIX: Proje adını dinamik ve doğru şekilde çek (Varsayılanı senin GCP'deki asıl adın yap)
+        # ÖNEMLİ: Eğer GCP projenin adı "epias-data-platform" ise aşağıdaki varsayılanı ona göre değiştir!
+        self.project_id = os.getenv("GCP_PROJECT_ID", "epias-data-platform")  # <--- BURAYI KONTROL ET
         
-        # BigQuery İstemcisi
+        # Diğer ayarlar
+        self.dataset_id = "silver"
+        self.bucket_name = "epias-data-lake"
         self.client = bigquery.Client(project=self.project_id)
         
-        # Dataset yoksa oluştur
         self._ensure_dataset_exists()
 
     def _ensure_dataset_exists(self):
-        """Silver dataset'inin BigQuery'de var olduğundan emin olur."""
         dataset_ref = f"{self.project_id}.{self.dataset_id}"
         try:
             self.client.get_dataset(dataset_ref)
-            logger.info(f"Dataset '{dataset_ref}' zaten mevcut.")
-        except Exception:
-            logger.info(f"Dataset '{dataset_ref}' bulunamadı, oluşturuluyor...")
+            logger.info(f"✅ Dataset '{dataset_ref}' zaten mevcut.")
+        except NotFound:
+            logger.info(f"⚠️ Dataset '{dataset_ref}' bulunamadı, oluşturuluyor...")
             dataset = bigquery.Dataset(dataset_ref)
-            dataset.location = "EU" # Projenin lokasyonuna göre değiştirilebilir
+            dataset.location = "EU"  # veya senin seçtiğin bir lokasyon (US vb.)
             self.client.create_dataset(dataset, timeout=30)
             logger.info(f"✅ Dataset '{dataset_ref}' başarıyla oluşturuldu.")
 

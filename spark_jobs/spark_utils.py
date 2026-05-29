@@ -16,10 +16,11 @@ class BaseEpiasSparkJob:
         self.source_name = source_name
         self.primary_keys = primary_keys
         
-        # Spark Session Başlatma
+        # Spark Session Başlatma — Zaman Serisi Politikası Güncellendi
         self.spark = SparkSession.builder \
             .appName(self.app_name) \
             .config("spark.sql.session.timeZone", "UTC") \
+            .config("spark.sql.legacy.timeParserPolicy", "LEGACY") \
             .getOrCreate()
             
         logging.basicConfig(level=logging.INFO)

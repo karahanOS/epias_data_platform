@@ -24,3 +24,6 @@ sources:
       - name: load_estimation
       - name: aic
       - name: res_forecast
+      - name: unlicensed
+      - name: generation
+      - name: supply_demand

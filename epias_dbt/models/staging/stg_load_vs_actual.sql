@@ -1,7 +1,8 @@
+ -- 💡 Veri tekilliğini bu iki anahtar sağlar
 {{
   config(
     materialized='incremental',
-    unique_key=['date', 'hour'],  -- 💡 Veri tekilliğini bu iki anahtar sağlar
+    unique_key=['date', 'hour'], 
     incremental_strategy='merge',
     partition_by={
       "field": "date",
