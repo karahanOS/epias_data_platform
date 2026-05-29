@@ -12,9 +12,8 @@
 }}
 
 WITH base AS (
-    SELECT * FROM {{ ref('stg_ml_features') }}
+    SELECT * FROM {{ ref('mart_ml_features') }}
     {% if is_incremental() %}
-      
       WHERE date >= DATE_SUB((SELECT MAX(date) FROM {{ this }}), INTERVAL 7 DAY)
     {% endif %}
 ),

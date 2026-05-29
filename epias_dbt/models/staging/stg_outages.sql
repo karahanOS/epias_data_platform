@@ -1,6 +1,7 @@
+-- Arıza ID'si tekildir
 {{ config(
     materialized='incremental',
-    unique_key=['id'], -- Arıza ID'si tekildir
+    unique_key=['id'],
     incremental_strategy='merge',
     partition_by={"field": "date", "data_type": "date"}
 ) }}

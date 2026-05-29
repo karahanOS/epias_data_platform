@@ -3,27 +3,36 @@ version: 2
 
 sources:
   - name: silver
-    database: "{{ env_var('GCP_PROJECT_ID', 'epias-data-project') }}"
+    # Ortam değişkeninden GCP Proje ID'sini çeker, bulamazsa varsayılan olarak epias-data-platform kullanır.
+    database: "{{ env_var('GCP_PROJECT_ID', 'epias-data-platform') }}"
     schema: silver
     tables:
-      - name: dam_clearing
+      # --- Piyasalar ve Fiyatlar ---
       - name: pricing
+      - name: dam_clearing
       - name: idm_transactions
-      - name: participants
-      # ... önceki tablolar (dam_clearing, pricing vb.)
       - name: smf
       - name: system_direction
+      
+      # --- Üretim ve Arz ---
+      - name: generation
+      - name: unlicensed
+      - name: res_forecast
+      - name: aic
+      - name: supply_demand
+      
+      # --- Tüketim ve Talep ---
+      - name: load_estimation
+      - name: price_ind_bid
+      
+      # --- Dengesizlik ve DGP ---
       - name: imbalance
       - name: order_up
       - name: order_down
-      # ... önceki tablolar
+      
+      # --- Boyut (Dimension) ve Dış Faktör Tabloları ---
+      - name: participants
       - name: uevcb_list
       - name: dams
       - name: outages
-      - name: price_ind_bid
-      - name: load_estimation
-      - name: aic
-      - name: res_forecast
-      - name: unlicensed
-      - name: generation
-      - name: supply_demand
+      - name: weather
