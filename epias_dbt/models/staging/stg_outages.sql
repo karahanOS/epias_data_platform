@@ -1,4 +1,3 @@
--- Arıza ID'si tekildir
 {{ config(
     materialized='incremental',
     unique_key=['id'],
@@ -6,20 +5,18 @@
     partition_by={"field": "date", "data_type": "date"}
 ) }}
 
-WITH source AS (
-    SELECT * FROM {{ source('silver', 'outages') }}
-)
-
 SELECT
-    CAST(id AS STRING) AS outage_id,
-    CAST(date AS DATE) AS date,
-    CAST(date AS TIMESTAMP) AS date_timestamp,
-    CAST(organizationId AS INT64) AS organization_id,
-    CAST(uevcbId AS INT64) AS uevcb_id,
-    CAST(outageCapacity AS FLOAT64) AS outage_capacity_mwh,
+    CAST(id AS STRING) AS id,
+    CAST(day AS DATE) AS date,
+    CAST(caseStartDate AS TIMESTAMP) AS start_time,
+    CAST(caseEndDate AS TIMESTAMP) AS end_time,
+    CAST(orgName AS STRING) AS company_name,
+    CAST(powerPlantName AS STRING) AS plant_name,
+    CAST(operatorPower AS FLOAT64) AS installed_capacity_mwh,
+    CAST(capacityAtCaseTime AS FLOAT64) AS outage_capacity_mwh,
     CAST(reason AS STRING) AS outage_reason
-FROM source
+FROM {{ source('silver', 'outages') }}
 
 {% if is_incremental() %}
-  WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }})
+  WHERE CAST(day AS DATE) >= (SELECT MAX(date) FROM {{ this }})
 {% endif %}

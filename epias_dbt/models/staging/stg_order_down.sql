@@ -11,10 +11,9 @@ WITH source AS (
 
 SELECT
     CAST(date AS DATE) AS date,
-    CAST(hour AS INT64) AS hour,
-    CAST(organizationId AS INT64) AS organization_id,
-    CAST(downRegulationDelivered AS FLOAT64) AS down_regulation_delivered_mwh,
-    CAST(net AS FLOAT64) AS net_price_try
+    EXTRACT(HOUR FROM CAST(date AS TIMESTAMP)) AS hour,
+    CAST(organization_id AS STRING) AS organization_id, 
+    CAST(organization_short_name AS STRING) AS organization_short_name
 FROM source
 
 {% if is_incremental() %}

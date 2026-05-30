@@ -24,6 +24,7 @@ sources:
       # --- Tüketim ve Talep ---
       - name: load_estimation
       - name: price_ind_bid
+      - name: consumption
       
       # --- Dengesizlik ve DGP ---
       - name: imbalance

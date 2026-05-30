@@ -14,12 +14,11 @@ WITH raw_pricing AS (
 
 SELECT
     CAST(date AS DATE) AS date,
-    CAST(hour AS INT64) AS hour,
-    CAST(date AS TIMESTAMP) AS date_timestamp,
-    CAST(marketTradePrice AS FLOAT64) AS ptf_try,
+    EXTRACT(HOUR FROM CAST(date AS TIMESTAMP)) AS hour,
+    CAST(price AS FLOAT64) AS ptf_try,
     CAST(priceUsd AS FLOAT64) AS ptf_usd,
     CAST(priceEur AS FLOAT64) AS ptf_eur
-FROM raw_pricing
+FROM {{ source('silver', 'pricing') }}
 
 {% if is_incremental() %}
   WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }})

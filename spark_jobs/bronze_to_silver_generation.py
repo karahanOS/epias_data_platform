@@ -13,7 +13,7 @@ class GenerationSilverJob(BaseEpiasSparkJob):
     def __init__(self):
         super().__init__(
             app_name="BronzeToSilver_Generation",
-            source_name="licensed_gen", # Veya API endpoint'ine göre "generation"
+            source_name="generation", # Veya API endpoint'ine göre "generation"
             primary_keys=["date"]
         )
 

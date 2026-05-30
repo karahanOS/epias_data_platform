@@ -79,17 +79,25 @@ class BQExternalTableManager:
         tables = [
             "pricing", 
             "dam_clearing", 
-            "unlicensed", 
-            "dpp", 
             "idm_transactions", 
-            "weather", 
-            "injection", 
+            "smf", 
+            "system_direction",
+            "generation",
+            "unlicensed",
+            "res_forecast",
+            "aic",
+            "supply_demand",
+            "load_estimation",
+            "price_ind_bid",
+            "consumption",  # <--- Eksik olan Silver Consumption eklendi
+            "imbalance", 
             "order_up", 
             "order_down", 
-            "imbalance", 
-            "generation", 
-            "supply_demand", 
-            "participants"
+            "participants",
+            "uevcb_list",
+            "dams",
+            "outages",
+            "weather"
         ]
         
         logger.info(f"Toplam {len(tables)} tablo BigQuery'ye tanımlanıyor...")

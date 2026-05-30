@@ -81,11 +81,16 @@ class EPIASClient:
 
     # ── HTTP KATMANI ──────────────────────────────────────────────────────────
 
-    def _post(self, endpoint: str, body: dict) -> dict:
+    def _post(self, endpoint: str, body: dict = None, payload: dict = None) -> dict:
         """
         POST isteği gönderir; 401'de TGT yeniler, 5xx'te exponential backoff ile yeniden dener.
         Başarı ve hata durumlarını loglar.
         """
+        # Allow callers to pass either `body` or legacy `payload` keyword
+        if body is None and payload is not None:
+            body = payload
+        body = body or {}
+
         url      = f"{BASE_URL}{endpoint}"
         last_exc: Exception | None = None
 
@@ -615,6 +620,34 @@ class EPIASClient:
             f"(gen={len(gen_items)}, con={len(con_items)})"
         )
         return result
+    
+    def get_outages(self, start_date: str, end_date: str) -> list:
+        """
+        Santral Arıza ve Bakım Bildirimleri (Piyasa Mesaj Sistemi - UMM).
+        Swagger Referansı: /v1/markets/data/market-message-system
+        """
+        self.logger.info(f"Santral Arıza/Bakım (UMM) verisi çekiliyor: {start_date} -> {end_date}")
+        
+        # Tarih parametrelerini al ve regionId (1: Türkiye geneli) ekle
+        body_data = self._date_body(start_date, end_date)
+        body_data["regionId"] = 1 
+        
+        # 💡 DÜZELTME BURADA: payload=body_data yerine sadece body_data yazıyoruz
+        return self._post(
+            "/v1/markets/data/market-message-system",
+            body_data
+        ).get("items", [])
+
+    def get_dams(self, start_date: str, end_date: str) -> list:
+        """
+        Günlük Baraj Aktif Hacim Verileri.
+        Swagger Referansı: /v1/dams/data/active-volume
+        """
+        self.logger.info(f"Baraj (Dams) hacim verisi çekiliyor: {start_date} -> {end_date}")
+        return self._post(
+            "/v1/dams/data/active-volume",
+            self._date_body(start_date, end_date),
+        ).get("items", [])
 
 
 # ── KULLANIM ──────────────────────────────────────────────────────────────────

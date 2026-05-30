@@ -51,7 +51,9 @@ DATA_DELAYS: Dict[str, int] = {
     "get_licensed_realtime_generation": 0,
     "get_load_estimation_plan":         0,
     "get_unlicensed_generation":        35,
-    "get_uevcb_list":                   0
+    "get_uevcb_list":                   0,
+    "get_outages":                      0,
+    "get_dams":                         0
 }
 
 NO_DATE_METHODS: frozenset = frozenset({
@@ -152,6 +154,7 @@ with DAG(
     HOURLY_SOURCES: dict[str, tuple[str, str, bool]] = {
         "pricing":          ("get_ptf_smf_sdf",                  "bronze/pricing",          False),
         "smf":              ("get_smf",                          "bronze/smf",              False),
+        "consumption":      ("get_realtime_consumption",         "bronze/consumption",      False),
         "supply_demand":    ("get_supply_demand",                "bronze/supply_demand",    False),
         "dam_clearing":     ("get_dam_clearing_quantity",        "bronze/dam_clearing",     False),
         "price_ind_bid":    ("get_price_independent_bid",        "bronze/price_ind_bid",    False),
@@ -167,7 +170,9 @@ with DAG(
         "res_forecast":     ("get_res_generation_and_forecast",  "bronze/res_forecast",     False),
         "generation":       ("get_licensed_realtime_generation", "bronze/generation",       False),
         "load_estimation":  ("get_load_estimation_plan",         "bronze/load_estimation",  False),
-        "uevcb_list":       ("get_uevcb_list",                   "bronze/uevcb_list",       True)
+        "uevcb_list":       ("get_uevcb_list",                   "bronze/uevcb_list",       True),
+        "outages":          ("get_outages",                      "bronze/outages",          False),
+        "dams":             ("get_dams",                         "bronze/dams",             False),
     }
 
     STATIC_SOURCES: Dict[str, Tuple[str, str, bool]] = {

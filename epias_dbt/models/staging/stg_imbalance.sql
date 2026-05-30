@@ -8,12 +8,12 @@
 WITH source AS (
     SELECT * FROM {{ source('silver', 'imbalance') }}
 )
-
+-- 💡 Ayrı bir hour kolonu yoksa, date'in içinden saati söküp alıyoruz!
 SELECT
     CAST(date AS DATE) AS date,
-    CAST(hour AS INT64) AS hour,
+    EXTRACT(HOUR FROM CAST(date AS TIMESTAMP)) AS hour,
     CAST(imbalanceQuantity AS FLOAT64) AS net_imbalance_mwh
-FROM source
+FROM {{ source('silver', 'imbalance') }}
 
 {% if is_incremental() %}
   WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }})
