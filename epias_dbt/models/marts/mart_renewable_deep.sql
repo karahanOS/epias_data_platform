@@ -12,8 +12,7 @@ SELECT
     g.hour,
     g.wind_generation_mwh,
     g.solar_generation_mwh,
-    f.forecasted_wind_mwh,
-    f.forecasted_solar_mwh,
-    (g.wind_generation_mwh - f.forecasted_wind_mwh) AS wind_forecast_error
+    f.forecasted_res_mwh,
+    (g.wind_generation_mwh - f.forecasted_res_mwh) AS wind_forecast_error
 FROM gen g
 LEFT JOIN forecast f ON g.date = f.date AND g.hour = f.hour

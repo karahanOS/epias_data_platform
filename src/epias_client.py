@@ -429,7 +429,7 @@ class EPIASClient:
             
             payload = {
                 "startDate": f"{start_date}T00:00:00+03:00",
-                "organizationIdList": chunk_ids  # Bulk endpoint'in beklediği liste parametresi
+                "organizationIds": chunk_ids  # Bulk endpoint'in beklediği liste parametresi
             }
             
             try:

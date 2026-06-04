@@ -1,15 +1,17 @@
--- depends_on: {{ ref('stg_load_vs_actual') }}
-select
-    extract(year from date)                     as year,
-    extract(month from date)                    as month,
-    extract(hour from date)                     as hour_of_day,
-    deviation_direction,
-    count(*)                                    as hour_count,
-    round(avg(abs(deviation)), 2)               as avg_abs_deviation_mwh,
-    round(avg(abs(deviation_pct)), 2)           as avg_abs_deviation_pct,
-    round(max(abs(deviation)), 2)               as max_deviation_mwh,
-    round(avg(forecast_consumption), 2)         as avg_forecast,
-    round(avg(actual_consumption), 2)           as avg_actual
-from {{ ref('stg_load_vs_actual') }}
-group by 1, 2, 3, 4
-order by 1, 2, 3
+{{ config(materialized='table', partition_by={"field": "date", "data_type": "date"}) }}
+
+SELECT
+    i.date,
+    i.hour,
+    i.net_imbalance_mwh,
+    CASE 
+        WHEN i.net_imbalance_mwh > 0 THEN 'Enerji Fazlası (Pozitif)'
+        WHEN i.net_imbalance_mwh < 0 THEN 'Enerji Açığı (Negatif)'
+        ELSE 'Dengede' 
+    END AS deviation_direction,
+    p.ptf_try,
+    s.smf_try,
+    (i.net_imbalance_mwh * s.smf_try) AS total_imbalance_cost_try
+FROM {{ ref('stg_imbalance') }} i
+LEFT JOIN {{ ref('stg_pricing') }} p ON i.date = p.date AND i.hour = p.hour
+LEFT JOIN {{ ref('stg_smf') }} s ON i.date = s.date AND i.hour = s.hour

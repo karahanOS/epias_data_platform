@@ -1,13 +1,8 @@
-{{ config(
-    materialized='incremental',
-    unique_key=['id'],
-    incremental_strategy='merge',
-    partition_by={"field": "date", "data_type": "date"}
-) }}
+{{ config(materialized='incremental', unique_key=['id'], incremental_strategy='merge', partition_by={"field": "date", "data_type": "date"}) }}
 
 SELECT
     CAST(id AS STRING) AS id,
-    CAST(day AS DATE) AS date,
+    CAST(CAST(caseStartDate AS TIMESTAMP) AS DATE) AS date, -- Önce TIMESTAMP, sonra DATE
     CAST(caseStartDate AS TIMESTAMP) AS start_time,
     CAST(caseEndDate AS TIMESTAMP) AS end_time,
     CAST(orgName AS STRING) AS company_name,
@@ -17,6 +12,6 @@ SELECT
     CAST(reason AS STRING) AS outage_reason
 FROM {{ source('silver', 'outages') }}
 
-{% if is_incremental() %}
-  WHERE CAST(day AS DATE) >= (SELECT MAX(date) FROM {{ this }})
+{% if is_incremental() %} 
+  WHERE CAST(CAST(caseStartDate AS TIMESTAMP) AS DATE) >= (SELECT MAX(date) FROM {{ this }}) 
 {% endif %}

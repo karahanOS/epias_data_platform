@@ -8,15 +8,12 @@
     }
 ) }}
 
-WITH raw_consumption AS (
-    SELECT * FROM {{ source('silver', 'consumption') }}
-)
 -- 💡 "00:00" metninin ilk 2 karakterini (00) alıp INT64'e çeviriyoruz!
 SELECT 
     CAST(date AS DATE) AS date,
     CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64) AS hour, 
-    CAST(raw_data.consumption AS FLOAT64) AS actual_consumption -- DÜZELTME: Tablo ile kolon karmaşası önlendi
-FROM raw_consumption
+    CAST(t.consumption AS FLOAT64) AS actual_consumption
+FROM {{ source('silver', 'consumption') }} AS t
 
 {% if is_incremental() %}
   WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }})

@@ -1,29 +1,12 @@
-{{ config(
-    materialized='incremental',
-    unique_key=['id'],
-    incremental_strategy='merge',
-    partition_by={
-      "field": "trade_date",
-      "data_type": "date"
-    }
-) }}
-
-WITH raw_idm AS (
-    SELECT * FROM {{ source('silver', 'idm_transactions') }}
-)
+{{ config(materialized='incremental', unique_key=['id'], incremental_strategy='merge', partition_by={"field": "date", "data_type": "date"}) }}
 
 SELECT
-    CAST(id AS STRING) AS transaction_id,
-    CAST(date AS DATE) AS trade_date,
-    CAST(hour AS INT64) AS hour,
-    CAST(date AS TIMESTAMP) AS trade_timestamp,
+    CAST(id AS STRING) AS id,
+    CAST(date AS DATE) AS date,
+    CAST(SUBSTR(CAST(hour AS STRING), 1, 2) AS INT64) AS hour,
     CAST(contractName AS STRING) AS contract_name,
-    CAST(price AS FLOAT64) AS transaction_price_try,
-    CAST(quantity AS FLOAT64) AS transaction_quantity_mwh,
-    CAST(buyerOrganizationId AS INT64) AS buyer_organization_id,
-    CAST(sellerOrganizationId AS INT64) AS seller_organization_id
-FROM raw_idm
+    CAST(price AS NUMERIC) AS price_try,
+    CAST(quantity AS NUMERIC) AS quantity_mwh
+FROM {{ source('silver', 'idm_transactions') }}
 
-{% if is_incremental() %}
-  WHERE CAST(date AS DATE) >= (SELECT MAX(trade_date) FROM {{ this }})
-{% endif %}
+{% if is_incremental() %} WHERE date >= (SELECT MAX(date) FROM {{ this }}) {% endif %}

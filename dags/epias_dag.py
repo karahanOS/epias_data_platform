@@ -168,7 +168,7 @@ with DAG(
         "imbalance":        ("get_imbalance_quantity",           "bronze/imbalance",        False),
         "unlicensed":       ("get_unlicensed_generation",        "bronze/unlicensed",       False),
         "res_forecast":     ("get_res_generation_and_forecast",  "bronze/res_forecast",     False),
-        "generation":       ("get_licensed_realtime_generation", "bronze/generation",       False),
+        "generation":       ("get_realtime_generation",          "bronze/generation",       False),
         "load_estimation":  ("get_load_estimation_plan",         "bronze/load_estimation",  False),
         "uevcb_list":       ("get_uevcb_list",                   "bronze/uevcb_list",       True),
         "outages":          ("get_outages",                      "bronze/outages",          False),

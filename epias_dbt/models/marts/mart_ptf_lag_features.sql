@@ -22,13 +22,13 @@ with_lags AS (
     SELECT
         *,
         -- 1 saat önceki PTF
-        LAG(ptf, 1) OVER (ORDER BY date, hour) AS ptf_lag_1h,
+        LAG(ptf_try, 1) OVER (ORDER BY date, hour) AS ptf_lag_1h,
         -- 24 saat önceki PTF (Dün aynı saat)
-        LAG(ptf, 24) OVER (ORDER BY date, hour) AS ptf_lag_24h,
+        LAG(ptf_try, 24) OVER (ORDER BY date, hour) AS ptf_lag_24h,
         -- 168 saat önceki PTF (Geçen hafta aynı saat)
-        LAG(ptf, 168) OVER (ORDER BY date, hour) AS ptf_lag_168h,
+        LAG(ptf_try , 168) OVER (ORDER BY date, hour) AS ptf_lag_168h,
         -- Son 24 saatin ortalaması
-        AVG(ptf) OVER (
+        AVG(ptf_try) OVER (
             ORDER BY date, hour 
             ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING
         ) AS ptf_rolling_avg_24h

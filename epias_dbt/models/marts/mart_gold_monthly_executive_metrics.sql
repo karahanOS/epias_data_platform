@@ -2,15 +2,16 @@
 
 WITH base_metrics AS (
     SELECT
-        EXTRACT(YEAR FROM date) AS year,
-        EXTRACT(MONTH FROM date) AS month,
-        ROUND(AVG(ptf_try), 2) AS avg_ptf,
-        ROUND(MAX(ptf_try), 2) AS max_ptf,
-        ROUND(MIN(ptf_try), 2) AS min_ptf,
-        ROUND(AVG(price_spread), 2) AS avg_price_spread,
-        COUNTIF(system_direction = 'Enerji Açığı') AS energy_deficit_hours,
-        COUNTIF(system_direction = 'Enerji Fazlası') AS energy_surplus_hours
-    FROM {{ ref('mart_price_analysis') }}
+        EXTRACT(YEAR FROM p.date) AS year,
+        EXTRACT(MONTH FROM p.date) AS month,
+        ROUND(AVG(p.ptf_try), 2) AS avg_ptf,
+        ROUND(MAX(p.ptf_try), 2) AS max_ptf,
+        ROUND(MIN(p.ptf_try), 2) AS min_ptf,
+        ROUND(AVG(p.price_spread), 2) AS avg_price_spread,
+        COUNTIF(sd.system_direction = 'Enerji Açığı') AS energy_deficit_hours,
+        COUNTIF(sd.system_direction = 'Enerji Fazlası') AS energy_surplus_hours
+    FROM {{ ref('mart_price_analysis') }} p
+    LEFT JOIN {{ ref('stg_system_direction') }} sd ON p.date = sd.date AND p.hour = sd.hour
     GROUP BY 1, 2
 ), 
 

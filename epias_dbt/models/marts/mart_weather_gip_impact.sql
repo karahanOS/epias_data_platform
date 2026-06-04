@@ -2,7 +2,7 @@
     materialized='table',
     partition_by={
       "field": "date",
-      "data_type": "timestamp",
+      "data_type": "date",
       "granularity": "day"
     }
 ) }}
@@ -10,10 +10,10 @@
 WITH idm_hourly AS (
     -- GİP işlemlerini saatlik bazda kümülatif hale getiriyoruz
     SELECT
-        TIMESTAMP_TRUNC(trade_timestamp, HOUR) AS date,
-        SUM(transaction_quantity_mwh) AS total_gip_volume_mwh,
+        date,
+        SUM(quantity_mwh) AS total_gip_volume_mwh,
         -- Ağırlıklı Ortalama Fiyat (WAP)
-        SAFE_DIVIDE(SUM(transaction_price_try * transaction_quantity_mwh), SUM(transaction_quantity_mwh)) AS gip_weighted_avg_price_try,
+        SAFE_DIVIDE(SUM(price_try * quantity_mwh), SUM(quantity_mwh)) AS gip_weighted_avg_price_try,
         COUNT(1) AS total_transaction_count
     FROM {{ ref('stg_idm_transactions') }}
     GROUP BY 1
@@ -21,9 +21,9 @@ WITH idm_hourly AS (
 
 weather_hourly AS (
     SELECT
-        TIMESTAMP_TRUNC(date_timestamp, HOUR) AS date,
-        AVG(temperature_2m) AS avg_temperature_c,
-        AVG(wind_speed_10m) AS avg_windspeed_kmh,
+        date,
+        AVG(temperature_celsius) AS avg_temperature_c,
+        AVG(wind_speed_kmh) AS avg_windspeed_kmh,
         AVG(shortwave_radiation) AS avg_solar_radiation_wm2
     FROM {{ ref('stg_weather') }}
     GROUP BY 1
@@ -31,7 +31,7 @@ weather_hourly AS (
 
 pricing_hourly AS (
     SELECT
-        TIMESTAMP_TRUNC(date_timestamp, HOUR) AS date,
+        date,
         AVG(ptf_try) AS ptf_try
     FROM {{ ref('stg_pricing') }}
     GROUP BY 1
