@@ -19,8 +19,8 @@ logger = logging.getLogger("PTFForecaster")
 
 class PredictivePTFForecaster:
     def __init__(self):
-        self.project_id = os.getenv("GCP_PROJECT_ID", "epias-data-project")
-        self.dataset_id = "epias_dbt_marts"
+        self.project_id = os.getenv("GCP_PROJECT_ID", "epias-data-platform")
+        self.dataset_id = os.getenv("BQ_GOLD_DATASET", "epias_gold")
         self.client = bigquery.Client(project=self.project_id)
         self.model_path = "models/ptf_advanced_xgb_model.joblib"
         os.makedirs("models", exist_ok=True)
@@ -30,15 +30,14 @@ class PredictivePTFForecaster:
         logger.info("BigQuery'den Gold (Predictive) veriler çekiliyor...")
         
         query = f"""
-        SELECT 
+        SELECT
             f.date,
             f.ptf_try,
             f.forecasted_residual_load_mwh,
-            f.strict_demand_pct,
+            f.price_independent_bid_mwh,
             s.total_available_capacity_mwh,
             s.total_outage_mwh,
-            s.supply_stress_pct,
-            s.avg_water_level_m
+            s.supply_shock_index
         FROM `{self.project_id}.{self.dataset_id}.mart_forecasted_residual_load` f
         LEFT JOIN `{self.project_id}.{self.dataset_id}.mart_supply_shock_index` s
             ON f.date = s.date
@@ -59,12 +58,12 @@ class PredictivePTFForecaster:
         df['month'] = df.index.month
         df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
         
-        # Geçmiş Fiyat Gecikmeleri (T-24, T-48, T-168)
+        # Geçmiş Fiyat Gecikmeleri (T-24, T-168)
         df['ptf_lag_24h'] = df['ptf_try'].shift(24)
-        df['ptf_lag_168h'] = df['ptf_try'].shift(168) # 1 Hafta önceki aynı saat
-        
-        # Baraj seviyesi ve arızalar genelde günlük/haftalık trend izler
-        df['water_level_trend_7d'] = df['avg_water_level_m'].rolling(window=168).mean()
+        df['ptf_lag_168h'] = df['ptf_try'].shift(168)
+
+        # Arz şoku 7 günlük hareketli ortalama trendi
+        df['supply_shock_trend_7d'] = df['supply_shock_index'].rolling(window=168).mean()
 
         # NaN değerleri temizle (İlk 168 saat laglardan dolayı boştur)
         df.dropna(inplace=True)
@@ -103,9 +102,9 @@ class PredictivePTFForecaster:
         logger.info(f"✅ Eğitim Bitti! Test MAE: {mae:.2f} TRY | MAPE: %{mape*100:.2f}")
         
         # Feature Importance
-        importance_df = pd.DataFrame({'Feature': features, 'Importance': self.model.feature_importances_})
-        importance_df = importance_df.sort_values(by='Importance', ascending=False)
-        importance_df.to_csv("models/ptf_feature_importance.csv", index=False)
+        importance_df = pd.DataFrame({'col_name': features, 'feature_importance_vals': self.model.feature_importances_})
+        importance_df = importance_df.sort_values(by='feature_importance_vals', ascending=False)
+        importance_df.to_csv("models/ptf_shap_importance.csv", index=False)
         
         logger.info(f"🥇 En Önemli 3 Özellik:\n{importance_df.head(3).to_string(index=False)}")
         joblib.dump(self.model, self.model_path)

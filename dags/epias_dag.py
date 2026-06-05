@@ -253,9 +253,17 @@ with DAG(
         bash_command='cd /opt/airflow/epias_dbt && dbt run --profiles-dir .',
     )
     
-    run_ml_forecast = BashOperator(
-        task_id='run_ptf_forecaster',
-        bash_command='python /opt/airflow/src/ptf_forecaster.py',
+    # Training: ağır iş — haftada bir çalışır, dbt sonrası tetiklenir
+    run_ptf_trainer = BashOperator(
+        task_id='train_ptf_model',
+        bash_command='python /opt/airflow/src/ptf_trainer.py',
+    )
+
+    # Inference: hafif iş — sadece son 180 satır çeker, önceden eğitilmiş
+    # modeli GCS'den yükler ve tek tahmin üretir
+    run_ptf_inference = BashOperator(
+        task_id='run_ptf_inference',
+        bash_command='python /opt/airflow/src/ptf_inference.py',
     )
 
     # Zinciri Bağlama
@@ -263,4 +271,5 @@ with DAG(
     for silver_t in silver_tasks.values():
         silver_t >> load_to_bq
 
-    load_to_bq >> run_dbt >> run_ml_forecast
+    # dbt → trainer (günlük) → inference (günlük, ama ayrı DAG'da saatlik koşabilir)
+    load_to_bq >> run_dbt >> run_ptf_trainer >> run_ptf_inference

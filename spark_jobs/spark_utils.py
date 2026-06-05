@@ -15,67 +15,134 @@ class BaseEpiasSparkJob:
         self.app_name = app_name
         self.source_name = source_name
         self.primary_keys = primary_keys
-        
-        # Spark Session Başlatma — Zaman Serisi Politikası Güncellendi
-        self.spark = SparkSession.builder \
+
+        # --backfill flag: signals wildcard Bronze read + append Silver write
+        self.backfill_mode = "--backfill" in sys.argv
+
+        # DYNAMIC partition overwrite: mode=overwrite only replaces the specific
+        # year/month/day partition being written, leaving all other partitions
+        # untouched. Without DYNAMIC, the default STATIC mode wipes the entire
+        # Silver table on every daily run — destroying all backfill history.
+        builder = SparkSession.builder \
             .appName(self.app_name) \
             .config("spark.sql.session.timeZone", "UTC") \
             .config("spark.sql.legacy.timeParserPolicy", "LEGACY") \
-            .getOrCreate()
-            
+            .config("spark.sql.sources.partitionOverwriteMode", "DYNAMIC")
+
+        if self.backfill_mode:
+            # GCS streaming upload: avoids buffering the entire partition in heap.
+            # SYNCABLE_COMPOSITE writes incrementally to GCS instead of one giant chunk.
+            builder = builder \
+                .config("spark.hadoop.fs.gs.outputstream.type", "SYNCABLE_COMPOSITE") \
+                .config("spark.hadoop.fs.gs.outputstream.upload.chunk.size", "8388608")  # 8 MiB chunks
+            # Use more shuffle partitions so each output file is smaller
+            builder = builder \
+                .config("spark.sql.shuffle.partitions", "400")
+
+        self.spark = builder.getOrCreate()
+
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(self.app_name)
+        if self.backfill_mode:
+            self.logger.info(f"🔄 BACKFILL MODE aktif — {self.source_name}")
 
     def read_bronze(self, ds: str):
+        """
+        Normal (daily) mode: reads gs://.../bronze/<source>/<ds>.parquet
+        Backfill mode     : reads gs://.../bronze/<source>/backfill_*.parquet (all chunks)
+        """
+        if self.backfill_mode:
+            return self._read_bronze_backfill()
+
         path = f"gs://epias-data-lake/bronze/{self.source_name}/{ds}.parquet"
-        self.logger.info(f"💾 Bronze katmanından Parquet okunuyor: {path}")
-        df = self.spark.read.parquet(path)
-        
-        # SWAGGER FIX: Eğer API veriyi 'body' sütunu altında nested sarmışsa otomatik dışa çıkar (Flatten)
+        self.logger.info(f"💾 Bronze okunuyor (günlük): {path}")
+        return self._normalize(self.spark.read.parquet(path))
+
+    def _read_bronze_backfill(self):
+        """Reads all weekly backfill chunks for this source in one Spark scan."""
+        pattern = f"gs://epias-data-lake/bronze/{self.source_name}/backfill_*.parquet"
+        self.logger.info(f"💾 Bronze okunuyor (backfill wildcard): {pattern}")
+        return self._normalize(self.spark.read.parquet(pattern))
+
+    def _normalize(self, df):
+        """Shared post-read normalization (nested schema flattening)."""
         if "body" in df.columns:
-            self.logger.info("📦 Nested 'body' yapısı tespit edildi, şema düzleştiriliyor...")
+            self.logger.info("📦 Nested 'body' yapısı düzleştiriliyor...")
             df = df.select("body.*")
         if "items" in df.columns:
             df = df.select(F.explode("items").alias("data")).select("data.*")
-            
         return df
 
     def add_partition_columns(self, df, ds: str):
-        # Tarih parçalama işlemleri
-        return df.withColumn("year", F.lit(ds.split("-")[0])) \
+        """
+        Normal mode : partition columns from the run date string (ds).
+        Backfill mode: derive year/month/day from the 'date' column in the data itself
+                       so every historical row lands in the correct partition.
+        """
+        if self.backfill_mode:
+            date_col = next(
+                (c for c in ["date", "datetime", "time"] if c in df.columns), None
+            )
+            if date_col:
+                self.logger.info(f"📅 Backfill partition: tarih sütunundan türetiliyor ({date_col})")
+                ts = F.to_timestamp(F.col(date_col))
+                return df \
+                    .withColumn("year",  F.year(ts).cast("string")) \
+                    .withColumn("month", F.lpad(F.month(ts).cast("string"), 2, "0")) \
+                    .withColumn("day",   F.lpad(F.dayofmonth(ts).cast("string"), 2, "0"))
+            self.logger.warning("⚠️  Tarih sütunu bulunamadı — ds string'i kullanılıyor.")
+
+        return df.withColumn("year",  F.lit(ds.split("-")[0])) \
                  .withColumn("month", F.lit(ds.split("-")[1])) \
-                 .withColumn("day", F.lit(ds.split("-")[2]))
+                 .withColumn("day",   F.lit(ds.split("-")[2]))
 
     def deduplicate(self, df):
         """Swagger uyumlu esnek tekilleştirme mekanizması"""
         if not self.primary_keys:
             return df.dropDuplicates()
 
-        # DataFrame'de gerçekten var olan anahtarları bul
         valid_keys = [col for col in self.primary_keys if col in df.columns]
 
         if not valid_keys:
-            # Akıllı yedek plan anahtarları
             alternatives = ["date", "datetime", "hour", "time", "id", "mcp"]
             valid_keys = [col for col in alternatives if col in df.columns]
 
         if not valid_keys:
-            self.logger.warning("⚠️ Belirtilen hiçbir anahtar şemada bulunamadı. Full-row dropDuplicates uygulanıyor.")
+            self.logger.warning("⚠️ Hiçbir anahtar bulunamadı — full-row dropDuplicates.")
             df_dedup = df.dropDuplicates()
         else:
-            self.logger.info(f"✅ Tekilleştirme başarıyla uygulandı. Anahtarlar: {valid_keys}")
+            self.logger.info(f"✅ Tekilleştirme: {valid_keys}")
             df_dedup = df.dropDuplicates(valid_keys)
 
-        # dbt Gold katmanı veri bütünlüğü takibi için benzersiz satır hash'i (Parmak İzi)
         return df_dedup.withColumn(
-            "_record_hash", 
+            "_record_hash",
             F.md5(F.concat_ws("||", *[F.coalesce(F.col(c).cast("string"), F.lit("")) for c in df_dedup.columns]))
         )
 
     def write_silver(self, df):
+        """
+        Normal mode  : overwrite the single day partition (idempotent daily runs).
+        Backfill mode: append — preserves any daily data already written by the
+                       main pipeline while filling historical gaps.
+
+        Backfill repartitioning strategy:
+          AQE default coalesces the full dataset into very few large partitions.
+          Each partition is buffered entirely in the GCS upload client heap before
+          being sent, causing OOM on executors with 1-4 GiB RAM.
+          Repartitioning to ~200 output tasks spreads the data into many small
+          files (~5-20 MiB each), keeping heap pressure within executor limits.
+        """
         output_path = f"gs://epias-data-lake/silver/{self.source_name}/"
-        self.logger.info(f"🚀 Silver katmanına yazılıyor (Partitioned): {output_path}")
+        write_mode  = "append" if self.backfill_mode else "overwrite"
+
+        if self.backfill_mode:
+            # Repartition to keep each output file small and heap-safe.
+            # 200 partitions across a ~1-year backfill → ~2 days of data per file.
+            df = df.repartition(200, "year", "month", "day")
+            self.logger.info(f"🔀 Backfill repartition(200) uygulandı — küçük dosya boyutu")
+
+        self.logger.info(f"🚀 Silver yazılıyor (mode={write_mode}): {output_path}")
         df.write \
-            .mode("overwrite") \
+            .mode(write_mode) \
             .partitionBy("year", "month", "day") \
             .parquet(output_path)

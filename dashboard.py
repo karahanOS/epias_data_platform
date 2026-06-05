@@ -1,1325 +1,929 @@
-import streamlit as st
-import pandas as pd
-from google.cloud import bigquery
+"""
+dashboard.py — EPIAŞ Elektrik Piyasası Analitik Paneli
+=======================================================
+Tüm dbt Gold mart tablolarını kapsayan interaktif Streamlit dashboard.
+
+Sayfalar:
+  1. 🏠 Executive Summary        — mart_gold_monthly_executive_metrics
+  2. ⚖️  Fiyat Analizi            — mart_price_analysis
+  3. 🌱 Üretim & Yenilenebilir   — mart_generation_mix + mart_renawable_impact + mart_renewable_deep
+  4. 📊 GÖP Piyasa Hacimleri     — mart_gop_volume_analysis + mart_merit_order
+  5. 🔋 Arz-Talep & Residual Yük — mart_supply_demand + mart_forecasted_residual_load + mart_ptf_drivers
+  6. 🚨 Arz Şoku & Risk          — mart_supply_shock_index
+  7. 🤖 PTF Tahmin & ML          — mart_ptf_lag_features + gold_ptf_predictions
+  8. 🌿 Lisanssız Üretim (YEKDEM)— mart_unlicensed_impact
+"""
+
 import os
+import logging
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import streamlit as st
+from google.cloud import bigquery
 
-# ── CONFIG ────────────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "credentials/gcp-key.json"
-PROJECT = "epias-data-platform"
-DATASET = "epias_gold"
+# ── CONSTANTS ─────────────────────────────────────────────────────────────────
+PROJECT = os.getenv("GCP_PROJECT_ID", "epias-data-platform")
+DATASET = os.getenv("BQ_GOLD_DATASET", "epias_gold")
 
+# ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="EPIAŞ Elektrik Piyasası",
+    page_title="EPIAŞ Analitik",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── CUSTOM CSS ────────────────────────────────────────────────────────────────
-
+# ── THEME CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;700&display=swap');
-
 :root {
-    --bg: #0a0e1a;
-    --surface: #111827;
-    --surface2: #1a2235;
-    --accent: #00d4ff;
-    --accent2: #ff6b35;
-    --accent3: #7c3aed;
-    --text: #e2e8f0;
-    --text-muted: #64748b;
-    --green: #10b981;
-    --red: #ef4444;
-    --border: rgba(0, 212, 255, 0.15);
+    --bg:#0a0e1a; --surface:#111827; --surface2:#1a2235;
+    --accent:#00d4ff; --accent2:#ff6b35; --accent3:#7c3aed;
+    --text:#e2e8f0; --muted:#64748b;
+    --green:#10b981; --red:#ef4444; --border:rgba(0,212,255,0.15);
 }
-
-html, body, [class*="css"] {
-    font-family: 'DM Sans', sans-serif;
-    background-color: var(--bg);
-    color: var(--text);
+html,body,[class*="css"]{ font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); }
+.stApp{
+    background:var(--bg);
+    background-image:
+        radial-gradient(ellipse at 20% 50%,rgba(0,212,255,0.05) 0%,transparent 50%),
+        radial-gradient(ellipse at 80% 20%,rgba(124,58,237,0.05) 0%,transparent 50%);
 }
-
-.stApp {
-    background: var(--bg);
-    background-image: 
-        radial-gradient(ellipse at 20% 50%, rgba(0, 212, 255, 0.05) 0%, transparent 50%),
-        radial-gradient(ellipse at 80% 20%, rgba(124, 58, 237, 0.05) 0%, transparent 50%);
+section[data-testid="stSidebar"]{ background:var(--surface)!important; border-right:1px solid var(--border); }
+section[data-testid="stSidebar"] *{ color:var(--text)!important; }
+[data-testid="metric-container"]{
+    background:var(--surface2); border:1px solid var(--border);
+    border-radius:12px; padding:16px; transition:border-color .2s;
 }
-
-/* Sidebar */
-section[data-testid="stSidebar"] {
-    background: var(--surface) !important;
-    border-right: 1px solid var(--border);
+[data-testid="metric-container"]:hover{ border-color:var(--accent); }
+[data-testid="stMetricValue"]{ font-family:'Space Mono',monospace!important; color:var(--accent)!important; font-size:1.8rem!important; }
+[data-testid="stMetricLabel"]{ color:var(--muted)!important; font-size:.75rem!important; text-transform:uppercase; letter-spacing:.1em; }
+[data-testid="stMetricDelta"]{ font-family:'Space Mono',monospace!important; }
+h1,h2,h3{ font-family:'Space Mono',monospace!important; }
+.stSelectbox>div>div{ background:var(--surface2)!important; border-color:var(--border)!important; color:var(--text)!important; }
+hr{ border-color:var(--border)!important; }
+.page-header{
+    background:linear-gradient(135deg,var(--surface2) 0%,rgba(0,212,255,.05) 100%);
+    border:1px solid var(--border); border-radius:16px;
+    padding:24px 32px; margin-bottom:24px; position:relative; overflow:hidden;
 }
-
-section[data-testid="stSidebar"] * {
-    color: var(--text) !important;
+.page-header::before{
+    content:''; position:absolute; top:0;left:0;right:0; height:2px;
+    background:linear-gradient(90deg,var(--accent),var(--accent3),var(--accent2));
 }
-
-/* Metric cards */
-[data-testid="metric-container"] {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px;
-    transition: border-color 0.2s;
-}
-
-[data-testid="metric-container"]:hover {
-    border-color: var(--accent);
-}
-
-[data-testid="stMetricValue"] {
-    font-family: 'Space Mono', monospace !important;
-    color: var(--accent) !important;
-    font-size: 1.8rem !important;
-}
-
-[data-testid="stMetricLabel"] {
-    color: var(--text-muted) !important;
-    font-size: 0.75rem !important;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-}
-
-[data-testid="stMetricDelta"] {
-    font-family: 'Space Mono', monospace !important;
-}
-
-/* Headers */
-h1, h2, h3 {
-    font-family: 'Space Mono', monospace !important;
-}
-
-/* Selectbox & widgets */
-.stSelectbox > div > div {
-    background: var(--surface2) !important;
-    border-color: var(--border) !important;
-    color: var(--text) !important;
-}
-
-/* Divider */
-hr {
-    border-color: var(--border) !important;
-}
-
-/* Page title banner */
-.page-header {
-    background: linear-gradient(135deg, var(--surface2) 0%, rgba(0,212,255,0.05) 100%);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 24px 32px;
-    margin-bottom: 24px;
-    position: relative;
-    overflow: hidden;
-}
-
-.page-header::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--accent), var(--accent3), var(--accent2));
-}
-
-.page-header h1 {
-    margin: 0;
-    font-size: 1.6rem;
-    color: var(--text);
-}
-
-.page-header p {
-    margin: 8px 0 0 0;
-    color: var(--text-muted);
-    font-size: 0.9rem;
-}
-
-.badge {
-    display: inline-block;
-    background: rgba(0, 212, 255, 0.1);
-    border: 1px solid rgba(0, 212, 255, 0.3);
-    color: var(--accent);
-    padding: 2px 10px;
-    border-radius: 20px;
-    font-size: 0.75rem;
-    font-family: 'Space Mono', monospace;
-    margin-right: 8px;
+.page-header h1{ margin:0; font-size:1.6rem; color:var(--text); }
+.page-header p{ margin:8px 0 0 0; color:var(--muted); font-size:.9rem; }
+.badge{
+    display:inline-block; background:rgba(0,212,255,.1);
+    border:1px solid rgba(0,212,255,.3); color:var(--accent);
+    padding:2px 10px; border-radius:20px;
+    font-size:.75rem; font-family:'Space Mono',monospace; margin-right:8px;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ── API EXPORT FONKSİYONU ─────────────────────────────────────────────────────
-@st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8')
+# ── PLOTLY LAYOUT DEFAULTS ────────────────────────────────────────────────────
+DARK_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(color="#e2e8f0", family="DM Sans"),
+    legend=dict(bgcolor="rgba(0,0,0,0)"),
+    xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+    yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+)
 
-# ── SIDEBAR GÜNCELLEME ────────────────────────────────────────────────────────
+def dark(fig, height=420, **extra):
+    fig.update_layout(**DARK_LAYOUT, height=height, **extra)
+    return fig
+
+# ── BIGQUERY ──────────────────────────────────────────────────────────────────
+@st.cache_resource
+def get_client():
+    try:
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"]
+        )
+        return bigquery.Client(project=PROJECT, credentials=creds)
+    except Exception:
+        return bigquery.Client(project=PROJECT)
+
+@st.cache_data(ttl=3600, show_spinner="BigQuery sorgulanıyor...")
+def query(sql: str) -> pd.DataFrame:
+    try:
+        return get_client().query(sql).to_dataframe()
+    except Exception as e:
+        st.error(f"Sorgu hatası: {e}")
+        return pd.DataFrame()
+
+def tbl(mart: str) -> str:
+    return f"`{PROJECT}.{DATASET}.{mart}`"
+
+# ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
+    st.markdown("""
+    <div style='text-align:center;padding:16px 0 24px 0;'>
+        <div style='font-size:2.5rem;'>⚡</div>
+        <div style='font-family:Space Mono,monospace;font-size:.9rem;color:#00d4ff;margin-top:8px;'>EPIAŞ ANALİTİK</div>
+        <div style='font-size:.7rem;color:#64748b;margin-top:4px;'>Türkiye Elektrik Piyasası</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    page = st.selectbox("📊 Sayfa", [
+        "🏠 Executive Summary",
+        "⚖️ Fiyat Analizi",
+        "🌱 Üretim & Yenilenebilir",
+        "📊 GÖP Piyasa Hacimleri",
+        "🔋 Arz-Talep & Residual Yük",
+        "🚨 Arz Şoku & Risk",
+        "🤖 PTF Tahmin & ML",
+        "🌿 Lisanssız Üretim (YEKDEM)",
+    ], label_visibility="collapsed")
+
     st.markdown("---")
     if st.button("🔄 Veriyi Yenile", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-
-# ── BIGQUERY CLIENT ───────────────────────────────────────────────────────────
-
-@st.cache_resource
-def get_client():
-    from google.oauth2 import service_account
-    credentials = service_account.Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"]
-    )
-    return bigquery.Client(project=PROJECT, credentials=credentials)
-
-@st.cache_data(ttl=3600)
-def query(sql):
-    client = get_client()
-    return client.query(sql).to_dataframe()
-
-# ── SIDEBAR ───────────────────────────────────────────────────────────────────
-
-with st.sidebar:
-    st.markdown("""
-    <div style='text-align:center; padding: 16px 0 24px 0;'>
-        <div style='font-size:2.5rem;'>⚡</div>
-        <div style='font-family: Space Mono, monospace; font-size: 0.9rem; color: #00d4ff; margin-top: 8px;'>EPIAŞ ANALİTİK</div>
-        <div style='font-size: 0.7rem; color: #64748b; margin-top: 4px;'>Türkiye Elektrik Piyasası</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    page = st.selectbox(
-        "📊 Sayfa Seç",
-        [
-            "🏠 Executive Summary", 
-            "⚖️ Fiyat Dengesizliği", 
-            "🌱 Üretim Karışımı", 
-            "🔋 Arz-Talep Analizi", 
-            "📉 Yük Tahmin Sapması",
-            "🌬️ Yenilenebilir Derinlemesine",
-            "🚨 Arz Şokları ve Risk Analizi"  # YENİ EKLENEN SAYFA
-        ],
-        label_visibility="collapsed"
+    st.markdown(
+        "<div style='font-size:.7rem;color:#64748b;'>"
+        "Kaynak: EPIAŞ Şeffaflık Platformu<br>Pipeline: Airflow → Spark → dbt → BQ"
+        "</div>", unsafe_allow_html=True
     )
 
-    st.markdown("---")
-    st.markdown("<div style='font-size:0.7rem; color: #64748b;'>Veri kaynağı: EPIAŞ Şeffaflık Platformu<br>Son güncelleme: Airflow DAG</div>", unsafe_allow_html=True)
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 1: Executive Summary
-# ═════════════════════════════════════════════════════════════════════════════
-
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 1 — EXECUTIVE SUMMARY
+# ══════════════════════════════════════════════════════════════════════════════
 if page == "🏠 Executive Summary":
-
     st.markdown("""
     <div class='page-header'>
-        <span class='badge'>CANLI</span>
+        <span class='badge'>KPI</span>
         <h1>Executive Summary</h1>
-        <p>Türkiye elektrik piyasasına genel bakış — aylık KPI'lar ve trendler</p>
-    </div>
-    """, unsafe_allow_html=True)
+        <p>Türkiye elektrik piyasasına aylık bakış — PTF, tüketim ve sistem yönü</p>
+    </div>""", unsafe_allow_html=True)
 
-    df = query(f"SELECT * FROM `{PROJECT}.{DATASET}.mart_gold_monthly_executive_metrics` ORDER BY year_month")
-
-    if not df.empty:
-        last = df.iloc[-1]
-        
-        # 1. API Export Butonu (Sidebar'da)
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.sidebar.download_button(
-            label="📥 Dataseti CSV Olarak İndir",
-            data=csv,
-            file_name=f"epias_data_{last['year_month']}.csv",
-            mime='text/csv'
-        )
-
+    df = query(f"SELECT * FROM {tbl('mart_gold_monthly_executive_metrics')} ORDER BY year, month")
     if df.empty:
         st.warning("Veri bulunamadı.")
-    else:
-        # Son ay metrikleri
-        last = df.iloc[-1]
-        prev = df.iloc[-2] if len(df) > 1 else last
+        st.stop()
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            delta = round(last["avg_ptf"] - prev["avg_ptf"], 2)
-            st.metric("Ort. PTF (TL/MWh)", f"{last['avg_ptf']:,.2f}", f"{delta:+.2f}")
-        with col2:
-            st.metric("Maks. PTF", f"{last['max_ptf']:,.2f}")
-        with col3:
-            total = last["total_consumption"]
-            st.metric("Toplam Tüketim (MWh)", f"{total:,.0f}")
-        with col4:
-            spread = last.get("avg_price_spread", 0) or 0
-            st.metric("Ort. Fiyat Makası", f"{spread:,.2f}")
+    # CSV download
+    st.sidebar.download_button("📥 CSV İndir", df.to_csv(index=False).encode(),
+                               "epias_executive.csv", "text/csv")
 
-        st.markdown("---")
+    last = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else last
 
-        # PTF trend
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Ort. PTF (TL/MWh)", f"{last['avg_ptf']:,.2f}",
+              f"{last['avg_ptf']-prev['avg_ptf']:+.2f}")
+    c2.metric("Maks PTF", f"{last['max_ptf']:,.2f}")
+    c3.metric("Min PTF",  f"{last['min_ptf']:,.2f}")
+    c4.metric("Ort Fiyat Makası", f"{last['avg_price_spread']:,.2f}")
+    c5.metric("Enerji Açığı (saat)", f"{int(last['energy_deficit_hours']):,}",
+              f"{int(last['energy_deficit_hours']-prev['energy_deficit_hours']):+d}")
 
-        fig.add_trace(go.Scatter(
-            x=df["year_month"], y=df["avg_ptf"],
-            name="Ort. PTF",
-            line=dict(color="#00d4ff", width=2.5),
-            fill="tozeroy",
-            fillcolor="rgba(0, 212, 255, 0.05)",
-        ))
-
-        fig.add_trace(go.Bar(
-            x=df["year_month"], y=df["avg_hourly_consumption"],
-            name="Saatlik Ort. Tüketim",
-            marker_color="rgba(124, 58, 237, 0.4)",
-            marker_line_color="rgba(124, 58, 237, 0.8)",
-            marker_line_width=1,
-        ), secondary_y=True)
-
-        fig.update_layout(
-            title="Aylık PTF Trendi & Tüketim",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0", family="DM Sans"),
-            legend=dict(bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="PTF (TL/MWh)"),
-            yaxis2=dict(title="Tüketim (MWh)", gridcolor="rgba(0,0,0,0)"),
-            height=420,
-        )
-
-        st.plotly_chart(fig, use_container_width=True, key="chart_1")
-
-        # Min/Max PTF band
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(
-            x=df["year_month"], y=df["max_ptf"],
-            name="Maks PTF", line=dict(color="#ef4444", width=1.5, dash="dot")
-        ))
-        fig2.add_trace(go.Scatter(
-            x=df["year_month"], y=df["avg_ptf"],
-            name="Ort PTF", line=dict(color="#00d4ff", width=2.5),
-            fill="tonexty", fillcolor="rgba(0,212,255,0.05)"
-        ))
-        fig2.add_trace(go.Scatter(
-            x=df["year_month"], y=df["min_ptf"],
-            name="Min PTF", line=dict(color="#10b981", width=1.5, dash="dot"),
-            fill="tonexty", fillcolor="rgba(16,185,129,0.05)"
-        ))
-        fig2.update_layout(
-            title="PTF Min / Ort / Maks Bandı",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0", family="DM Sans"),
-            legend=dict(bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-            height=380,
-        )
-        st.plotly_chart(fig2, use_container_width=True, key="chart_2")
-
-        # 2. Model Başarımı (Backtesting) - SAATLİK VE 2026 ODAKLI
     st.markdown("---")
-    col_bt, col_shap = st.columns([1.2, 0.8])
 
-    with col_bt:
-        hourly_query = f"""
-            WITH clean_predictions AS (
-                SELECT 
-                    SAFE_CAST(SAFE_CAST(hour AS FLOAT64) AS INT64) as h_int,
-                    DATE(predicted_date) as p_date,
-                    AVG(predicted_ptf) as predicted_ptf
-                FROM `{PROJECT}.{DATASET}.gold_ptf_predictions`
-                WHERE predicted_date >= '2026-01-01'
-                GROUP BY 1, 2
-            ),
-            actual_features AS (
-                SELECT 
-                    DATE(date) as f_date,
-                    CAST(hour_of_day AS INT64) as h_int,
-                    AVG(ptf) as actual_ptf
-                FROM `{PROJECT}.{DATASET}.mart_ptf_lag_features`
-                WHERE date >= '2026-01-01'
-                GROUP BY 1, 2
-            )
-            SELECT 
-                TIMESTAMP_ADD(TIMESTAMP(p.p_date), INTERVAL p.h_int HOUR) as full_datetime,
-                p.predicted_ptf,
-                f.actual_ptf
-            FROM clean_predictions p
-            JOIN actual_features f 
-                ON p.p_date = f.f_date 
-                AND p.h_int = f.h_int
-            ORDER BY full_datetime
-        """
-        
-        try:
-            hourly_df = query(hourly_query)
-            
-            if not hourly_df.empty:
-                fig_hourly = go.Figure()
-            
-                # Gerçekleşen PTF (Mavi)
-                fig_hourly.add_trace(go.Scatter(
-                    x=hourly_df["full_datetime"], 
-                    y=hourly_df["actual_ptf"],
-                    name="Gerçekleşen PTF (TL)", 
-                    line=dict(color="#00d4ff", width=1.5)
-                ))
-            
-                # Model Tahmini (Turuncu Kesikli)
-                fig_hourly.add_trace(go.Scatter(
-                    x=hourly_df["full_datetime"], 
-                    y=hourly_df["predicted_ptf"],
-                    name="XGBoost Tahminimiz", 
-                    line=dict(color="#ff6b35", dash="dash", width=1.5)
-                ))
-            
-                fig_hourly.update_layout(
-                    title="2026 Saatlik Fiyat Tahmin Başarımı",
-                    xaxis_title="Zaman (Saatlik Çözünürlük)",
-                    yaxis_title="TL / MWh",
-                    hovermode="x unified",
-                    height=500,
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#e2e8f0"),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-            
-                st.plotly_chart(fig_hourly, use_container_width=True)
-                
-                # Hata Analizi
-                mae = (hourly_df["actual_ptf"] - hourly_df["predicted_ptf"]).abs().mean()
-                st.info(f"💡 2026 Yılı Ortalama Tahmin Hatası (MAE): **{mae:,.2f} TL**")
-            else:
-                st.warning("2026 yılına ait tahmin verisi henüz mevcut değil.")
-                
-        except Exception as e:
-            st.error(f"Sorgu çalıştırılırken bir hata oluştu. Lütfen veri tiplerini kontrol edin.")
+    # PTF band (min/avg/max)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df["year_month"], y=df["max_ptf"],
+        name="Maks PTF", line=dict(color="#ef4444", width=1.5, dash="dot")))
+    fig.add_trace(go.Scatter(x=df["year_month"], y=df["avg_ptf"],
+        name="Ort PTF", line=dict(color="#00d4ff", width=2.5),
+        fill="tonexty", fillcolor="rgba(0,212,255,0.06)"))
+    fig.add_trace(go.Scatter(x=df["year_month"], y=df["min_ptf"],
+        name="Min PTF", line=dict(color="#10b981", width=1.5, dash="dot"),
+        fill="tonexty", fillcolor="rgba(16,185,129,0.04)"))
+    dark(fig, title="Aylık PTF Bandı (Min / Ort / Maks)",
+         xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
+    st.plotly_chart(fig, use_container_width=True, key="ex_band")
 
-    pass
+    col_l, col_r = st.columns(2)
 
-    with col_shap:
-        st.markdown("### 🤖 Model Karar Yapısı (SHAP)")
-        try:
-            shap_df = pd.read_csv("models/ptf_shap_importance.csv")
-        
-            fig_shap = px.bar(
-                shap_df.head(10), # En önemli 10 özelliği gösterelim
-                x='feature_importance_vals',
-                y='col_name',
-                orientation='h',
-                title="Özelliklerin Tahmine Etki Gücü",
-                labels={'feature_importance_vals': 'Etki Skoru (SHAP)', 'col_name': 'Özellik'},
-                color='feature_importance_vals',
-                color_continuous_scale='Blues'
-            )
-        
-            fig_shap.update_layout(
-                yaxis={'categoryorder':'total ascending'},
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                coloraxis_showscale=False,
-                height=450,
-                margin=dict(l=10, r=10, t=40, b=10)
-            )
-        
-            st.plotly_chart(fig_shap, use_container_width=True)
-            st.caption("SHAP değerleri, modelin bir tahmini yaparken hangi değişkene ne kadar güvendiğini gösterir.")
-        
-        except FileNotFoundError:
-            st.info("SHAP verisi henüz oluşturulmamış. Lütfen ptf_forecaster.py'ı çalıştırın.")
-            st.markdown("### 🎯 Model Başarımı: Saatlik PTF Backtesting (2026)")
+    with col_l:
+        fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+        fig2.add_trace(go.Bar(x=df["year_month"], y=df["energy_deficit_hours"],
+            name="Enerji Açığı (saat)", marker_color="rgba(239,68,68,0.6)"))
+        fig2.add_trace(go.Bar(x=df["year_month"], y=df["energy_surplus_hours"],
+            name="Enerji Fazlası (saat)", marker_color="rgba(16,185,129,0.6)"))
+        fig2.update_layout(**DARK_LAYOUT, barmode="group", height=380,
+            title="Aylık Sistem Yönü Dağılımı",
+            xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
+        st.plotly_chart(fig2, use_container_width=True, key="ex_dir")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 2: Fiyat Dengesizliği
-# ═════════════════════════════════════════════════════════════════════════════
+    with col_r:
+        fig3 = go.Figure(go.Scatter(
+            x=df["year_month"], y=df["avg_price_spread"],
+            mode="lines+markers", name="Fiyat Makası",
+            line=dict(color="#ff6b35", width=2.5),
+            fill="tozeroy", fillcolor="rgba(255,107,53,0.07)"))
+        fig3.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.2)")
+        dark(fig3, height=380, title="Aylık Ortalama Fiyat Makası (PTF - SMF)",
+             xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
+        st.plotly_chart(fig3, use_container_width=True, key="ex_spread")
 
-elif page == "⚖️ Fiyat Dengesizliği":
+    # Season heatmap
+    if "season" in df.columns and "year" in df.columns:
+        pivot = df.pivot_table(index="season", columns="year",
+                               values="avg_ptf", aggfunc="mean")
+        fig4 = px.imshow(pivot, color_continuous_scale="Blues",
+                         text_auto=".0f", title="Mevsim × Yıl Ort. PTF Isı Haritası")
+        dark(fig4, height=300, coloraxis_colorbar=dict(title="TL/MWh"))
+        st.plotly_chart(fig4, use_container_width=True, key="ex_heat")
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 2 — FİYAT ANALİZİ
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "⚖️ Fiyat Analizi":
     st.markdown("""
     <div class='page-header'>
         <span class='badge'>PTF vs SMF</span>
-        <h1>Fiyat Dengesizliği Analizi</h1>
-        <p>Sistem Marjinal Fiyatı ile Piyasa Takas Fiyatı arasındaki makas ve sistem yönü</p>
-    </div>
-    """, unsafe_allow_html=True)
+        <h1>Fiyat Analizi</h1>
+        <p>Saatlik PTF, SMF ve fiyat makası — sistem yönü ve mevsimsel örüntüler</p>
+    </div>""", unsafe_allow_html=True)
 
     df = query(f"""
-        SELECT
-            date,
-            hour,
-            ptf,
-            smf,
-            price_spread,
-            system_direction,
-            season,
-            EXTRACT(YEAR FROM date) as year,
-            EXTRACT(MONTH FROM date) as month
-        FROM `{PROJECT}.{DATASET}.price_spread_analysis`
+        SELECT date, hour, ptf_try, smf_try, price_spread, season,
+               EXTRACT(YEAR FROM date)  AS year,
+               EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_price_analysis')}
         ORDER BY date, hour
     """)
-
     if df.empty:
         st.warning("Veri bulunamadı.")
-    else:
-        years = sorted(df["year"].unique(), reverse=True)
-        selected_year = st.selectbox("Yıl Seç", years)
-        df_y = df[df["year"] == selected_year]
+        st.stop()
 
-        # KPI
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Ort. Fiyat Makası", f"{df_y['price_spread'].mean():,.2f} TL")
-        with col2:
-            deficit_pct = (df_y["system_direction"] == "Enerji Açığı").mean() * 100
-            st.metric("Enerji Açığı Saatleri", f"%{deficit_pct:.1f}")
-        with col3:
-            surplus_pct = (df_y["system_direction"] == "Enerji Fazlası").mean() * 100
-            st.metric("Enerji Fazlası Saatleri", f"%{surplus_pct:.1f}")
-        with col4:
-            st.metric("Maks. Makas", f"{df_y['price_spread'].max():,.2f} TL")
+    st.sidebar.download_button("📥 CSV İndir", df.to_csv(index=False).encode(),
+                               "epias_price.csv", "text/csv")
 
-        st.markdown("---")
+    years = sorted(df["year"].unique(), reverse=True)
+    col_f1, col_f2 = st.columns(2)
+    sel_year = col_f1.selectbox("Yıl", years)
+    seasons_avail = ["Tümü"] + list(df["season"].dropna().unique())
+    sel_season = col_f2.selectbox("Mevsim", seasons_avail)
 
-        col_left, col_right = st.columns([2, 1])
+    dfy = df[df["year"] == sel_year]
+    if sel_season != "Tümü":
+        dfy = dfy[dfy["season"] == sel_season]
 
-        with col_left:
-            # PTF vs SMF scatter
-            fig = px.scatter(
-                df_y.sample(min(3000, len(df_y))),
-                x="ptf", y="smf",
-                color="system_direction",
-                color_discrete_map={
-                    "Enerji Açığı": "#ef4444",
-                    "Enerji Fazlası": "#10b981",
-                    "Dengeli": "#00d4ff"
-                },
-                opacity=0.6,
-                title="PTF vs SMF Dağılımı",
-                labels={"ptf": "PTF (TL/MWh)", "smf": "SMF (TL/MWh)"}
-            )
-            # 45 derece çizgisi
-            max_val = max(df_y["ptf"].max(), df_y["smf"].max())
-            fig.add_trace(go.Scatter(
-                x=[0, max_val], y=[0, max_val],
-                mode="lines",
-                line=dict(color="rgba(255,255,255,0.2)", dash="dash"),
-                name="Denge Çizgisi"
-            ))
-            fig.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                legend=dict(bgcolor="rgba(0,0,0,0)"),
-                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                height=420,
-            )
-            st.plotly_chart(fig, use_container_width=True, key="chart_3")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort. PTF", f"{dfy['ptf_try'].mean():,.2f} TL")
+    c2.metric("Ort. SMF", f"{dfy['smf_try'].mean():,.2f} TL")
+    c3.metric("Ort. Makas", f"{dfy['price_spread'].mean():,.2f} TL")
+    c4.metric("Maks Makas", f"{dfy['price_spread'].max():,.2f} TL")
 
-        with col_right:
-            # Sistem yönü pie
-            direction_counts = df_y["system_direction"].value_counts()
-            fig2 = go.Figure(go.Pie(
-                labels=direction_counts.index,
-                values=direction_counts.values,
-                hole=0.6,
-                marker_colors=["#ef4444", "#10b981", "#00d4ff"],
-            ))
-            fig2.update_layout(
-                title="Sistem Yönü Dağılımı",
-                paper_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                legend=dict(bgcolor="rgba(0,0,0,0)"),
-                height=420,
-                annotations=[dict(
-                    text=f"{selected_year}",
-                    x=0.5, y=0.5,
-                    font_size=20,
-                    font_color="#00d4ff",
-                    showarrow=False
-                )]
-            )
-            st.plotly_chart(fig2, use_container_width=True, key="chart_4")
+    st.markdown("---")
 
-        # Mevsimsel spread
-        seasonal = df_y.groupby("season")["price_spread"].mean().reset_index()
-        fig3 = px.bar(
-            seasonal, x="season", y="price_spread",
-            title="Mevsimsel Ortalama Fiyat Makası",
+    # PTF vs SMF scatter
+    col_l, col_r = st.columns([2, 1])
+    with col_l:
+        fig = px.scatter(dfy.sample(min(4000, len(dfy))),
+            x="ptf_try", y="smf_try", color="season",
+            opacity=0.5, trendline="ols",
+            title="PTF vs SMF Saçılım",
+            labels={"ptf_try": "PTF (TL/MWh)", "smf_try": "SMF (TL/MWh)"})
+        mv = max(dfy["ptf_try"].max(), dfy["smf_try"].max())
+        fig.add_shape(type="line", x0=0, y0=0, x1=mv, y1=mv,
+                      line=dict(color="rgba(255,255,255,0.2)", dash="dash"))
+        dark(fig)
+        st.plotly_chart(fig, use_container_width=True, key="pr_scatter")
+
+    with col_r:
+        season_spread = dfy.groupby("season")["price_spread"].mean().reset_index()
+        fig2 = px.bar(season_spread, x="season", y="price_spread",
             color="price_spread",
-            color_continuous_scale=["#10b981", "#00d4ff", "#7c3aed", "#ef4444"],
-            labels={"price_spread": "Ort. Makas (TL/MWh)", "season": "Mevsim"}
-        )
-        fig3.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-            coloraxis_showscale=False,
-            height=350,
-        )
-        st.plotly_chart(fig3, use_container_width=True, key="chart_5")
+            color_continuous_scale=["#10b981","#00d4ff","#7c3aed","#ef4444"],
+            title="Mevsimsel Ort. Makas",
+            labels={"price_spread": "Makas (TL/MWh)", "season": ""})
+        dark(fig2, coloraxis_showscale=False)
+        st.plotly_chart(fig2, use_container_width=True, key="pr_season")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 3: Üretim Karışımı
-# ═════════════════════════════════════════════════════════════════════════════
+    # Hourly average PTF/SMF profile
+    hourly = dfy.groupby("hour").agg(
+        avg_ptf=("ptf_try", "mean"), avg_smf=("smf_try", "mean"),
+        avg_spread=("price_spread", "mean")).reset_index()
 
-elif page == "🌱 Üretim Karışımı":
+    fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+    fig3.add_trace(go.Scatter(x=hourly["hour"], y=hourly["avg_ptf"],
+        name="Ort PTF", line=dict(color="#00d4ff", width=2.5)))
+    fig3.add_trace(go.Scatter(x=hourly["hour"], y=hourly["avg_smf"],
+        name="Ort SMF", line=dict(color="#7c3aed", width=2.5)))
+    fig3.add_trace(go.Bar(x=hourly["hour"], y=hourly["avg_spread"],
+        name="Ort Makas", marker_color="rgba(255,107,53,0.5)"),
+        secondary_y=True)
+    fig3.update_layout(**DARK_LAYOUT, height=380, barmode="overlay",
+        title="Saatlik Ortalama PTF / SMF / Makas Profili",
+        xaxis=dict(title="Saat", gridcolor="rgba(255,255,255,0.05)", tickmode="linear"),
+        yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
+        yaxis2=dict(title="Makas", gridcolor="rgba(0,0,0,0)"))
+    st.plotly_chart(fig3, use_container_width=True, key="pr_hourly")
 
+    # Spread distribution
+    fig4 = px.histogram(dfy, x="price_spread", nbins=80,
+        color="season", barmode="overlay",
+        title="Fiyat Makası Dağılımı (Histogram)",
+        labels={"price_spread": "Makas (TL/MWh)"}, opacity=0.7)
+    dark(fig4, height=360)
+    st.plotly_chart(fig4, use_container_width=True, key="pr_hist")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 3 — ÜRETİM & YENİLENEBİLİR
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🌱 Üretim & Yenilenebilir":
     st.markdown("""
     <div class='page-header'>
         <span class='badge'>MERIT ORDER</span>
-        <h1>Üretim Karışımı & Fiyat Etkisi</h1>
-        <p>Yenilenebilir enerji oranı arttıkça fiyatlar nasıl tepki veriyor?</p>
-    </div>
-    """, unsafe_allow_html=True)
+        <h1>Üretim Karışımı & Yenilenebilir Etki</h1>
+        <p>Yenilenebilir/fosil oranı, rüzgar tahmini sapması ve yeşil enerji residual yük</p>
+    </div>""", unsafe_allow_html=True)
 
-    df = query(f"""
-        SELECT
-            date,
-            hour,
-            total_generation,
-            renewable_generation,
-            fossil_generation,
-            renewable_ratio,
-            fossil_ratio,
-            ptf,
-            EXTRACT(YEAR FROM date) as year,
-            EXTRACT(MONTH FROM date) as month
-        FROM `{PROJECT}.{DATASET}.generation_mix_price_impact`
-        ORDER BY date, hour
+    df_mix = query(f"""
+        SELECT date, hour, total_generation, renewable_ratio, fossil_ratio,
+               EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_generation_mix')} ORDER BY date, hour
+    """)
+    df_ren = query(f"""
+        SELECT date, hour, ptf_try, licensed_renewable_mwh, total_unlicensed_mwh,
+               total_green_energy_mwh, residual_load_mwh, total_demand_mwh,
+               EXTRACT(YEAR FROM date) AS year
+        FROM {tbl('mart_renawable_impact')} ORDER BY date, hour
+    """)
+    df_deep = query(f"""
+        SELECT date, hour, wind_generation_mwh, solar_generation_mwh,
+               forecasted_res_mwh, wind_forecast_error,
+               EXTRACT(YEAR FROM date) AS year
+        FROM {tbl('mart_renewable_deep')} ORDER BY date, hour
     """)
 
-    if df.empty:
+    if df_mix.empty:
         st.warning("Veri bulunamadı.")
-    else:
-        years = sorted(df["year"].unique(), reverse=True)
-        selected_year = st.selectbox("Yıl Seç", years)
-        df_y = df[df["year"] == selected_year]
+        st.stop()
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Ort. Yenilenebilir Oranı", f"%{df_y['renewable_ratio'].mean():.1f}")
-        with col2:
-            st.metric("Ort. Fosil Oranı", f"%{df_y['fossil_ratio'].mean():.1f}")
-        with col3:
-            st.metric("Ort. Toplam Üretim", f"{df_y['total_generation'].mean():,.0f} MWh")
-        with col4:
-            corr = df_y["renewable_ratio"].corr(df_y["ptf"])
-            st.metric("Korelasyon (Yenilenebilir~PTF)", f"{corr:.3f}")
+    years = sorted(df_mix["year"].unique(), reverse=True)
+    sel_year = st.selectbox("Yıl", years, key="ren_year")
+    dfy = df_mix[df_mix["year"] == sel_year]
+    dfy_ren = df_ren[df_ren["year"] == sel_year] if not df_ren.empty else pd.DataFrame()
+    dfy_deep = df_deep[df_deep["year"] == sel_year] if not df_deep.empty else pd.DataFrame()
 
-        st.markdown("---")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort. Yenilenebilir %", f"%{dfy['renewable_ratio'].mean()*100:.1f}")
+    c2.metric("Ort. Fosil %", f"%{dfy['fossil_ratio'].mean()*100:.1f}")
+    c3.metric("Ort. Toplam Üretim", f"{dfy['total_generation'].mean():,.0f} MWh")
+    if not dfy_ren.empty:
+        corr = dfy_ren["renewable_ratio"].corr(dfy_ren["ptf_try"]) if "renewable_ratio" in dfy_ren else None
+        if corr is not None:
+            c4.metric("Yenilenebilir~PTF Korel.", f"{corr:.3f}")
 
-        # Scatter: Yenilenebilir oranı vs PTF
-        fig = px.scatter(
-            df_y.sample(min(3000, len(df_y))),
-            x="renewable_ratio", y="ptf",
-            color="ptf",
-            color_continuous_scale=["#10b981", "#00d4ff", "#ef4444"],
-            opacity=0.5,
-            trendline="lowess",
-            title="Yenilenebilir Üretim Oranı → PTF İlişkisi (Merit Order Effect)",
-            labels={"renewable_ratio": "Yenilenebilir Oranı (%)", "ptf": "PTF (TL/MWh)"}
-        )
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-            coloraxis_showscale=False,
-            height=430,
-        )
-        st.plotly_chart(fig, use_container_width=True, key="chart_6")
+    st.markdown("---")
 
-        # Aylık yenilenebilir vs PTF trend
-        monthly = df_y.groupby("month").agg(
-            avg_renewable=("renewable_ratio", "mean"),
-            avg_ptf=("ptf", "mean")
-        ).reset_index()
+    col_l, col_r = st.columns(2)
 
-        fig2 = make_subplots(specs=[[{"secondary_y": True}]])
-        fig2.add_trace(go.Bar(
-            x=monthly["month"], y=monthly["avg_renewable"],
-            name="Ort. Yenilenebilir %",
-            marker_color="rgba(16, 185, 129, 0.6)",
-            marker_line_color="#10b981",
-            marker_line_width=1,
-        ))
-        fig2.add_trace(go.Scatter(
-            x=monthly["month"], y=monthly["avg_ptf"],
-            name="Ort. PTF",
-            line=dict(color="#00d4ff", width=2.5),
-            mode="lines+markers",
-            marker=dict(size=8),
-        ), secondary_y=True)
+    with col_l:
+        # Renewable ratio vs PTF
+        if not dfy_ren.empty and "ptf_try" in dfy_ren.columns:
+            fig = px.scatter(dfy_ren.sample(min(3000, len(dfy_ren))),
+                x="renewable_ratio", y="ptf_try",
+                color="ptf_try", color_continuous_scale=["#10b981","#00d4ff","#ef4444"],
+                opacity=0.5, trendline="lowess",
+                title="🌿 Yenilenebilir Oranı → PTF (Merit Order Effect)",
+                labels={"renewable_ratio": "Yenilenebilir Oranı", "ptf_try": "PTF (TL/MWh)"})
+            dark(fig, coloraxis_showscale=False)
+            st.plotly_chart(fig, use_container_width=True, key="ren_scatter")
 
-        fig2.update_layout(
-            title=f"{selected_year} — Aylık Yenilenebilir Oranı vs PTF",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0"),
-            legend=dict(bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickmode="linear"),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Yenilenebilir %"),
-            yaxis2=dict(title="PTF (TL/MWh)", gridcolor="rgba(0,0,0,0)"),
-            height=380,
-        )
-        st.plotly_chart(fig2, use_container_width=True, key="chart_7")
+    with col_r:
+        # Monthly stack renewable/fossil
+        monthly = dfy.groupby("month").agg(
+            ren=("renewable_ratio", "mean"), fos=("fossil_ratio", "mean")).reset_index()
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(x=monthly["month"], y=monthly["ren"]*100,
+            name="Yenilenebilir %", marker_color="rgba(16,185,129,0.8)"))
+        fig2.add_trace(go.Bar(x=monthly["month"], y=monthly["fos"]*100,
+            name="Fosil %", marker_color="rgba(239,68,68,0.7)"))
+        dark(fig2, height=380, title=f"{sel_year} Aylık Üretim Karışımı",
+             barmode="stack",
+             xaxis=dict(title="Ay", gridcolor="rgba(255,255,255,0.05)", tickmode="linear"),
+             yaxis=dict(title="%", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig2, use_container_width=True, key="ren_stack")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 4: Arz-Talep Analizi
-# ═════════════════════════════════════════════════════════════════════════════
-
-elif page == "🔋 Arz-Talep Analizi":
-
-    st.markdown("""
-    <div class='page-header'>
-        <span class='badge'>PEAK SAATLER</span>
-        <h1>Arz-Talep Analizi</h1>
-        <p>Tüketim zirveleri, karşılama oranları ve günlük yük profili</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    df = query(f"""
-        SELECT
-            date,
-            hour,
-            time_of_day,
-            total_generation,
-            total_consumption,
-            coverage_ratio,
-            EXTRACT(YEAR FROM date) as year,
-            EXTRACT(MONTH FROM date) as month
-        FROM `{PROJECT}.{DATASET}.supply_demand_summary`
-        ORDER BY date, hour
-    """)
-
-    if df.empty:
-        st.warning("Veri bulunamadı.")
-    else:
-        years = sorted(df["year"].unique(), reverse=True)
-        selected_year = st.selectbox("Yıl Seç", years)
-        df_y = df[df["year"] == selected_year]
-
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Ort. Karşılama Oranı", f"%{df_y['coverage_ratio'].mean():.1f}")
-        with col2:
-            st.metric("Min. Karşılama Oranı", f"%{df_y['coverage_ratio'].min():.1f}")
-        with col3:
-            st.metric("Maks. Tüketim", f"{df_y['total_consumption'].max():,.0f} MWh")
-        with col4:
-            st.metric("Maks. Üretim", f"{df_y['total_generation'].max():,.0f} MWh")
-
-        st.markdown("---")
-
-        # Saat dilimine göre karşılama oranı
-        tod = df_y.groupby("time_of_day").agg(
-            avg_coverage=("coverage_ratio", "mean"),
-            avg_gen=("total_generation", "mean"),
-            avg_con=("total_consumption", "mean"),
-        ).reset_index()
-
-        col_l, col_r = st.columns(2)
-
-        with col_l:
-            fig = px.bar(
-                tod, x="time_of_day", y="avg_coverage",
-                title="Saat Dilimine Göre Ort. Karşılama Oranı (%)",
-                color="avg_coverage",
-                color_continuous_scale=["#ef4444", "#ff6b35", "#10b981"],
-                labels={"avg_coverage": "Karşılama %", "time_of_day": "Saat Dilimi"}
-            )
-            fig.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                coloraxis_showscale=False,
-                height=380,
-            )
-            st.plotly_chart(fig, use_container_width=True, key="chart_8")
-
-        with col_r:
-            fig2 = go.Figure()
-            fig2.add_trace(go.Bar(
-                x=tod["time_of_day"], y=tod["avg_gen"],
-                name="Üretim", marker_color="rgba(0, 212, 255, 0.7)"
-            ))
-            fig2.add_trace(go.Bar(
-                x=tod["time_of_day"], y=tod["avg_con"],
-                name="Tüketim", marker_color="rgba(255, 107, 53, 0.7)"
-            ))
-            fig2.update_layout(
-                title="Saat Dilimine Göre Ort. Üretim vs Tüketim",
-                barmode="group",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                legend=dict(bgcolor="rgba(0,0,0,0)"),
-                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                height=380,
-            )
-            st.plotly_chart(fig2, use_container_width=True, key="chart_9")
-
-        # Aylık karşılama oranı trend
-        monthly_cov = df_y.groupby("month")["coverage_ratio"].mean().reset_index()
-        fig3 = go.Figure()
-        fig3.add_trace(go.Scatter(
-            x=monthly_cov["month"],
-            y=monthly_cov["coverage_ratio"],
-            mode="lines+markers",
-            line=dict(color="#00d4ff", width=2.5),
-            marker=dict(size=8, color="#00d4ff"),
-            fill="tozeroy",
-            fillcolor="rgba(0, 212, 255, 0.05)",
-            name="Karşılama Oranı"
-        ))
-        fig3.add_hline(
-            y=100,
-            line_dash="dash",
-            line_color="rgba(255,255,255,0.3)",
-            annotation_text="100% Eşiği",
-            annotation_font_color="#64748b"
-        )
-        fig3.update_layout(
-            title=f"{selected_year} — Aylık Ortalama Karşılama Oranı (%)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickmode="linear"),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-            height=350,
-        )
-        st.plotly_chart(fig3, use_container_width=True, key="chart_10")
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 5: Yük Tahmin Sapması
-# ═════════════════════════════════════════════════════════════════════════════
-
-elif page == "📉 Yük Tahmin Sapması":
-
-    st.markdown("""
-    <div class='page-header'>
-        <span class='badge'>SAPMA ANALİZİ</span>
-        <h1>Yük Tahmin Sapması</h1>
-        <p>Tahmin edilen tüketim ile gerçekleşen tüketim arasındaki saatlik sapmalar</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    df = query(f"""
-        SELECT
-            date,
-            hour,
-            forecast_consumption,
-            actual_consumption,
-            deviation,
-            deviation_pct,
-            deviation_direction,
-            EXTRACT(YEAR FROM date)       as year,
-            EXTRACT(MONTH FROM date)      as month,
-            EXTRACT(DAY FROM date)        as day,
-            EXTRACT(HOUR FROM date)       as hour_num
-        FROM `{PROJECT}.{DATASET}.gold_load_vs_actual`
-        ORDER BY date, hour
-    """)
-
-    if df.empty:
-        st.warning("Veri bulunamadı.")
-    else:
-        years = sorted(df["year"].unique(), reverse=True)
-        selected_year = st.selectbox("Yıl Seç", years)
-        df_y = df[df["year"] == selected_year]
-
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Ort. Mutlak Sapma", f"{df_y['deviation'].abs().mean():,.0f} MWh")
-        with col2:
-            st.metric("Ort. Sapma %", f"%{df_y['deviation_pct'].abs().mean():.2f}")
-        with col3:
-            fazla_pct = (df_y["deviation_direction"] == "Tüketim Fazla").mean() * 100
-            st.metric("Tüketim Fazla Saatleri", f"%{fazla_pct:.1f}")
-        with col4:
-            st.metric("Maks. Sapma", f"{df_y['deviation'].abs().max():,.0f} MWh")
-
-        st.markdown("---")
-
-        df_recent = df_y.sort_values("date").tail(28 * 24).copy()
-        df_recent["day_label"] = df_recent["date"].dt.strftime("%d-%m")
-
-        pivot = df_recent.pivot_table(
-            index="day_label",
-            columns="hour_num",
-            values="deviation",
-            aggfunc="mean",
-            sort=False
-        )
-
-        fig_heat = go.Figure(go.Heatmap(
-            z=pivot.values,
-            x=[f"{int(h):02d}:00" for h in pivot.columns],
-            y=pivot.index, 
-            colorscale=[
-                [0.0,  "#1e40af"], 
-                [0.5,  "#111827"], 
-                [1.0,  "#dc2626"], 
-            ],
-            zmid=0,
-            hovertemplate="Tarih: %{y}<br>Saat: %{x}<br>Sapma: %{z:,.0f} MWh<extra></extra>",
-        ))
-
-        fig_heat.update_layout(
-            title="Saatlere Göre Tüketim Sapması (Son 28 Gün)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0"),
-            xaxis=dict(title="Saat", dtick=2),
-            yaxis=dict(
-                title="Gün-Ay",
-                type='category', 
-                autorange="reversed" 
-            ),
-            height=700,
-        )
-        st.plotly_chart(fig_heat, use_container_width=True)
-
-        col_l, col_r = st.columns(2)
-
-        with col_l:
-            hourly = df_y.groupby("hour_num").agg(
-                avg_dev=("deviation", "mean"),
-                avg_abs_dev=("deviation", lambda x: x.abs().mean()),
-            ).reset_index()
-
-            fig2 = go.Figure()
-            fig2.add_trace(go.Bar(
-                x=hourly["hour_num"],
-                y=hourly["avg_dev"],
-                name="Ort. Sapma",
-                marker_color=[
-                    "#ef4444" if v > 0 else "#3b82f6"
-                    for v in hourly["avg_dev"]
-                ],
-            ))
-            fig2.add_hline(
-                y=0, line_color="rgba(255,255,255,0.3)", line_dash="dash"
-            )
-            fig2.update_layout(
-                title="Saate Göre Ortalama Sapma",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                xaxis=dict(
-                    gridcolor="rgba(255,255,255,0.05)",
-                    tickmode="linear", title="Saat"
-                ),
-                yaxis=dict(
-                    gridcolor="rgba(255,255,255,0.05)",
-                    title="Sapma (MWh)"
-                ),
-                height=380,
-            )
-            st.plotly_chart(fig2, use_container_width=True, key="chart_12")
-
-        with col_r:
-            direction_counts = df_y["deviation_direction"].value_counts()
-            fig3 = go.Figure(go.Pie(
-                labels=direction_counts.index,
-                values=direction_counts.values,
-                hole=0.6,
-                marker_colors=["#ef4444", "#3b82f6", "#00d4ff"],
-            ))
-            fig3.update_layout(
-                title="Sapma Yönü Dağılımı",
-                paper_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                legend=dict(bgcolor="rgba(0,0,0,0)"),
-                height=380,
-                annotations=[dict(
-                    text=f"{selected_year}",
-                    x=0.5, y=0.5,
-                    font_size=20,
-                    font_color="#00d4ff",
-                    showarrow=False
-                )]
-            )
-            st.plotly_chart(fig3, use_container_width=True, key="chart_13")
-
-        monthly = df_y.groupby("month").agg(
-            avg_forecast=("forecast_consumption", "mean"),
-            avg_actual=("actual_consumption", "mean"),
-        ).reset_index()
-
-        fig4 = go.Figure()
-        fig4.add_trace(go.Scatter(
-            x=monthly["month"], y=monthly["avg_forecast"],
-            name="Tahmin (LEP)",
-            line=dict(color="#7c3aed", width=2.5, dash="dash"),
-            mode="lines+markers",
-            marker=dict(size=7),
-        ))
-        fig4.add_trace(go.Scatter(
-            x=monthly["month"], y=monthly["avg_actual"],
-            name="Gerçekleşen",
-            line=dict(color="#00d4ff", width=2.5),
-            mode="lines+markers",
-            marker=dict(size=7),
-            fill="tonexty",
-            fillcolor="rgba(0, 212, 255, 0.05)",
-        ))
-        fig4.update_layout(
-            title=f"{selected_year} — Aylık Tahmin vs Gerçekleşen Tüketim",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0"),
-            legend=dict(bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(
-                gridcolor="rgba(255,255,255,0.05)",
-                tickmode="linear", title="Ay"
-            ),
-            yaxis=dict(
-                gridcolor="rgba(255,255,255,0.05)",
-                title="Tüketim (MWh)"
-            ),
-            height=380,
-        )
-        st.plotly_chart(fig4, use_container_width=True, key="load_monthly_fig4")
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 6: Yenilenebilir Derinlemesine
-# ═════════════════════════════════════════════════════════════════════════════
-
-elif page == "🌬️ Yenilenebilir Derinlemesine":
-
-    st.markdown("""
-    <div class='page-header'>
-        <span class='badge'>MERIT ORDER</span>
-        <h1>Yenilenebilir Enerji Derinlemesine Analiz</h1>
-        <p>Rüzgar, güneş ve hidrolik üretimin fiyat üzerindeki etkisi — kaynak bazında Merit Order</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    df = query(f"""
-        SELECT
-            date,
-            hour,
-            time_of_day,
-            season,
-            total_generation,
-            wind,
-            sun,
-            dammed_hydro,
-            river,
-            natural_gas,
-            wind_ratio,
-            sun_ratio,
-            hydro_ratio,
-            gas_ratio,
-            coal_ratio,
-            combined_renewable_ratio,
-            ptf,
-            EXTRACT(YEAR FROM date)  as year,
-            EXTRACT(MONTH FROM date) as month
-        FROM `{PROJECT}.{DATASET}.renewable_deep_analysis`
-        ORDER BY date, hour
-    """)
-
-    if df.empty:
-        st.warning("Veri bulunamadı.")
-    else:
-        years = sorted(df["year"].unique(), reverse=True)
-        col_filter1, col_filter2 = st.columns(2)
-        with col_filter1:
-            selected_year = st.selectbox("Yıl Seç", years)
-        with col_filter2:
-            selected_season = st.selectbox(
-                "Mevsim Seç",
-                ["Tümü", "Kış", "İlkbahar", "Yaz", "Sonbahar"]
-            )
-
-        df_y = df[df["year"] == selected_year]
-        if selected_season != "Tümü":
-            df_y = df_y[df_y["season"] == selected_season]
-
-        # KPI kartları
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            corr_wind = df_y["wind_ratio"].corr(df_y["ptf"])
-            st.metric("Rüzgar-PTF Korelasyonu", f"{corr_wind:.3f}")
-        with col2:
-            corr_sun = df_y["sun_ratio"].corr(df_y["ptf"])
-            st.metric("Güneş-PTF Korelasyonu", f"{corr_sun:.3f}")
-        with col3:
-            corr_hydro = df_y["hydro_ratio"].corr(df_y["ptf"])
-            st.metric("Hidrolik-PTF Korelasyonu", f"{corr_hydro:.3f}")
-        with col4:
-            st.metric("Ort. Yenilenebilir Oranı", f"%{df_y['combined_renewable_ratio'].mean():.1f}")
-
-        st.markdown("---")
-
-        # Kaynak bazında scatter plotlar
-        col_l, col_r = st.columns(2)
-
-        with col_l:
-            fig1 = px.scatter(
-                df_y.sample(min(2000, len(df_y))),
-                x="wind_ratio", y="ptf",
-                color="season",
-                color_discrete_map={
-                    "Kış": "#3b82f6",
-                    "İlkbahar": "#10b981",
-                    "Yaz": "#f59e0b",
-                    "Sonbahar": "#f97316"
-                },
-                opacity=0.5,
-                trendline="lowess",
-                title="🌬️ Rüzgar Oranı → PTF",
-                labels={"wind_ratio": "Rüzgar Oranı (%)", "ptf": "PTF (TL/MWh)"}
-            )
-            fig1.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                legend=dict(bgcolor="rgba(0,0,0,0)"),
-                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                height=380,
-            )
-            st.plotly_chart(fig1, use_container_width=True, key="chart_14")
-
-        with col_r:
-            fig2 = px.scatter(
-                df_y.sample(min(2000, len(df_y))),
-                x="hydro_ratio", y="ptf",
-                color="season",
-                color_discrete_map={
-                    "Kış": "#3b82f6",
-                    "İlkbahar": "#10b981",
-                    "Yaz": "#f59e0b",
-                    "Sonbahar": "#f97316"
-                },
-                opacity=0.5,
-                trendline="lowess",
-                title="💧 Hidrolik Oranı → PTF",
-                labels={"hydro_ratio": "Hidrolik Oranı (%)", "ptf": "PTF (TL/MWh)"}
-            )
-            fig2.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                legend=dict(bgcolor="rgba(0,0,0,0)"),
-                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                height=380,
-            )
-            st.plotly_chart(fig2, use_container_width=True, key="chart_15")
-
-        # Güneş etkisi — saat dilimine göre
-        sun_tod = df_y.groupby("time_of_day").agg(
-            avg_sun_ratio=("sun_ratio", "mean"),
-            avg_ptf=("ptf", "mean"),
-        ).reset_index()
-
+    # Wind forecast error
+    if not dfy_deep.empty and "wind_forecast_error" in dfy_deep.columns:
         col_l2, col_r2 = st.columns(2)
-
         with col_l2:
-            fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-            fig3.add_trace(go.Bar(
-                x=sun_tod["time_of_day"],
-                y=sun_tod["avg_sun_ratio"],
-                name="Ort. Güneş %",
-                marker_color="rgba(245, 158, 11, 0.7)",
-                marker_line_color="#f59e0b",
-                marker_line_width=1,
-            ))
-            fig3.add_trace(go.Scatter(
-                x=sun_tod["time_of_day"],
-                y=sun_tod["avg_ptf"],
-                name="Ort. PTF",
-                line=dict(color="#00d4ff", width=2.5),
-                mode="lines+markers",
-                marker=dict(size=8),
-            ), secondary_y=True)
-            fig3.update_layout(
-                title="☀️ Güneş Üretimi ve PTF — Saat Dilimine Göre",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                legend=dict(bgcolor="rgba(0,0,0,0)"),
-                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Güneş %"),
-                yaxis2=dict(title="PTF (TL/MWh)", gridcolor="rgba(0,0,0,0)"),
-                height=380,
-            )
-            st.plotly_chart(fig3, use_container_width=True, key="chart_16")
+            fig3 = px.histogram(dfy_deep, x="wind_forecast_error", nbins=60,
+                color_discrete_sequence=["#00d4ff"],
+                title="🌬️ Rüzgar Üretim Tahmin Sapması Dağılımı",
+                labels={"wind_forecast_error": "Sapma (MWh)"}, opacity=0.8)
+            dark(fig3, height=360)
+            st.plotly_chart(fig3, use_container_width=True, key="ren_wferr")
 
         with col_r2:
-            # Aylık üretim karışımı stacked bar
-            monthly_mix = df_y.groupby("month").agg(
-                wind=("wind_ratio", "mean"),
-                sun=("sun_ratio", "mean"),
-                hydro=("hydro_ratio", "mean"),
-                gas=("gas_ratio", "mean"),
-                coal=("coal_ratio", "mean"),
-            ).reset_index()
+            # Residual load trend
+            if not dfy_ren.empty and "residual_load_mwh" in dfy_ren.columns:
+                daily_res = dfy_ren.groupby("date")["residual_load_mwh"].mean().reset_index()
+                fig4 = go.Figure(go.Scatter(
+                    x=daily_res["date"], y=daily_res["residual_load_mwh"],
+                    mode="lines", line=dict(color="#7c3aed", width=1.5),
+                    fill="tozeroy", fillcolor="rgba(124,58,237,0.07)",
+                    name="Residual Yük"))
+                dark(fig4, height=360, title="🔋 Günlük Ortalama Residual Yük (Talep - Yeşil Enerji)")
+                st.plotly_chart(fig4, use_container_width=True, key="ren_residual")
 
-            fig4 = go.Figure()
-            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["wind"],
-                name="Rüzgar", marker_color="rgba(59, 130, 246, 0.8)"))
-            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["sun"],
-                name="Güneş", marker_color="rgba(245, 158, 11, 0.8)"))
-            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["hydro"],
-                name="Hidrolik", marker_color="rgba(16, 185, 129, 0.8)"))
-            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["gas"],
-                name="Doğalgaz", marker_color="rgba(239, 68, 68, 0.8)"))
-            fig4.add_trace(go.Bar(x=monthly_mix["month"], y=monthly_mix["coal"],
-                name="Kömür", marker_color="rgba(107, 114, 128, 0.8)"))
 
-            fig4.update_layout(
-                title=f"{selected_year} — Aylık Üretim Karışımı (%)",
-                barmode="stack",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0"),
-                legend=dict(bgcolor="rgba(0,0,0,0)"),
-                xaxis=dict(gridcolor="rgba(255,255,255,0.05)",
-                           tickmode="linear", title="Ay"),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="%"),
-                height=380,
-            )
-            st.plotly_chart(fig4, use_container_width=True, key="chart_17")
-
-        # Mevsimsel korelasyon tablosu - GÜNCELLENMİŞ
-        st.markdown("#### Kaynak Bazında PTF Korelasyonu — Mevsimsel")
-        
-        # apply içindeki x["season"] yerine x.name kullanıyoruz
-        corr_df = df_y.groupby("season").apply(lambda x: pd.Series({
-            "Mevsim": x.name,
-            "Rüzgar": round(x["wind_ratio"].corr(x["ptf"]), 3) if not x["wind_ratio"].isnull().all() else 0,
-            "Güneş": round(x["sun_ratio"].corr(x["ptf"]), 3) if not x["sun_ratio"].isnull().all() else 0,
-            "Hidrolik": round(x["hydro_ratio"].corr(x["ptf"]), 3) if not x["hydro_ratio"].isnull().all() else 0,
-            "Doğalgaz": round(x["gas_ratio"].corr(x["ptf"]), 3) if not x["gas_ratio"].isnull().all() else 0,
-        }), include_groups=False).reset_index(drop=True)
-
-        # Artık corr_df doğrudan kullanılabilir
-        st.dataframe(
-            corr_df.style.background_gradient(
-                subset=["Rüzgar", "Güneş", "Hidrolik", "Doğalgaz"],
-                cmap="RdYlGn"
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE 7: Arz Şokları ve Risk Analizi (YENİ EKLENEN KISIM)
-# ═════════════════════════════════════════════════════════════════════════════
-
-elif page == "🚨 Arz Şokları ve Risk Analizi":
-
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 4 — GÖP PİYASA HACİMLERİ
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "📊 GÖP Piyasa Hacimleri":
     st.markdown("""
     <div class='page-header'>
-        <span class='badge'>RİSK & ŞOK</span>
-        <h1>Arz Şokları ve Risk Analizi</h1>
-        <p>Sistem Arz Stresi, Arızalar ve Katı Talep Analizi ile kriz anlarını tespit edin</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Bu modül spesifik günlük veri incelemesi gerektirdiği için sayfa içi tarih filtresi ekliyoruz
-    col_date, _ = st.columns([1, 3])
-    with col_date:
-        selected_date = st.date_input("Analiz Tarihini Seçin (Saatlik Dağılım)", value=pd.to_datetime("2026-01-01"))
-    target_date_str = selected_date.strftime("%Y-%m-%d")
+        <span class='badge'>DAM</span>
+        <h1>GÖP Piyasa Hacimleri & Merit Order</h1>
+        <p>Gün öncesi piyasa eşleşme hacimleri, işlem değerleri ve arz eğrisi analizi</p>
+    </div>""", unsafe_allow_html=True)
 
-    # BigQuery'den yeni dbt Gold Modellerini çekme
-    query_sql = f"""
-        SELECT 
-            f.date, f.ptf_try, f.forecasted_residual_load_mwh, f.strict_demand_pct,
-            s.total_available_capacity_mwh, s.total_outage_mwh, s.supply_stress_pct, s.avg_water_level_m
-        FROM `{PROJECT}.epias_dbt_marts.mart_forecasted_residual_load` f
-        JOIN `{PROJECT}.epias_dbt_marts.mart_supply_shock_index` s ON f.date = s.date
-        WHERE DATE(f.date) = '{target_date_str}'
-        ORDER BY f.date ASC
-    """
-    
-    try:
-        df_risk = query(query_sql)
-        
-        if df_risk.empty:
-            st.warning(f"Bu tarih ({target_date_str}) için Arz/Şok risk verisi bulunamadı.")
+    df_vol = query(f"""
+        SELECT date, hour, total_buy_mwh, total_sell_mwh, ptf_try, market_volume_try,
+               EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_gop_volume_analysis')} ORDER BY date, hour
+    """)
+    df_mo = query(f"""
+        SELECT date, bid_offer_price_try, cumulative_supply_mwh,
+               cumulative_demand_mwh, ptf_try, supply_status
+        FROM {tbl('mart_merit_order')}
+        WHERE date = (SELECT MAX(date) FROM {tbl('mart_merit_order')})
+        ORDER BY bid_offer_price_try
+    """)
+
+    if df_vol.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    years = sorted(df_vol["year"].unique(), reverse=True)
+    sel_year = st.selectbox("Yıl", years, key="gop_year")
+    dfy = df_vol[df_vol["year"] == sel_year]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort. Alış Hacmi", f"{dfy['total_buy_mwh'].mean():,.0f} MWh")
+    c2.metric("Ort. Satış Hacmi", f"{dfy['total_sell_mwh'].mean():,.0f} MWh")
+    c3.metric("Toplam İşlem Değ.", f"₺{dfy['market_volume_try'].sum()/1e9:.2f} Mrd")
+    c4.metric("Ort. PTF", f"{dfy['ptf_try'].mean():,.2f} TL/MWh")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        # Daily market volume trend
+        daily_vol = dfy.groupby("date")["market_volume_try"].sum().reset_index()
+        fig = go.Figure(go.Bar(x=daily_vol["date"], y=daily_vol["market_volume_try"]/1e6,
+            marker_color="rgba(0,212,255,0.6)", name="İşlem Değeri"))
+        dark(fig, height=380, title="Günlük GÖP İşlem Değeri (Milyon TL)",
+             yaxis=dict(title="Milyon TL", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig, use_container_width=True, key="gop_vol")
+
+    with col_r:
+        # Hourly buy/sell profile
+        hourly = dfy.groupby("hour").agg(
+            buy=("total_buy_mwh","mean"), sell=("total_sell_mwh","mean")).reset_index()
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(x=hourly["hour"], y=hourly["buy"],
+            name="Ort Alış", marker_color="rgba(0,212,255,0.7)"))
+        fig2.add_trace(go.Bar(x=hourly["hour"], y=hourly["sell"],
+            name="Ort Satış", marker_color="rgba(255,107,53,0.7)"))
+        dark(fig2, height=380, title="Saatlik Ort. Alış/Satış Hacmi (MWh)", barmode="group",
+             xaxis=dict(title="Saat", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
+             yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig2, use_container_width=True, key="gop_hourly")
+
+    # Merit order curve (most recent day)
+    if not df_mo.empty:
+        st.subheader("📈 Merit Order Eğrisi — En Son Gün")
+        col_m_l, col_m_r = st.columns([2,1])
+        with col_m_l:
+            ptf_val = df_mo["ptf_try"].iloc[0] if "ptf_try" in df_mo.columns else None
+            fig3 = go.Figure()
+            in_merit = df_mo[df_mo["supply_status"] == "In Merit (Eşleşti)"]
+            out_merit = df_mo[df_mo["supply_status"] == "Out of Merit (Eşleşmedi)"]
+            fig3.add_trace(go.Scatter(
+                x=in_merit["cumulative_supply_mwh"], y=in_merit["bid_offer_price_try"],
+                mode="lines", name="Eşleşti", line=dict(color="#10b981", width=2)))
+            fig3.add_trace(go.Scatter(
+                x=out_merit["cumulative_supply_mwh"], y=out_merit["bid_offer_price_try"],
+                mode="lines", name="Eşleşmedi", line=dict(color="#ef4444", width=2)))
+            fig3.add_trace(go.Scatter(
+                x=df_mo["cumulative_demand_mwh"].dropna(),
+                y=df_mo["bid_offer_price_try"],
+                mode="lines", name="Talep Eğrisi",
+                line=dict(color="#7c3aed", width=2, dash="dash")))
+            if ptf_val:
+                fig3.add_hline(y=ptf_val, line_dash="dot",
+                               line_color="#ff6b35",
+                               annotation_text=f"PTF: {ptf_val:,.0f} TL",
+                               annotation_font_color="#ff6b35")
+            dark(fig3, height=420, title="Arz-Talep Kesişim Noktası",
+                 xaxis=dict(title="Kümülatif Hacim (MWh)", gridcolor="rgba(255,255,255,0.05)"),
+                 yaxis=dict(title="Teklif Fiyatı (TL/MWh)", gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig3, use_container_width=True, key="gop_merit")
+
+        with col_m_r:
+            if "supply_status" in df_mo.columns:
+                status_cnt = df_mo["supply_status"].value_counts().reset_index()
+                status_cnt.columns = ["Durum", "Adet"]
+                fig4 = go.Figure(go.Pie(
+                    labels=status_cnt["Durum"], values=status_cnt["Adet"],
+                    hole=0.6, marker_colors=["#10b981", "#ef4444"]))
+                dark(fig4, height=380, title="Merit Dağılımı")
+                st.plotly_chart(fig4, use_container_width=True, key="gop_pie")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 5 — ARZ-TALEP & RESİDUAL YÜK
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🔋 Arz-Talep & Residual Yük":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>FORECAST</span>
+        <h1>Arz-Talep & Öngörülen Residual Yük</h1>
+        <p>LEP yük tahmini, yenilenebilir tahmin ve residual yükün PTF üzerindeki baskısı</p>
+    </div>""", unsafe_allow_html=True)
+
+    df_frl = query(f"""
+        SELECT date, ptf_try, forecasted_load_mwh, forecasted_res_mwh,
+               price_independent_bid_mwh, forecasted_residual_load_mwh,
+               EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_forecasted_residual_load')} ORDER BY date
+    """)
+    df_drv = query(f"""
+        SELECT date, hour, ptf_try, smf_try, forecasted_load_mwh,
+               forecasted_res_mwh, forecasted_residual_load_mwh,
+               EXTRACT(YEAR FROM date) AS year
+        FROM {tbl('mart_ptf_drivers')} ORDER BY date, hour
+    """)
+
+    if df_frl.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    years = sorted(df_frl["year"].unique(), reverse=True)
+    sel_year = st.selectbox("Yıl", years, key="frl_year")
+    dfy = df_frl[df_frl["year"] == sel_year]
+    dfy_d = df_drv[df_drv["year"] == sel_year] if not df_drv.empty else pd.DataFrame()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort PTF", f"{dfy['ptf_try'].mean():,.2f} TL")
+    c2.metric("Ort Yük Tahmini", f"{dfy['forecasted_load_mwh'].mean():,.0f} MWh")
+    c3.metric("Ort RES Tahmini", f"{dfy['forecasted_res_mwh'].mean():,.0f} MWh")
+    c4.metric("Ort Residual Yük", f"{dfy['forecasted_residual_load_mwh'].mean():,.0f} MWh")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        # Residual load vs PTF
+        fig = px.scatter(dfy.dropna(subset=["forecasted_residual_load_mwh","ptf_try"]),
+            x="forecasted_residual_load_mwh", y="ptf_try",
+            color="ptf_try", color_continuous_scale=["#10b981","#00d4ff","#ef4444"],
+            opacity=0.6, trendline="lowess",
+            title="Residual Yük → PTF İlişkisi",
+            labels={"forecasted_residual_load_mwh": "Residual Yük (MWh)", "ptf_try": "PTF (TL/MWh)"})
+        dark(fig, coloraxis_showscale=False)
+        st.plotly_chart(fig, use_container_width=True, key="frl_scatter")
+
+    with col_r:
+        # Load vs RES monthly
+        monthly = dfy.groupby("month").agg(
+            load=("forecasted_load_mwh","mean"),
+            res=("forecasted_res_mwh","mean"),
+            residual=("forecasted_residual_load_mwh","mean")).reset_index()
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(x=monthly["month"], y=monthly["load"],
+            name="LEP Yük Tahmini", marker_color="rgba(0,212,255,0.7)"))
+        fig2.add_trace(go.Bar(x=monthly["month"], y=monthly["res"],
+            name="RES Tahmini", marker_color="rgba(16,185,129,0.7)"))
+        fig2.add_trace(go.Scatter(x=monthly["month"], y=monthly["residual"],
+            name="Residual Yük", mode="lines+markers",
+            line=dict(color="#ef4444", width=2.5)))
+        dark(fig2, height=380, title="Aylık Yük / RES / Residual Bileşimi", barmode="overlay",
+             xaxis=dict(title="Ay", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
+             yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig2, use_container_width=True, key="frl_monthly")
+
+    # Hourly PTF driver profile
+    if not dfy_d.empty:
+        hourly_d = dfy_d.groupby("hour").agg(
+            ptf=("ptf_try","mean"), load=("forecasted_load_mwh","mean"),
+            res=("forecasted_res_mwh","mean")).reset_index()
+        fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+        fig3.add_trace(go.Bar(x=hourly_d["hour"], y=hourly_d["load"],
+            name="Yük", marker_color="rgba(0,212,255,0.4)"))
+        fig3.add_trace(go.Bar(x=hourly_d["hour"], y=hourly_d["res"],
+            name="RES", marker_color="rgba(16,185,129,0.4)"))
+        fig3.add_trace(go.Scatter(x=hourly_d["hour"], y=hourly_d["ptf"],
+            name="Ort PTF", mode="lines+markers",
+            line=dict(color="#ff6b35", width=2.5)), secondary_y=True)
+        fig3.update_layout(**DARK_LAYOUT, height=380, barmode="overlay",
+            title="Saatlik Yük, RES ve PTF Profili",
+            xaxis=dict(title="Saat", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis2=dict(title="PTF (TL/MWh)", gridcolor="rgba(0,0,0,0)"))
+        st.plotly_chart(fig3, use_container_width=True, key="frl_hourly")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 6 — ARZ ŞOKU & RİSK
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🚨 Arz Şoku & Risk":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>RİSK</span>
+        <h1>Arz Şoku & Risk Analizi</h1>
+        <p>Santral arıza oranı, emre amade kapasite ve arz stres endeksi</p>
+    </div>""", unsafe_allow_html=True)
+
+    df = query(f"""
+        SELECT date, total_outage_mwh, total_available_capacity_mwh, supply_shock_index,
+               EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_supply_shock_index')}
+        ORDER BY date
+    """)
+    if df.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    years = sorted(df["year"].unique(), reverse=True)
+    col_f1, col_f2 = st.columns(2)
+    sel_year = col_f1.selectbox("Yıl", years, key="risk_year")
+    dfy = df[df["year"] == sel_year]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort Arıza Kapasite", f"{dfy['total_outage_mwh'].mean():,.0f} MWh")
+    c2.metric("Ort Emre Amade", f"{dfy['total_available_capacity_mwh'].mean():,.0f} MWh")
+    c3.metric("Ort Arz Şok Endeksi", f"{dfy['supply_shock_index'].mean():.4f}")
+    risk_days = (dfy["supply_shock_index"] > 0.1).sum()
+    c4.metric("Yüksek Risk Günü (>0.1)", f"{risk_days}", delta="⚠️" if risk_days > 10 else "✅",
+              delta_color="off")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=dfy["date"], y=dfy["total_available_capacity_mwh"],
+            name="Emre Amade Kapasite", fill="tozeroy",
+            fillcolor="rgba(16,185,129,0.15)", line=dict(color="#10b981", width=1.5)))
+        fig.add_trace(go.Scatter(x=dfy["date"], y=dfy["total_outage_mwh"],
+            name="Arıza/Bakım", fill="tozeroy",
+            fillcolor="rgba(239,68,68,0.2)", line=dict(color="#ef4444", width=1.5)))
+        dark(fig, title="Günlük Kapasite: Emre Amade vs Arıza/Bakım",
+             yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig, use_container_width=True, key="risk_cap")
+
+    with col_r:
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(x=dfy["date"], y=dfy["supply_shock_index"],
+            mode="lines", fill="tozeroy",
+            fillcolor="rgba(255,107,53,0.12)",
+            line=dict(color="#ff6b35", width=2)))
+        fig2.add_hrect(y0=0.1, y1=dfy["supply_shock_index"].max()+0.01,
+                       fillcolor="rgba(239,68,68,0.07)",
+                       line_width=0, annotation_text="Yüksek Risk Bölgesi",
+                       annotation_font_color="#ef4444", annotation_position="top left")
+        fig2.add_hline(y=0.1, line_dash="dot", line_color="#ef4444",
+                       annotation_text="Eşik: 0.10", annotation_font_color="#ef4444")
+        dark(fig2, title="Günlük Arz Şoku Endeksi",
+             yaxis=dict(title="Endeks", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig2, use_container_width=True, key="risk_idx")
+
+    # Monthly heatmap of shock index
+    pivot = dfy.pivot_table(index="month", values="supply_shock_index", aggfunc="mean")
+    if not pivot.empty:
+        months_tr = {1:"Oca",2:"Şub",3:"Mar",4:"Nis",5:"May",6:"Haz",
+                     7:"Tem",8:"Ağu",9:"Eyl",10:"Eki",11:"Kas",12:"Ara"}
+        pivot.index = [months_tr.get(m, str(m)) for m in pivot.index]
+        fig3 = px.bar(pivot.reset_index(), x="month", y="supply_shock_index",
+            color="supply_shock_index",
+            color_continuous_scale=["#10b981","#f59e0b","#ef4444"],
+            title="Aylık Ort. Arz Şoku Endeksi",
+            labels={"supply_shock_index": "Endeks", "month": ""})
+        dark(fig3, height=320, coloraxis_showscale=False)
+        st.plotly_chart(fig3, use_container_width=True, key="risk_monthly")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 7 — PTF TAHMİN & ML
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🤖 PTF Tahmin & ML":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>ML</span>
+        <h1>PTF Tahmin Modeli & Lag Analizi</h1>
+        <p>XGBoost backtesting, fiyat gecikmesi korelasyonları ve feature importance</p>
+    </div>""", unsafe_allow_html=True)
+
+    df_lag = query(f"""
+        SELECT date, hour, ptf_try,
+               ptf_lag_1h, ptf_lag_24h, ptf_lag_168h, ptf_rolling_avg_24h,
+               EXTRACT(YEAR FROM date) AS year
+        FROM {tbl('mart_ptf_lag_features')}
+        ORDER BY date, hour
+    """)
+
+    # Try to fetch predictions table
+    df_pred = query(f"""
+        SELECT predicted_date, hour, predicted_ptf FROM `{PROJECT}.{DATASET}.gold_ptf_predictions`
+        ORDER BY predicted_date, hour
+    """)
+
+    if df_lag.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    years = sorted(df_lag["year"].unique(), reverse=True)
+    sel_year = st.selectbox("Yıl", years, key="ml_year")
+    dfy = df_lag[df_lag["year"] == sel_year].dropna(
+        subset=["ptf_lag_24h", "ptf_lag_168h", "ptf_rolling_avg_24h"])
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort PTF", f"{dfy['ptf_try'].mean():,.2f} TL")
+    c2.metric("T-24h Korel.", f"{dfy['ptf_try'].corr(dfy['ptf_lag_24h']):.3f}")
+    c3.metric("T-168h Korel.", f"{dfy['ptf_try'].corr(dfy['ptf_lag_168h']):.3f}")
+    c4.metric("Rolling 24h Korel.", f"{dfy['ptf_try'].corr(dfy['ptf_rolling_avg_24h']):.3f}")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        # Lag correlation scatter T-24
+        fig = px.scatter(dfy.sample(min(3000, len(dfy))),
+            x="ptf_lag_24h", y="ptf_try", opacity=0.4, trendline="ols",
+            color_discrete_sequence=["#00d4ff"],
+            title="PTF(t) vs PTF(t-24h) — Günlük Kalıcılık",
+            labels={"ptf_lag_24h": "PTF t-24h (TL/MWh)", "ptf_try": "PTF t (TL/MWh)"})
+        dark(fig)
+        st.plotly_chart(fig, use_container_width=True, key="ml_lag24")
+
+    with col_r:
+        # Lag correlation scatter T-168
+        fig2 = px.scatter(dfy.sample(min(3000, len(dfy))),
+            x="ptf_lag_168h", y="ptf_try", opacity=0.4, trendline="ols",
+            color_discrete_sequence=["#7c3aed"],
+            title="PTF(t) vs PTF(t-168h) — Haftalık Kalıcılık",
+            labels={"ptf_lag_168h": "PTF t-168h (TL/MWh)", "ptf_try": "PTF t (TL/MWh)"})
+        dark(fig2)
+        st.plotly_chart(fig2, use_container_width=True, key="ml_lag168")
+
+    # Backtesting: actual vs predicted
+    if not df_pred.empty:
+        st.markdown("### 🎯 Model Backtesting — Gerçekleşen vs Tahmin")
+
+        df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
+        df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").astype("Int64")
+
+        merged = df_lag.merge(
+            df_pred, left_on=["date","hour"], right_on=["predicted_date","hour"], how="inner")
+
+        if not merged.empty:
+            mae = (merged["ptf_try"] - merged["predicted_ptf"]).abs().mean()
+            rmse = ((merged["ptf_try"] - merged["predicted_ptf"])**2).mean()**0.5
+            mape = ((merged["ptf_try"] - merged["predicted_ptf"]).abs() /
+                    merged["ptf_try"].replace(0, float("nan"))).mean() * 100
+
+            cm1, cm2, cm3 = st.columns(3)
+            cm1.metric("MAE", f"{mae:,.2f} TL/MWh")
+            cm2.metric("RMSE", f"{rmse:,.2f} TL/MWh")
+            cm3.metric("MAPE", f"%{mape:.2f}")
+
+            sample = merged.sort_values("date").tail(7*24)
+            fig3 = go.Figure()
+            fig3.add_trace(go.Scatter(x=sample["date"], y=sample["ptf_try"],
+                name="Gerçekleşen", line=dict(color="#00d4ff", width=1.5)))
+            fig3.add_trace(go.Scatter(x=sample["date"], y=sample["predicted_ptf"],
+                name="XGBoost Tahmin", line=dict(color="#ff6b35", width=1.5, dash="dash")))
+            dark(fig3, height=420, title="Son 7 Günlük Saatlik Backtesting",
+                 yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
+                 hovermode="x unified")
+            st.plotly_chart(fig3, use_container_width=True, key="ml_bt")
         else:
-            # ÜST METRİKLER
-            col1, col2, col3 = st.columns(3)
-            
-            # Günlük Maksimum Stres (Arıza Oranı)
-            max_stress = df_risk['supply_stress_pct'].max()
-            with col1:
-                st.metric("Maks. Santral Arıza/Bakım Oranı", f"%{max_stress:.2f}", 
-                          delta="Riskli" if max_stress > 10 else "Normal", delta_color="inverse")
-            
-            # Katı Talep (Price Ind. Bids)
-            avg_strict_demand = df_risk['strict_demand_pct'].mean()
-            with col2:
-                st.metric("Ort. Katı Talep Oranı", f"%{avg_strict_demand:.2f}",
-                          help="Fiyat ne olursa olsun sistemden çekilecek elektriğin talebe oranı.")
-            
-            # Baraj Seviyesi
-            avg_water = df_risk['avg_water_level_m'].mean()
-            with col3:
-                st.metric("Ort. Baraj Su Seviyesi", f"{avg_water:.1f} Metre")
+            st.info("Tahmin ve gerçekleşen veriler eşleştirilemedi.")
 
-            st.markdown("---")
+    # SHAP importance
+    try:
+        shap_df = pd.read_csv("models/ptf_shap_importance.csv")
+        fig4 = px.bar(shap_df.head(12),
+            x="feature_importance_vals", y="col_name", orientation="h",
+            color="feature_importance_vals", color_continuous_scale="Blues",
+            title="🔬 XGBoost Feature Importance (SHAP)",
+            labels={"feature_importance_vals": "SHAP Skoru", "col_name": ""})
+        fig4.update_layout(**DARK_LAYOUT, height=400,
+            yaxis={"categoryorder": "total ascending"},
+            coloraxis_showscale=False)
+        st.plotly_chart(fig4, use_container_width=True, key="ml_shap")
+    except FileNotFoundError:
+        st.info("SHAP verisi henüz mevcut değil. ptf_trainer.py çalıştırıldıktan sonra görünür.")
 
-            col_l, col_r = st.columns(2)
+    # Rolling avg trend
+    daily_roll = dfy.groupby("date").agg(
+        ptf=("ptf_try","mean"), roll=("ptf_rolling_avg_24h","mean")).reset_index()
+    fig5 = go.Figure()
+    fig5.add_trace(go.Scatter(x=daily_roll["date"], y=daily_roll["ptf"],
+        name="Günlük Ort PTF", line=dict(color="#00d4ff", width=1.5), opacity=0.7))
+    fig5.add_trace(go.Scatter(x=daily_roll["date"], y=daily_roll["roll"],
+        name="24h Rolling Ort", line=dict(color="#ff6b35", width=2.5)))
+    dark(fig5, height=360, title="Günlük PTF vs 24h Hareketli Ortalama",
+         yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
+    st.plotly_chart(fig5, use_container_width=True, key="ml_roll")
 
-            with col_l:
-                # 1. GRAFİK: Arızalar ve Emre Amade Kapasite
-                st.subheader("Santral Kapasite Kayıpları (Outages)")
-                fig_outage = px.area(df_risk, x='date', y=['total_available_capacity_mwh', 'total_outage_mwh'],
-                                     labels={'value': 'Kapasite (MWh)', 'date': 'Saat'},
-                                     title="Emre Amade Kapasite vs Kesinti (Outage)",
-                                     color_discrete_sequence=['#10b981', '#ef4444'])
-                fig_outage.update_layout(
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#e2e8f0"),
-                    legend=dict(bgcolor="rgba(0,0,0,0)"),
-                    xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                    yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                    height=380
-                )
-                st.plotly_chart(fig_outage, use_container_width=True)
 
-            with col_r:
-                # 2. GRAFİK: Beklenen Kalan Yük ve PTF Fırlamaları
-                st.subheader("Beklenen Kalan Yük vs Gerçekleşen PTF")
-                fig_residual = go.Figure()
-                fig_residual.add_trace(go.Bar(x=df_risk['date'], y=df_risk['forecasted_residual_load_mwh'], 
-                                              name='Beklenen Kalan Yük', marker_color='rgba(0, 212, 255, 0.7)'))
-                fig_residual.add_trace(go.Scatter(x=df_risk['date'], y=df_risk['ptf_try'], 
-                                                  name='PTF (TRY)', yaxis='y2', line=dict(color='#ff6b35', width=3)))
-                
-                fig_residual.update_layout(
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#e2e8f0"),
-                    legend=dict(bgcolor="rgba(0,0,0,0)"),
-                    xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                    yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
-                    yaxis2=dict(title="TRY/MWh", overlaying='y', side='right'),
-                    height=380
-                )
-                st.plotly_chart(fig_residual, use_container_width=True)
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 8 — LİSANSSIZ ÜRETİM (YEKDEM)
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🌿 Lisanssız Üretim (YEKDEM)":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>YEKDEM</span>
+        <h1>Lisanssız Üretim & YEKDEM Piyasa Etkisi</h1>
+        <p>Çatı GES ve küçük ölçekli yenilenebilir — piyasa değeri ve üretim trendi</p>
+    </div>""", unsafe_allow_html=True)
 
-    except Exception as e:
-        st.error(f"Sorgu çalıştırılırken bir hata oluştu. Veri tablosu BigQuery üzerinde oluşturulmamış olabilir. Hata: {str(e)}")
+    df = query(f"""
+        SELECT date, total_unlicensed_mwh, ptf_try, estimated_market_value_try,
+               EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_unlicensed_impact')}
+        ORDER BY date
+    """)
+    if df.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    st.sidebar.download_button("📥 CSV İndir", df.to_csv(index=False).encode(),
+                               "epias_yekdem.csv", "text/csv")
+
+    years = sorted(df["year"].unique(), reverse=True)
+    sel_year = st.selectbox("Yıl", years, key="yek_year")
+    dfy = df[df["year"] == sel_year]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort Lisanssız Üretim", f"{dfy['total_unlicensed_mwh'].mean():,.0f} MWh")
+    c2.metric("Toplam Üretim", f"{dfy['total_unlicensed_mwh'].sum()/1e6:.2f} TWh")
+    c3.metric("Tahmini Piyasa Değ.", f"₺{dfy['estimated_market_value_try'].sum()/1e9:.2f} Mrd")
+    corr_ptf = dfy["total_unlicensed_mwh"].corr(dfy["ptf_try"])
+    c4.metric("Üretim~PTF Korel.", f"{corr_ptf:.3f}")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(go.Bar(x=dfy["date"], y=dfy["total_unlicensed_mwh"],
+            name="Lisanssız Üretim (MWh)", marker_color="rgba(16,185,129,0.6)"))
+        fig.add_trace(go.Scatter(x=dfy["date"], y=dfy["ptf_try"],
+            name="PTF (TL/MWh)", mode="lines",
+            line=dict(color="#ff6b35", width=1.5)), secondary_y=True)
+        fig.update_layout(**DARK_LAYOUT, height=400,
+            title="Günlük Lisanssız Üretim vs PTF",
+            xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis2=dict(title="PTF (TL/MWh)", gridcolor="rgba(0,0,0,0)"))
+        st.plotly_chart(fig, use_container_width=True, key="yek_trend")
+
+    with col_r:
+        fig2 = px.scatter(dfy.dropna(subset=["total_unlicensed_mwh","ptf_try"]),
+            x="total_unlicensed_mwh", y="ptf_try",
+            opacity=0.6, trendline="lowess",
+            color_discrete_sequence=["#10b981"],
+            title="Lisanssız Üretim → PTF Baskısı",
+            labels={"total_unlicensed_mwh": "Lisanssız Üretim (MWh)",
+                    "ptf_try": "PTF (TL/MWh)"})
+        dark(fig2)
+        st.plotly_chart(fig2, use_container_width=True, key="yek_scatter")
+
+    # Monthly trend
+    monthly = dfy.groupby("month").agg(
+        mwh=("total_unlicensed_mwh","sum"),
+        value=("estimated_market_value_try","sum")).reset_index()
+    months_tr = {1:"Oca",2:"Şub",3:"Mar",4:"Nis",5:"May",6:"Haz",
+                 7:"Tem",8:"Ağu",9:"Eyl",10:"Eki",11:"Kas",12:"Ara"}
+    monthly["ay"] = monthly["month"].map(months_tr)
+
+    fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+    fig3.add_trace(go.Bar(x=monthly["ay"], y=monthly["mwh"]/1e3,
+        name="Üretim (GWh)", marker_color="rgba(16,185,129,0.7)"))
+    fig3.add_trace(go.Scatter(x=monthly["ay"], y=monthly["value"]/1e6,
+        name="Piyasa Değeri (Milyon TL)", mode="lines+markers",
+        line=dict(color="#f59e0b", width=2.5)), secondary_y=True)
+    fig3.update_layout(**DARK_LAYOUT, height=360,
+        title=f"{sel_year} — Aylık Lisanssız Üretim & Tahmini Piyasa Değeri",
+        xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="GWh", gridcolor="rgba(255,255,255,0.05)"),
+        yaxis2=dict(title="Milyon TL", gridcolor="rgba(0,0,0,0)"))
+    st.plotly_chart(fig3, use_container_width=True, key="yek_monthly")

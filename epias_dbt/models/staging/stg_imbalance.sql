@@ -8,4 +8,4 @@ SELECT
     CAST(imbalanceQuantity AS NUMERIC) AS net_imbalance_mwh
 FROM {{ source('silver', 'imbalance') }}
 
-{% if is_incremental() %} WHERE date >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
+{% if is_incremental() %} WHERE DATE(date) >= (SELECT MAX(date) FROM {{ this }}) {% endif %}

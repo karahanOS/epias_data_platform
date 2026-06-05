@@ -9,4 +9,4 @@ SELECT
     CAST(quantity AS NUMERIC) AS quantity_mwh
 FROM {{ source('silver', 'idm_transactions') }}
 
-{% if is_incremental() %} WHERE date >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
+{% if is_incremental() %} WHERE DATE(date) >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
