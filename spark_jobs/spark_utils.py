@@ -46,23 +46,65 @@ class BaseEpiasSparkJob:
         if self.backfill_mode:
             self.logger.info(f"🔄 BACKFILL MODE aktif — {self.source_name}")
 
-    def read_bronze(self, ds: str):
+    def read_bronze(self, ds: str, schema=None):
         """
         Normal (daily) mode: reads gs://.../bronze/<source>/<ds>.parquet
         Backfill mode     : reads gs://.../bronze/<source>/backfill_*.parquet (all chunks)
+        schema: optional explicit StructType — pass when the source has BIGINT/DOUBLE type
+                drift across files to bypass schema inference entirely.
         """
         if self.backfill_mode:
-            return self._read_bronze_backfill()
+            return self._read_bronze_backfill(schema=schema)
 
         path = f"gs://epias-data-lake/bronze/{self.source_name}/{ds}.parquet"
         self.logger.info(f"💾 Bronze okunuyor (günlük): {path}")
-        return self._normalize(self.spark.read.parquet(path))
+        reader = self.spark.read.schema(schema) if schema else self.spark.read
+        return self._normalize(reader.parquet(path))
 
-    def _read_bronze_backfill(self):
-        """Reads all weekly backfill chunks for this source in one Spark scan."""
+    def _read_bronze_backfill(self, schema=None):
+        """Reads all weekly backfill chunks for this source.
+
+        Per-file reads handle INT64/DOUBLE physical-type drift between weekly files.
+        Spark's Parquet reader (vectorized or non-vectorized) cannot coerce between
+        INT64 and DOUBLE at read time — a wildcard scan fails when pandas inferred
+        int64 instead of float64 for a chunk where the API returned round numbers.
+        Each file is read with its own native schema; columns that drifted from the
+        first file's schema are cast before union.
+        """
         pattern = f"gs://epias-data-lake/bronze/{self.source_name}/backfill_*.parquet"
-        self.logger.info(f"💾 Bronze okunuyor (backfill wildcard): {pattern}")
-        return self._normalize(self.spark.read.parquet(pattern))
+        self.logger.info(f"💾 Bronze okunuyor (backfill): {pattern}")
+
+        if schema:
+            return self._normalize(self.spark.read.schema(schema).parquet(pattern))
+
+        # List files via binaryFile — reads only file metadata, no row data transferred
+        paths = sorted(
+            row.path
+            for row in self.spark.read.format("binaryFile").load(pattern).select("path").collect()
+        )
+
+        if not paths:
+            self.logger.warning("⚠️ Hiçbir backfill dosyası bulunamadı.")
+            return self.spark.createDataFrame([], self.spark.read.parquet(pattern).schema)
+
+        # First (earliest) file defines the reference schema
+        ref_df = self.spark.read.parquet(paths[0])
+        ref_schema = ref_df.schema
+
+        dfs = [ref_df]
+        for path in paths[1:]:
+            df = self.spark.read.parquet(path)
+            for field in ref_schema.fields:
+                if field.name in df.columns and df.schema[field.name].dataType != field.dataType:
+                    df = df.withColumn(field.name, F.col(field.name).cast(field.dataType))
+            dfs.append(df)
+
+        result = dfs[0]
+        for df in dfs[1:]:
+            result = result.unionByName(df, allowMissingColumns=True)
+
+        self.logger.info(f"✅ {len(paths)} backfill dosyası birleştirildi (schema-safe)")
+        return self._normalize(result)
 
     def _normalize(self, df):
         """Shared post-read normalization (nested schema flattening)."""

@@ -115,6 +115,13 @@ def backfill_chunk(method_name: str, bucket_path: str,
 
     df = pd.DataFrame(data)
 
+    # Coerce integer columns to float64 so all weekly chunks share DOUBLE physical type
+    # in Parquet. Without this, pandas infers int64 when API values happen to be round
+    # numbers, creating INT64 columns that Spark cannot coerce to DOUBLE at read time.
+    int_cols = df.select_dtypes(include=["int32", "int64"]).columns.tolist()
+    if int_cols:
+        df[int_cols] = df[int_cols].astype("float64")
+
     # Write one parquet per chunk — never overwrites daily operational files
     gcs_path = f"gs://{BUCKET_NAME}/{bucket_path}/backfill_{chunk_start}_{chunk_end}.parquet"
     df.to_parquet(gcs_path, index=False)

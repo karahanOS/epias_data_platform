@@ -32,9 +32,10 @@ class OrderDownSilverJob(BaseEpiasSparkJob):
         df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
         
         dgp_metrics = [
-            "downRegulationZeroCodedBidPrice", 
-            "downRegulationDeliveredAmount", 
-            "downRegulationActivatedAmount"
+            "downRegulationZeroCodedBidPrice",
+            "downRegulationDeliveredAmount",
+            "downRegulationActivatedAmount",
+            "downRegulationOneCoded",
         ]
         
         for metric in dgp_metrics:

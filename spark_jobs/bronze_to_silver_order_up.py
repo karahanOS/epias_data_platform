@@ -32,15 +32,16 @@ class OrderUpSilverJob(BaseEpiasSparkJob):
         df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
         
         dgp_metrics = [
-            "upRegulationZeroCodedOfferPrice", 
-            "upRegulationDeliveredAmount", 
-            "upRegulationActivatedAmount"
+            "upRegulationZeroCodedOfferPrice",
+            "upRegulationDeliveredAmount",
+            "upRegulationActivatedAmount",
+            "upRegulationOneCoded",
         ]
-        
+
         for metric in dgp_metrics:
             if metric in df.columns:
                 df = df.withColumn(metric, F.col(metric).cast(DoubleType()))
-                
+
         if "organizationId" in df.columns:
             df = df.withColumn("organizationId", F.col("organizationId").cast(LongType()))
 

@@ -12,7 +12,7 @@ import joblib
 import pandas as pd
 import xgboost as xgb
 from google.cloud import bigquery, storage
-from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
+from sklearn.metrics import mean_absolute_error
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("PTFTrainer")
@@ -34,7 +34,7 @@ def extract_training_data() -> pd.DataFrame:
 
     query = f"""
         SELECT
-            f.date,
+            f.datetime,
             f.ptf_try,
             f.forecasted_residual_load_mwh,
             f.price_independent_bid_mwh,
@@ -44,12 +44,13 @@ def extract_training_data() -> pd.DataFrame:
         FROM `{PROJECT_ID}.{DATASET_ID}.mart_forecasted_residual_load` f
         LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.mart_supply_shock_index` s
             ON f.date = s.date
-        ORDER BY f.date ASC
+        ORDER BY f.datetime ASC
     """
     df = client.query(query).to_dataframe()
-    df["date"] = pd.to_datetime(df["date"])
-    df.set_index("date", inplace=True)
-    logger.info(f"Pulled {len(df):,} rows spanning {df.index.min()} → {df.index.max()}")
+    logger.info(f"Pulled {len(df):,} rows ({df.memory_usage(deep=True).sum() / 1e6:.1f} MB in memory)")
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df.set_index("datetime", inplace=True)
+    logger.info(f"Date range: {df.index.min()} → {df.index.max()}")
     return df
 
 
@@ -67,11 +68,33 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df["ptf_lag_24h"]  = df["ptf_try"].shift(24)
     df["ptf_lag_168h"] = df["ptf_try"].shift(168)
 
+    # Supply shock columns come from a LEFT JOIN on mart_supply_shock_index, which is
+    # keyed by outage *start* date — not by the date each outage was *active*.  Outages
+    # that started before the training window have no matching row, so the join produces
+    # NULL for most dates.  Forward-fill propagates the last known value across the gap
+    # (reasonable: an outage present yesterday is likely still present today); any
+    # remaining NaN (e.g., no outage history at all) is filled with 0 (no supply shock).
+    for col in ["supply_shock_index", "total_outage_mwh", "total_available_capacity_mwh"]:
+        if col in df.columns:
+            df[col] = df[col].ffill().fillna(0.0)
+
     df["supply_shock_trend_7d"] = df["supply_shock_index"].rolling(window=168).mean()
 
+    # Diagnose NaN distribution before dropping so failures are debuggable.
+    nan_counts = df.isna().sum()
+    nan_cols = nan_counts[nan_counts > 0]
+    if not nan_cols.empty:
+        logger.info(f"NaN counts before dropna:\n{nan_cols.to_string()}")
+
+    # Drop rows where the target or any lag/rolling feature is NaN.
+    # "ptf_try" must be included: XGBoost rejects NaN labels outright.
+    # Lag columns are NaN only during the first ~168-hour warm-up period.
+    # Using subset= avoids wiping the dataset when an optional joined column is sparse.
+    required_cols = [c for c in ["ptf_try", "ptf_lag_24h", "ptf_lag_168h", "supply_shock_trend_7d"]
+                     if c in df.columns]
     before = len(df)
-    df.dropna(inplace=True)
-    logger.info(f"Dropped {before - len(df)} NaN rows (lag warm-up). Training rows: {len(df):,}")
+    df.dropna(subset=required_cols, inplace=True)
+    logger.info(f"Dropped {before - len(df)} NaN rows (label/lag warm-up). Training rows: {len(df):,}")
     return df
 
 
@@ -105,9 +128,15 @@ def train(df: pd.DataFrame) -> xgb.XGBRegressor:
     )
 
     preds = model.predict(X_test)
-    mae   = mean_absolute_error(y_test, preds)
-    mape  = mean_absolute_percentage_error(y_test, preds)
-    logger.info(f"✅ Training complete — MAE: {mae:.2f} TRY | MAPE: {mape*100:.2f}%")
+    mae = mean_absolute_error(y_test, preds)
+
+    # Standard MAPE divides by y_true, blowing up when PTF = 0 (zero-price hours
+    # occur in Turkish markets during high-renewable periods).  Use a symmetric MAPE
+    # (sMAPE) instead: denominator is (|y_true| + |y_pred|) / 2, which is always ≥ 0
+    # and degrades gracefully near zero rather than producing astronomical values.
+    denom = (y_test.abs() + pd.Series(preds, index=y_test.index).abs()) / 2
+    smape = (y_test - pd.Series(preds, index=y_test.index)).abs().div(denom.replace(0, float("nan"))).mean()
+    logger.info(f"✅ Training complete — MAE: {mae:.2f} TRY | sMAPE: {smape*100:.2f}%")
 
     # Save feature importance (columns aligned with dashboard expectation)
     imp_df = pd.DataFrame({

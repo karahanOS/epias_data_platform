@@ -88,17 +88,23 @@ hr{ border-color:var(--border)!important; }
 """, unsafe_allow_html=True)
 
 # ── PLOTLY LAYOUT DEFAULTS ────────────────────────────────────────────────────
+# xaxis / yaxis are intentionally omitted here.  Including them caused
+# "TypeError: multiple values for keyword argument 'xaxis'" whenever a caller
+# passed xaxis=dict(...) to dark() or update_layout(**DARK_LAYOUT, xaxis=...).
 DARK_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
     font=dict(color="#e2e8f0", family="DM Sans"),
     legend=dict(bgcolor="rgba(0,0,0,0)"),
-    xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-    yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
 )
 
+_DARK_AXIS = dict(gridcolor="rgba(255,255,255,0.05)")
+
 def dark(fig, height=420, **extra):
-    fig.update_layout(**DARK_LAYOUT, height=height, **extra)
+    """Apply dark theme.  Caller xaxis/yaxis dicts are merged with dark defaults."""
+    xaxis = {**_DARK_AXIS, **extra.pop("xaxis", {})}
+    yaxis = {**_DARK_AXIS, **extra.pop("yaxis", {})}
+    fig.update_layout(**DARK_LAYOUT, height=height, xaxis=xaxis, yaxis=yaxis, **extra)
     return fig
 
 # ── BIGQUERY ──────────────────────────────────────────────────────────────────
@@ -352,6 +358,7 @@ elif page == "🌱 Üretim & Yenilenebilir":
     df_ren = query(f"""
         SELECT date, hour, ptf_try, licensed_renewable_mwh, total_unlicensed_mwh,
                total_green_energy_mwh, residual_load_mwh, total_demand_mwh,
+               SAFE_DIVIDE(total_green_energy_mwh, total_demand_mwh) AS renewable_ratio,
                EXTRACT(YEAR FROM date) AS year
         FROM {tbl('mart_renawable_impact')} ORDER BY date, hour
     """)

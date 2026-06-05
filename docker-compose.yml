@@ -6,6 +6,10 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    # Allow up to 15 minutes of DB connectivity loss before declaring a task
+    # a zombie. The ML training task (BigQuery + XGBoost) legitimately runs
+    # 10-20 minutes and must not be killed by transient Docker DNS blips.
+    AIRFLOW__SCHEDULER__SCHEDULER_ZOMBIE_TASK_THRESHOLD: '900'
     PYTHONPATH: /opt/airflow/src
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/credentials/gcp-key.json
     JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
@@ -77,10 +81,13 @@ services:
       - POSTGRES_USER=airflow
       - POSTGRES_PASSWORD=airflow
       - POSTGRES_DB=airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data   # persist Airflow metadata across restarts
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 5s
       retries: 5
+    restart: unless-stopped                    # auto-recover if the container crashes
     networks:
       - epias-net
 
@@ -127,3 +134,6 @@ services:
 networks:
   epias-net:
     driver: bridge
+
+volumes:
+  postgres-db:
