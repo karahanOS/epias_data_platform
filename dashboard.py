@@ -149,6 +149,9 @@ with st.sidebar:
         "🚨 Arz Şoku & Risk",
         "🤖 PTF Tahmin & ML",
         "🌿 Lisanssız Üretim (YEKDEM)",
+        "⚡ GİP & Hava Durumu",
+        "🏭 Üretim Planı (BGÜP vs KGÜP)",
+        "🔥 PTF Tavan & Minimum Analizi",
     ], label_visibility="collapsed")
 
     st.markdown("---")

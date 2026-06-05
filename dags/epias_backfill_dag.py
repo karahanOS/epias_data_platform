@@ -60,6 +60,7 @@ BACKFILL_SOURCES: dict[str, tuple[str, str, bool]] = {
     "order_down":       ("get_order_summary_down",          "bronze/order_down",       False),
     "system_direction": ("get_system_direction",            "bronze/system_direction", False),
     "dpp":              ("get_dpp",                         "bronze/dpp",              False),
+    "sbfgp":           ("get_sbfgp",                        "bronze/sbfgp",            False),
     "aic":              ("get_aic",                         "bronze/aic",              False),
     "imbalance":        ("get_imbalance_quantity",          "bronze/imbalance",        False),
     "res_forecast":     ("get_res_generation_and_forecast", "bronze/res_forecast",     False),
@@ -129,6 +130,49 @@ def backfill_chunk(method_name: str, bucket_path: str,
 
     # Polite delay between chunks to respect EPIAS rate limit (80 req/min)
     time.sleep(1)
+
+
+def backfill_weather_chunk(chunk_start: str, chunk_end: str, **context) -> None:
+    """
+    Fetch historical weather data for all 4 cities and write to GCS.
+    Uses open-meteo archive API — no rate limit, no auth required.
+    Saved per-city so stg_weather (unique_key=[date, hour, city_name]) can ingest correctly.
+    """
+    try:
+        from weather_client import WeatherClient, CITIES
+    except ImportError as exc:
+        logger.error(f"WeatherClient import failed: {exc}")
+        return
+
+    client = WeatherClient()
+    all_rows = []
+
+    for city_name in CITIES:
+        try:
+            df = client.get_weather_for_city(city_name, chunk_start, chunk_end)
+            # Rename to match silver schema
+            df = df.rename(columns={
+                "datetime":           "date",
+                "city":               "city",
+                "temperature_2m":     "temperature_2m",
+                "wind_speed_10m":     "wind_speed_10m",
+                "shortwave_radiation":"shortwave_radiation",
+                "relative_humidity_2m":"relative_humidity_2m",
+            })
+            all_rows.append(df)
+            logger.info(f"✅ Weather {city_name} | {chunk_start}→{chunk_end} | {len(df)} rows")
+        except Exception as exc:
+            logger.warning(f"Weather {city_name} ({chunk_start}→{chunk_end}) skipped: {exc}")
+
+    if not all_rows:
+        logger.warning(f"No weather data for {chunk_start}→{chunk_end}")
+        return
+
+    import pandas as pd
+    combined = pd.concat(all_rows, ignore_index=True)
+    gcs_path = f"gs://{BUCKET_NAME}/bronze/weather/backfill_{chunk_start}_{chunk_end}.parquet"
+    combined.to_parquet(gcs_path, index=False)
+    logger.info(f"✅ Written {len(combined):,} weather rows → {gcs_path}")
 
 
 # ── DAG DEFINITION ────────────────────────────────────────────────────────────
@@ -213,8 +257,35 @@ with DAG(
         silver_tasks[source_key] = silver_t
 
     # =========================================================================
+    # PHASE 2b — WEATHER BACKFILL: open-meteo archive (no EPIAS rate limit)
+    # Runs in parallel with EPIAS silver jobs.  Each chunk is independent.
+    # =========================================================================
+    weather_last_task = None
+    for chunk_start, chunk_end in chunks:
+        wt = PythonOperator(
+            task_id=f"bronze_weather_{chunk_start}",
+            python_callable=backfill_weather_chunk,
+            op_kwargs={"chunk_start": chunk_start, "chunk_end": chunk_end},
+        )
+        if weather_last_task is not None:
+            weather_last_task >> wt
+        weather_last_task = wt
+
+    silver_weather_backfill = SparkSubmitOperator(
+        task_id="silver_weather_backfill",
+        application="/opt/airflow/spark/bronze_to_silver_weather.py",
+        py_files="/opt/airflow/spark/spark_utils.py",
+        jars="/opt/spark/jars/gcs-connector.jar",
+        conn_id=SPARK_CONN_ID,
+        application_args=["1970-01-01", "--backfill"],
+        deploy_mode="client",
+        name="epias_silver_weather_backfill",
+    )
+    weather_last_task >> silver_weather_backfill
+
+    # =========================================================================
     # PHASE 3 — BQ BRIDGE: Register / refresh Silver external tables in BigQuery
-    # Runs once after ALL Silver jobs complete
+    # Runs once after ALL Silver jobs (EPIAS + weather) complete
     # =========================================================================
     register_bq_tables = BashOperator(
         task_id="register_silver_external_tables",
@@ -223,6 +294,7 @@ with DAG(
 
     for silver_t in silver_tasks.values():
         silver_t >> register_bq_tables
+    silver_weather_backfill >> register_bq_tables
 
     # =========================================================================
     # PHASE 4 — GOLD: dbt full-refresh rebuilds all mart tables from scratch

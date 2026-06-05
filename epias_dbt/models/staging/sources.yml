@@ -20,6 +20,8 @@ sources:
       - name: res_forecast
       - name: aic
       - name: supply_demand
+      - name: dpp       # BGÜP — Beyan Edilen Günlük Üretim Planı
+      - name: sbfgp     # KGÜP — Kesinleşmiş Günlük Üretim Planı (GİP sonrası)
       
       # --- Tüketim ve Talep ---
       - name: load_estimation

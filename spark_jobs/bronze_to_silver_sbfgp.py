@@ -1,19 +1,18 @@
-# spark_jobs/bronze_to_silver_dpp.py
+# spark_jobs/bronze_to_silver_sbfgp.py
 
 import sys
 from pyspark.sql.types import DoubleType, LongType
 from pyspark.sql import functions as F
 from spark_utils import BaseEpiasSparkJob
 
-class DppSilverJob(BaseEpiasSparkJob):
+class SbfgpSilverJob(BaseEpiasSparkJob):
     """
-    Beyan Edilen Günlük Üretim Planı (BGÜP / DPP) verilerini işler.
-    Kaynak bazında saatlik planlanan üretimi gösterir.
-    NOT: Kesinleşmiş plan (KGÜP) için bronze_to_silver_sbfgp.py kullanılmalıdır.
+    Kesinleşmiş Günlük Üretim Planı (KGÜP / SBFGP) verilerini işler.
+    GİP kapanışından sonra DUY 69. madde kapsamında güncellenen nihai plandır.
+    BGÜP (stg_dpp) ile karşılaştırılarak intraday revizyon miktarı hesaplanabilir.
     """
     def __init__(self):
-        # Eski: primary_keys=["date", "organizationId", "uevcbId"]
-        super().__init__(app_name="BronzeToSilver_DPP", source_name="dpp", primary_keys=["date", "time"])
+        super().__init__(app_name="BronzeToSilver_SBFGP", source_name="sbfgp", primary_keys=["date", "time"])
 
     def run(self, ds: str):
         try:
@@ -28,22 +27,16 @@ class DppSilverJob(BaseEpiasSparkJob):
             self.spark.stop()
             return
 
-        self.logger.info("DPP (BGÜP) verisi için tipler dönüştürülüyor...")
+        self.logger.info("SBFGP (KGÜP) verisi için tipler dönüştürülüyor...")
 
         df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
 
         # Cast all numeric columns to Double to prevent INT64/DOUBLE schema drift
-        # across weekly backfill files (pandas infers int64 for round-number values).
-        _id_cols = {"date", "time", "organizationId", "uevcbId"}
+        _id_cols = {"date", "time"}
         for col_name in df.columns:
             if col_name not in _id_cols:
                 df = df.withColumn(col_name, F.col(col_name).cast(DoubleType()))
 
-        for id_col in ["organizationId", "uevcbId"]:
-            if id_col in df.columns:
-                df = df.withColumn(id_col, F.col(id_col).cast(LongType()))
-
-        # Base işlemler ve GCS'e yazma
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
@@ -51,5 +44,5 @@ class DppSilverJob(BaseEpiasSparkJob):
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"
-    job = DppSilverJob()
+    job = SbfgpSilverJob()
     job.run(target_ds)

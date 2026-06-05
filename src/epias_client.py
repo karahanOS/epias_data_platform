@@ -370,9 +370,11 @@ class EPIASClient:
         uevcb_id: Optional[int] = None,
     ) -> list:
         """
-        Kesinleşmiş Gün Öncesi Üretim Planı (KGÜP).
+        Beyan Edilen Günlük Üretim Planı (BGÜP / DPP).
         POST /v1/generation/data/dpp
-        NOT: region zorunlu (swagger'da eksik). Türkiye tek bölge → "TR1".
+        NOT: Bu endpoint BGÜP döner — gün öncesinde şirketlerin TEIAŞ'a bildirdiği plan.
+             Kesinleşmiş plan (KGÜP) için get_sbfgp() kullanın.
+             region zorunlu (swagger'da eksik). Türkiye tek bölge → "TR1".
         """
         body = self._date_body(start_date, end_date)
         body["region"] = "TR1"
@@ -382,8 +384,20 @@ class EPIASClient:
             body["uevcbId"] = uevcb_id
         return self._post("/v1/generation/data/dpp", body).get("items", [])
 
+    def get_sbfgp(self, start_date: str, end_date: str) -> list:
+        """
+        Kesinleşmiş Günlük Üretim Planı (KGÜP / SBFGP).
+        POST /v1/generation/data/sbfgp
+        GİP kapanışından sonra DUY 69. madde kapsamında güncellenen nihai plandır.
+        BGÜP ile farkı = intraday revizyon = şirketlerin GİP'te ne kadar ayarlama yaptığı.
+        NOT: region zorunlu (swagger'da eksik) → "TR1".
+        """
+        body = self._date_body(start_date, end_date)
+        body["region"] = "TR1"
+        return self._post("/v1/generation/data/sbfgp", body).get("items", [])
+
     def get_dpp_bulk(self, start_date: str, end_date: str) -> list:
-        """Tüm UEVCB'ler toplu KGÜP. POST /v1/generation/data/dpp-bulk"""
+        """Tüm UEVCB'ler toplu BGÜP (beyan). POST /v1/generation/data/dpp-bulk"""
         return self._post(
             "/v1/generation/data/dpp-bulk",
             self._date_body(start_date, end_date),
