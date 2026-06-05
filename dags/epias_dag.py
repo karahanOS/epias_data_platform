@@ -250,7 +250,12 @@ with DAG(
 
     run_dbt = BashOperator(
         task_id='run_dbt_gold_models',
-        bash_command='cd /opt/airflow/epias_dbt && dbt run --profiles-dir .',
+        # stg_dpp/stg_sbfgp silver backfill tamamlanana kadar exclude'da
+        # mart_production_plan her ikisine bağlı — backfill sonrası kaldır
+        bash_command=(
+            'cd /opt/airflow/epias_dbt && dbt run --profiles-dir . '
+            '--exclude stg_dpp stg_sbfgp mart_production_plan'
+        ),
     )
     
     # Training: ağır iş — haftada bir çalışır, dbt sonrası tetiklenir

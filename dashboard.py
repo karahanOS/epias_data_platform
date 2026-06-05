@@ -155,6 +155,7 @@ with st.sidebar:
         "⚡ GİP & Hava Durumu",
         "🏭 Üretim Planı (BGÜP vs KGÜP)",
         "🔥 PTF Tavan & Minimum Analizi",
+        "📈 Çapraz Piyasa Arbitraj",
     ], label_visibility="collapsed")
 
     st.markdown("---")
@@ -1314,3 +1315,185 @@ elif page == "🔥 PTF Tavan & Minimum Analizi":
                  xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
                  yaxis=dict(title="Saat Sayısı", gridcolor="rgba(255,255,255,0.05)"))
             st.plotly_chart(fig6, use_container_width=True, key="ext_monthly")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 12 — ÇAPRAZ PİYASA ARBİTRAJ (GÖP → GİP → DGP)
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "📈 Çapraz Piyasa Arbitraj":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>ARBİTRAJ</span>
+        <h1>Çapraz Piyasa Analizi: GÖP → GİP → DGP</h1>
+        <p>Üç piyasa spread'leri, kademeli fiyat yapıları ve arbitraj fırsatı skorları
+        (Maciejowska et al. · Wozabal & Ferreira)</p>
+    </div>""", unsafe_allow_html=True)
+
+    df = query(f"""
+        SELECT date, hour,
+               gop_ptf_try, gip_vwap_try, dgp_smf_try,
+               gip_gop_spread_try, smf_gop_spread_try, smf_gip_spread_try,
+               gip_gop_spread_pct, price_cascade,
+               arbitrage_opportunity_score,
+               system_direction, net_imbalance_mwh,
+               yal_delivered_mwh, yat_delivered_mwh, net_dgp_mwh,
+               gip_total_volume_mwh, gip_transaction_count,
+               EXTRACT(YEAR  FROM date) AS year,
+               EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_cross_market_spread')}
+        ORDER BY date, hour
+    """)
+    if df.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    years = sorted(df["year"].unique(), reverse=True)
+    col_f1, col_f2 = st.columns(2)
+    sel_year = col_f1.selectbox("Yıl", years, key="arb_year")
+    cascades = ["Tümü"] + sorted(df["price_cascade"].dropna().unique().tolist())
+    sel_cascade = col_f2.selectbox("Kademeli Yapı", cascades, key="arb_cascade")
+
+    dfy = df[df["year"] == sel_year]
+    if sel_cascade != "Tümü":
+        dfy = dfy[dfy["price_cascade"] == sel_cascade]
+
+    # ── KPI'lar ──────────────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Ort. GÖP (PTF)", f"{dfy['gop_ptf_try'].mean():,.2f} TL")
+    c2.metric("Ort. GİP (VWAP)", f"{dfy['gip_vwap_try'].mean():,.2f} TL",
+              f"{dfy['gip_gop_spread_try'].mean():+.2f}")
+    c3.metric("Ort. DGP (SMF)", f"{dfy['dgp_smf_try'].mean():,.2f} TL",
+              f"{dfy['smf_gop_spread_try'].mean():+.2f}")
+    hi_arb = (dfy["arbitrage_opportunity_score"] > 0.05).sum()
+    c4.metric("Yüksek Arbitraj Saati (>%5)", f"{hi_arb:,}")
+    avg_score = dfy["arbitrage_opportunity_score"].mean()
+    c5.metric("Ort. Arbitraj Skoru", f"{avg_score:.4f}")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        # Üç piyasa fiyat serisi — son 30 gün
+        recent = dfy.sort_values(["date","hour"]).tail(30 * 24)
+        recent["ts"] = pd.to_datetime(recent["date"].astype(str)) + pd.to_timedelta(recent["hour"], unit="h")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=recent["ts"], y=recent["gop_ptf_try"],
+            name="GÖP (PTF)", line=dict(color="#00d4ff", width=1.5)))
+        fig.add_trace(go.Scatter(x=recent["ts"], y=recent["gip_vwap_try"],
+            name="GİP (VWAP)", line=dict(color="#f59e0b", width=1.5)))
+        fig.add_trace(go.Scatter(x=recent["ts"], y=recent["dgp_smf_try"],
+            name="DGP (SMF)", line=dict(color="#ef4444", width=1.5, dash="dot")))
+        dark(fig, height=400, title="Son 30 Gün — GÖP / GİP / DGP Fiyat Serisi",
+             yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig, use_container_width=True, key="arb_price_series")
+
+    with col_r:
+        # Kademeli yapı dağılımı
+        cascade_counts = dfy["price_cascade"].value_counts().reset_index()
+        cascade_counts.columns = ["Yapı", "Saat"]
+        cascade_colors = {
+            "ESCALATING": "#ef4444", "DESCENDING": "#10b981",
+            "GIP_PEAK": "#f59e0b", "GIP_TROUGH": "#7c3aed", "FLAT": "#64748b"
+        }
+        fig2 = px.pie(cascade_counts, names="Yapı", values="Saat",
+            hole=0.55,
+            color="Yapı", color_discrete_map=cascade_colors,
+            title="Kademeli Fiyat Yapısı Dağılımı")
+        dark(fig2, height=400)
+        st.plotly_chart(fig2, use_container_width=True, key="arb_cascade_pie")
+
+    st.markdown("### 📊 Spread Analizi")
+    col_s1, col_s2 = st.columns(2)
+
+    with col_s1:
+        # GİP-GÖP spread saatlik profili
+        hourly_spread = dfy.groupby("hour").agg(
+            gip_gop=("gip_gop_spread_try", "mean"),
+            smf_gop=("smf_gop_spread_try", "mean"),
+            smf_gip=("smf_gip_spread_try", "mean"),
+        ).reset_index()
+        fig3 = go.Figure()
+        fig3.add_trace(go.Bar(x=hourly_spread["hour"], y=hourly_spread["gip_gop"],
+            name="GİP - GÖP", marker_color="rgba(245,158,11,0.7)"))
+        fig3.add_trace(go.Scatter(x=hourly_spread["hour"], y=hourly_spread["smf_gop"],
+            name="SMF - GÖP", mode="lines+markers",
+            line=dict(color="#ef4444", width=2)))
+        fig3.add_trace(go.Scatter(x=hourly_spread["hour"], y=hourly_spread["smf_gip"],
+            name="SMF - GİP", mode="lines+markers",
+            line=dict(color="#7c3aed", width=2, dash="dash")))
+        fig3.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.3)")
+        dark(fig3, height=380, title="Saatlik Ort. Spread Profili (TL/MWh)",
+             xaxis=dict(title="Saat", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
+             yaxis=dict(title="Spread (TL/MWh)", gridcolor="rgba(255,255,255,0.05)"),
+             barmode="overlay")
+        st.plotly_chart(fig3, use_container_width=True, key="arb_spread_hourly")
+
+    with col_s2:
+        # GİP-GÖP spread dağılımı — sistem yönüne göre renk
+        fig4 = px.histogram(
+            dfy.dropna(subset=["gip_gop_spread_try","system_direction"]),
+            x="gip_gop_spread_try", nbins=80,
+            color="system_direction",
+            color_discrete_map={
+                "ENERGY_DEFICIT": "#ef4444",
+                "ENERGY_SURPLUS": "#10b981",
+                "IN_BALANCE":     "#64748b",
+            },
+            barmode="overlay", opacity=0.7,
+            title="GİP - GÖP Spread Dağılımı (Sistem Yönüne Göre)",
+            labels={"gip_gop_spread_try": "GİP - GÖP (TL/MWh)",
+                    "system_direction": "Sistem Yönü"})
+        fig4.add_vline(x=0, line_dash="dot", line_color="rgba(255,255,255,0.4)")
+        dark(fig4, height=380)
+        st.plotly_chart(fig4, use_container_width=True, key="arb_spread_hist")
+
+    st.markdown("### 🎯 Arbitraj Fırsatı & DGP Baskısı")
+    col_a1, col_a2 = st.columns(2)
+
+    with col_a1:
+        # Arbitraj skoru — günlük ortalama trend
+        daily_arb = dfy.groupby("date")["arbitrage_opportunity_score"].mean().reset_index()
+        fig5 = go.Figure(go.Scatter(
+            x=daily_arb["date"], y=daily_arb["arbitrage_opportunity_score"],
+            mode="lines", line=dict(color="#f59e0b", width=1.8),
+            fill="tozeroy", fillcolor="rgba(245,158,11,0.08)"))
+        fig5.add_hline(y=0.05, line_dash="dot", line_color="rgba(239,68,68,0.6)",
+                       annotation_text="Yüksek Fırsat Eşiği (%5)",
+                       annotation_font_color="#ef4444")
+        dark(fig5, height=360, title="Günlük Ort. Arbitraj Fırsatı Skoru",
+             yaxis=dict(title="Skor", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig5, use_container_width=True, key="arb_score_trend")
+
+    with col_a2:
+        # YAL vs YAT saatlik profil
+        hourly_dgp = dfy.groupby("hour").agg(
+            yal=("yal_delivered_mwh", "mean"),
+            yat=("yat_delivered_mwh", "mean"),
+        ).reset_index()
+        fig6 = go.Figure()
+        fig6.add_trace(go.Bar(x=hourly_dgp["hour"], y=hourly_dgp["yal"],
+            name="YAL (Yük Alma)", marker_color="rgba(239,68,68,0.7)"))
+        fig6.add_trace(go.Bar(x=hourly_dgp["hour"], y=hourly_dgp["yat"],
+            name="YAT (Yük Atma)", marker_color="rgba(16,185,129,0.7)"))
+        dark(fig6, height=360, title="Saatlik Ort. DGP Regülasyon Hacimleri",
+             barmode="group",
+             xaxis=dict(title="Saat", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
+             yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig6, use_container_width=True, key="arb_dgp_hourly")
+
+    # ── Aylık Kademeli Yapı Heatmap ──────────────────────────────────────────
+    st.markdown("### 🗓️ Aylık Kademeli Yapı Dağılımı")
+    cascade_monthly = (
+        dfy.groupby(["month", "price_cascade"])
+        .size().reset_index(name="count")
+    )
+    cascade_monthly["ay"] = cascade_monthly["month"].map(MONTHS_TR)
+    fig7 = px.bar(cascade_monthly, x="ay", y="count",
+        color="price_cascade",
+        color_discrete_map=cascade_colors,
+        barmode="stack",
+        title=f"{sel_year} — Aylık Kademeli Fiyat Yapısı Dağılımı",
+        labels={"count": "Saat", "ay": "", "price_cascade": "Yapı"})
+    dark(fig7, height=360)
+    st.plotly_chart(fig7, use_container_width=True, key="arb_cascade_monthly")

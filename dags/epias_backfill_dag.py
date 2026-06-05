@@ -301,7 +301,13 @@ with DAG(
     # =========================================================================
     run_dbt_backfill = BashOperator(
         task_id="run_dbt_full_refresh",
-        bash_command="cd /opt/airflow/epias_dbt && dbt run --profiles-dir . --full-refresh",
+        # stg_dpp: silver.dpp BQ tablosu INT64/DOUBLE schema drift — silver_dpp_backfill bekleniyor
+        # stg_sbfgp: silver.sbfgp henüz yok — silver_sbfgp_backfill bekleniyor
+        # mart_production_plan: her ikisine bağlı, hazır olunca --exclude kaldırılacak
+        bash_command=(
+            "cd /opt/airflow/epias_dbt && dbt run --profiles-dir . --full-refresh "
+            "--exclude stg_dpp stg_sbfgp mart_production_plan"
+        ),
     )
 
     # =========================================================================
