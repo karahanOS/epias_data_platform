@@ -714,7 +714,13 @@ elif page == "🚨 Arz Şoku & Risk":
     if not pivot.empty:
         months_tr = {1:"Oca",2:"Şub",3:"Mar",4:"Nis",5:"May",6:"Haz",
                      7:"Tem",8:"Ağu",9:"Eyl",10:"Eki",11:"Kas",12:"Ara"}
-        pivot.index = [months_tr.get(m, str(m)) for m in pivot.index]
+        # Assign via pd.Index so the name "month" is preserved.
+        # A plain list assignment drops the name, making reset_index() produce
+        # a column called "index" (or 0) instead of "month" → px.bar crash.
+        pivot.index = pd.Index(
+            [months_tr.get(m, str(m)) for m in pivot.index],
+            name=pivot.index.name,
+        )
         fig3 = px.bar(pivot.reset_index(), x="month", y="supply_shock_index",
             color="supply_shock_index",
             color_continuous_scale=["#10b981","#f59e0b","#ef4444"],
