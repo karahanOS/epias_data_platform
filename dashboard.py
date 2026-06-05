@@ -100,6 +100,9 @@ DARK_LAYOUT = dict(
 
 _DARK_AXIS = dict(gridcolor="rgba(255,255,255,0.05)")
 
+MONTHS_TR = {1:"Oca",2:"Şub",3:"Mar",4:"Nis",5:"May",6:"Haz",
+             7:"Tem",8:"Ağu",9:"Eyl",10:"Eki",11:"Kas",12:"Ara"}
+
 def dark(fig, height=420, **extra):
     """Apply dark theme.  Caller xaxis/yaxis dicts are merged with dark defaults."""
     xaxis = {**_DARK_AXIS, **extra.pop("xaxis", {})}
@@ -715,13 +718,11 @@ elif page == "🚨 Arz Şoku & Risk":
     # Monthly heatmap of shock index
     pivot = dfy.pivot_table(index="month", values="supply_shock_index", aggfunc="mean")
     if not pivot.empty:
-        months_tr = {1:"Oca",2:"Şub",3:"Mar",4:"Nis",5:"May",6:"Haz",
-                     7:"Tem",8:"Ağu",9:"Eyl",10:"Eki",11:"Kas",12:"Ara"}
         # Assign via pd.Index so the name "month" is preserved.
         # A plain list assignment drops the name, making reset_index() produce
         # a column called "index" (or 0) instead of "month" → px.bar crash.
         pivot.index = pd.Index(
-            [months_tr.get(m, str(m)) for m in pivot.index],
+            [MONTHS_TR.get(m, str(m)) for m in pivot.index],
             name=pivot.index.name,
         )
         fig3 = px.bar(pivot.reset_index(), x="month", y="supply_shock_index",
@@ -927,9 +928,7 @@ elif page == "🌿 Lisanssız Üretim (YEKDEM)":
     monthly = dfy.groupby("month").agg(
         mwh=("total_unlicensed_mwh","sum"),
         value=("estimated_market_value_try","sum")).reset_index()
-    months_tr = {1:"Oca",2:"Şub",3:"Mar",4:"Nis",5:"May",6:"Haz",
-                 7:"Tem",8:"Ağu",9:"Eyl",10:"Eki",11:"Kas",12:"Ara"}
-    monthly["ay"] = monthly["month"].map(months_tr)
+    monthly["ay"] = monthly["month"].map(MONTHS_TR)
 
     fig3 = make_subplots(specs=[[{"secondary_y": True}]])
     fig3.add_trace(go.Bar(x=monthly["ay"], y=monthly["mwh"]/1e3,
@@ -943,3 +942,375 @@ elif page == "🌿 Lisanssız Üretim (YEKDEM)":
         yaxis=dict(title="GWh", gridcolor="rgba(255,255,255,0.05)"),
         yaxis2=dict(title="Milyon TL", gridcolor="rgba(0,0,0,0)"))
     st.plotly_chart(fig3, use_container_width=True, key="yek_monthly")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 9 — GİP & HAVA DURUMU
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "⚡ GİP & Hava Durumu":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>IDM</span>
+        <h1>Gün İçi Piyasası & Hava Durumu</h1>
+        <p>GİP saatlik hacim/fiyat profili ve hava koşullarının piyasa üzerindeki etkisi</p>
+    </div>""", unsafe_allow_html=True)
+
+    df_gip = query(f"""
+        SELECT trade_date AS date, hour, contract_name,
+               total_transaction_count, avg_transaction_price_try,
+               total_volume_mwh, total_transaction_value_try,
+               EXTRACT(YEAR FROM trade_date) AS year,
+               EXTRACT(MONTH FROM trade_date) AS month
+        FROM {tbl('mart_gip_company_activity')}
+        ORDER BY trade_date, hour
+    """)
+    df_wx = query(f"""
+        SELECT date, hour, city_name, temperature_celsius,
+               wind_speed_kmh, shortwave_radiation, relative_humidity,
+               EXTRACT(YEAR FROM date) AS year
+        FROM {tbl('stg_weather')}
+        ORDER BY date, hour, city_name
+    """)
+
+    if df_gip.empty:
+        st.warning("GİP verisi bulunamadı.")
+        st.stop()
+
+    years = sorted(df_gip["year"].unique(), reverse=True)
+    col_f1, col_f2 = st.columns(2)
+    sel_year = col_f1.selectbox("Yıl", years, key="gip_year")
+    cities = ["Tümü"] + sorted(df_wx["city_name"].dropna().unique().tolist()) if not df_wx.empty else ["Tümü"]
+    sel_city = col_f2.selectbox("Şehir (Hava)", cities, key="gip_city")
+
+    dfy = df_gip[df_gip["year"] == sel_year]
+    dfy_wx = df_wx[df_wx["year"] == sel_year] if not df_wx.empty else pd.DataFrame()
+    if sel_city != "Tümü" and not dfy_wx.empty:
+        dfy_wx = dfy_wx[dfy_wx["city_name"] == sel_city]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort GİP Fiyatı", f"{dfy['avg_transaction_price_try'].mean():,.2f} TL/MWh")
+    c2.metric("Toplam Hacim", f"{dfy['total_volume_mwh'].sum()/1e3:,.1f} GWh")
+    c3.metric("Toplam İşlem Değ.", f"₺{dfy['total_transaction_value_try'].sum()/1e9:.2f} Mrd")
+    c4.metric("Toplam İşlem Adedi", f"{dfy['total_transaction_count'].sum():,}")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        hourly = dfy.groupby("hour").agg(
+            vol=("total_volume_mwh","mean"),
+            price=("avg_transaction_price_try","mean")).reset_index()
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(go.Bar(x=hourly["hour"], y=hourly["vol"],
+            name="Ort Hacim (MWh)", marker_color="rgba(0,212,255,0.6)"))
+        fig.add_trace(go.Scatter(x=hourly["hour"], y=hourly["price"],
+            name="Ort Fiyat (TL)", mode="lines+markers",
+            line=dict(color="#ff6b35", width=2.5)), secondary_y=True)
+        fig.update_layout(**DARK_LAYOUT, height=380, barmode="overlay",
+            title="Saatlik GİP Hacim & Fiyat Profili",
+            xaxis=dict(title="Saat", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis2=dict(title="TL/MWh", gridcolor="rgba(0,0,0,0)"))
+        st.plotly_chart(fig, use_container_width=True, key="gip_hourly")
+
+    with col_r:
+        monthly = dfy.groupby("month")["total_volume_mwh"].sum().reset_index()
+        monthly["ay"] = monthly["month"].map(MONTHS_TR)
+        fig2 = px.bar(monthly, x="ay", y="total_volume_mwh",
+            color="total_volume_mwh",
+            color_continuous_scale=["#10b981","#00d4ff","#7c3aed"],
+            title="Aylık GİP İşlem Hacmi (MWh)",
+            labels={"total_volume_mwh": "MWh", "ay": ""})
+        dark(fig2, height=380, coloraxis_showscale=False)
+        st.plotly_chart(fig2, use_container_width=True, key="gip_monthly")
+
+    # Weather section
+    if not dfy_wx.empty:
+        st.markdown("### 🌡️ Hava Koşulları")
+        daily_wx = dfy_wx.groupby("date").agg(
+            temp=("temperature_celsius","mean"),
+            wind=("wind_speed_kmh","mean"),
+            rad=("shortwave_radiation","mean")).reset_index()
+
+        col_w1, col_w2 = st.columns(2)
+
+        with col_w1:
+            fig3 = make_subplots(specs=[[{"secondary_y": True}]])
+            fig3.add_trace(go.Scatter(x=daily_wx["date"], y=daily_wx["temp"],
+                name="Sıcaklık (°C)", mode="lines",
+                line=dict(color="#ef4444", width=1.5),
+                fill="tozeroy", fillcolor="rgba(239,68,68,0.06)"))
+            fig3.add_trace(go.Scatter(x=daily_wx["date"], y=daily_wx["wind"],
+                name="Rüzgar (km/h)", mode="lines",
+                line=dict(color="#00d4ff", width=1.5)), secondary_y=True)
+            fig3.update_layout(**DARK_LAYOUT, height=360,
+                title="Günlük Sıcaklık & Rüzgar Hızı",
+                xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                yaxis=dict(title="°C", gridcolor="rgba(255,255,255,0.05)"),
+                yaxis2=dict(title="km/h", gridcolor="rgba(0,0,0,0)"))
+            st.plotly_chart(fig3, use_container_width=True, key="gip_wx_temp")
+
+        with col_w2:
+            # Merge GİP daily price with weather
+            daily_gip = dfy.groupby("date")["avg_transaction_price_try"].mean().reset_index()
+            merged_wx = daily_wx.merge(daily_gip, on="date", how="inner")
+            if not merged_wx.empty:
+                fig4 = px.scatter(merged_wx,
+                    x="temp", y="avg_transaction_price_try",
+                    color="wind", color_continuous_scale=["#10b981","#00d4ff","#7c3aed"],
+                    opacity=0.7, trendline="lowess",
+                    title="Sıcaklık → GİP Fiyatı İlişkisi",
+                    labels={"temp": "Ort. Sıcaklık (°C)",
+                            "avg_transaction_price_try": "Ort. GİP Fiyatı (TL/MWh)",
+                            "wind": "Rüzgar (km/h)"})
+                dark(fig4, height=360, coloraxis_colorbar=dict(title="Rüzgar"))
+                st.plotly_chart(fig4, use_container_width=True, key="gip_wx_corr")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 10 — ÜRETİM PLANI (BGÜP vs KGÜP)
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>PLANLAMA</span>
+        <h1>Üretim Planı: BGÜP vs KGÜP</h1>
+        <p>Beyan edilen plan vs kesinleşmiş plan — GİP revizyonlarının büyüklüğü ve yönü</p>
+    </div>""", unsafe_allow_html=True)
+
+    df = query(f"""
+        SELECT date, hour,
+               bgup_total_mwh, kgup_total_mwh,
+               bgup_wind_mwh, kgup_wind_mwh,
+               bgup_solar_mwh, kgup_solar_mwh,
+               bgup_hydro_mwh, kgup_hydro_mwh,
+               intraday_revision_mwh, wind_revision_mwh,
+               solar_revision_mwh, hydro_revision_mwh,
+               revision_direction, revision_pct,
+               EXTRACT(YEAR FROM date) AS year,
+               EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_production_plan')}
+        ORDER BY date, hour
+    """)
+    if df.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    years = sorted(df["year"].unique(), reverse=True)
+    sel_year = st.selectbox("Yıl", years, key="bgup_year")
+    dfy = df[df["year"] == sel_year].dropna(subset=["bgup_total_mwh", "kgup_total_mwh"])
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort BGÜP", f"{dfy['bgup_total_mwh'].mean():,.0f} MWh")
+    c2.metric("Ort KGÜP", f"{dfy['kgup_total_mwh'].mean():,.0f} MWh")
+    c3.metric("Ort Revizyon", f"{dfy['intraday_revision_mwh'].mean():+.0f} MWh")
+    rev_pct = (dfy["revision_direction"] != "Denge").mean() * 100
+    c4.metric("Aktif Revizyon %", f"%{rev_pct:.1f}")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        # Daily BGÜP vs KGÜP trend
+        daily = dfy.groupby("date").agg(
+            bgup=("bgup_total_mwh","mean"),
+            kgup=("kgup_total_mwh","mean"),
+            rev=("intraday_revision_mwh","mean")).reset_index()
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(go.Scatter(x=daily["date"], y=daily["bgup"],
+            name="BGÜP (Beyan)", line=dict(color="#00d4ff", width=1.5)))
+        fig.add_trace(go.Scatter(x=daily["date"], y=daily["kgup"],
+            name="KGÜP (Kesinleşmiş)", line=dict(color="#10b981", width=1.5)))
+        fig.add_trace(go.Bar(x=daily["date"], y=daily["rev"],
+            name="Revizyon (KGÜP-BGÜP)",
+            marker_color=daily["rev"].apply(
+                lambda v: "rgba(16,185,129,0.5)" if v >= 0 else "rgba(239,68,68,0.5)")),
+            secondary_y=True)
+        fig.update_layout(**DARK_LAYOUT, height=400,
+            title="Günlük BGÜP / KGÜP & Revizyon",
+            xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis2=dict(title="Revizyon (MWh)", gridcolor="rgba(0,0,0,0)"))
+        st.plotly_chart(fig, use_container_width=True, key="pp_trend")
+
+    with col_r:
+        # Revision direction distribution
+        dir_counts = dfy["revision_direction"].value_counts().reset_index()
+        dir_counts.columns = ["Yön", "Saat"]
+        color_map = {"GIP_Alim": "#ef4444", "GIP_Satis": "#10b981", "Denge": "#64748b"}
+        fig2 = px.pie(dir_counts, names="Yön", values="Saat",
+            hole=0.55,
+            color="Yön", color_discrete_map=color_map,
+            title="Revizyon Yönü Dağılımı")
+        dark(fig2, height=400)
+        st.plotly_chart(fig2, use_container_width=True, key="pp_dir_pie")
+
+    # Source breakdown: Wind, Solar, Hydro revision
+    st.markdown("### 🌬️ Kaynak Bazlı Revizyon (Rüzgar / Güneş / Baraj)")
+    hourly_src = dfy.groupby("hour").agg(
+        wind_rev=("wind_revision_mwh","mean"),
+        solar_rev=("solar_revision_mwh","mean"),
+        hydro_rev=("hydro_revision_mwh","mean")).reset_index()
+
+    fig3 = go.Figure()
+    fig3.add_trace(go.Bar(x=hourly_src["hour"], y=hourly_src["wind_rev"],
+        name="Rüzgar Revizyonu", marker_color="rgba(0,212,255,0.7)"))
+    fig3.add_trace(go.Bar(x=hourly_src["hour"], y=hourly_src["solar_rev"],
+        name="Güneş Revizyonu", marker_color="rgba(245,158,11,0.7)"))
+    fig3.add_trace(go.Bar(x=hourly_src["hour"], y=hourly_src["hydro_rev"],
+        name="Baraj Revizyonu", marker_color="rgba(124,58,237,0.7)"))
+    dark(fig3, height=380, title="Saatlik Ort. Kaynak Revizyonu (KGÜP - BGÜP)",
+         barmode="group",
+         xaxis=dict(title="Saat", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
+         yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"))
+    fig3.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.2)")
+    st.plotly_chart(fig3, use_container_width=True, key="pp_src_rev")
+
+    # Revision pct distribution
+    fig4 = px.histogram(dfy[dfy["revision_pct"].notna() & (dfy["revision_pct"] < 50)],
+        x="revision_pct", nbins=60, color="revision_direction",
+        color_discrete_map=color_map,
+        barmode="overlay", opacity=0.75,
+        title="Revizyon Büyüklüğü Dağılımı (BGÜP'e göre %)",
+        labels={"revision_pct": "Revizyon %", "revision_direction": "Yön"})
+    dark(fig4, height=340)
+    st.plotly_chart(fig4, use_container_width=True, key="pp_rev_hist")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 11 — PTF TAVAN & MİNİMUM ANALİZİ
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🔥 PTF Tavan & Minimum Analizi":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>EXTREME</span>
+        <h1>PTF Tavan & Minimum Analizi</h1>
+        <p>En pahalı/ucuz %5 saatlerin tetikleyicileri — kapasite stresi, RES fazlası, sistem açığı</p>
+    </div>""", unsafe_allow_html=True)
+
+    df = query(f"""
+        SELECT date, hour, ptf_try, smf_try, smf_ptf_spread,
+               residual_load_mwh, total_aic_mwh, capacity_utilization_ratio,
+               system_direction, net_imbalance_mwh,
+               p5_ptf, p95_ptf, avg_ptf,
+               ptf_category, extreme_driver,
+               EXTRACT(YEAR FROM date) AS year,
+               EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_ptf_extremes')}
+        ORDER BY date, hour
+    """)
+    if df.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    years = sorted(df["year"].unique(), reverse=True)
+    sel_year = st.selectbox("Yıl", years, key="ext_year")
+    dfy = df[df["year"] == sel_year]
+
+    p95 = dfy["p95_ptf"].iloc[0] if not dfy.empty else 0
+    p5  = dfy["p5_ptf"].iloc[0] if not dfy.empty else 0
+    tavan = dfy[dfy["ptf_category"] == "TAVAN"]
+    minimum = dfy[dfy["ptf_category"] == "MINIMUM"]
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Tavan Eşiği (p95)", f"{p95:,.2f} TL")
+    c2.metric("Min Eşiği (p5)", f"{p5:,.2f} TL")
+    c3.metric("Tavan Saati", f"{len(tavan):,}")
+    c4.metric("Minimum Saati", f"{len(minimum):,}")
+    c5.metric("Tavan/Min Oranı", f"{len(tavan)/max(len(minimum),1):.1f}x")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        # PTF distribution with threshold bands
+        fig = px.histogram(dfy, x="ptf_try", nbins=100,
+            color="ptf_category",
+            color_discrete_map={"TAVAN":"#ef4444","MINIMUM":"#10b981","NORMAL":"rgba(100,116,139,0.5)"},
+            barmode="overlay", opacity=0.75,
+            title="PTF Dağılımı — Tavan / Normal / Minimum",
+            labels={"ptf_try": "PTF (TL/MWh)", "ptf_category": "Kategori"})
+        fig.add_vline(x=p95, line_dash="dot", line_color="#ef4444",
+                      annotation_text=f"p95: {p95:,.0f}", annotation_font_color="#ef4444")
+        fig.add_vline(x=p5, line_dash="dot", line_color="#10b981",
+                      annotation_text=f"p5: {p5:,.0f}", annotation_font_color="#10b981")
+        dark(fig, height=400)
+        st.plotly_chart(fig, use_container_width=True, key="ext_hist")
+
+    with col_r:
+        # Extreme driver breakdown
+        driver_df = dfy[dfy["extreme_driver"].notna()].groupby(
+            ["ptf_category","extreme_driver"]).size().reset_index(name="count")
+        fig2 = px.bar(driver_df, x="extreme_driver", y="count",
+            color="ptf_category",
+            color_discrete_map={"TAVAN":"#ef4444","MINIMUM":"#10b981"},
+            barmode="group",
+            title="Tavan & Minimum Tetikleyicileri",
+            labels={"extreme_driver":"Tetikleyici","count":"Saat Sayısı","ptf_category":"Kategori"})
+        dark(fig2, height=400)
+        st.plotly_chart(fig2, use_container_width=True, key="ext_drivers")
+
+    # Capacity utilization for ceiling hours
+    if not tavan.empty and "capacity_utilization_ratio" in tavan.columns:
+        st.markdown("### 🔴 Tavan Saati Analizi")
+        col_t1, col_t2 = st.columns(2)
+
+        with col_t1:
+            fig3 = px.scatter(tavan.dropna(subset=["capacity_utilization_ratio","ptf_try"]),
+                x="capacity_utilization_ratio", y="ptf_try",
+                color="extreme_driver",
+                color_discrete_sequence=px.colors.qualitative.Set2,
+                opacity=0.7, trendline="ols",
+                title="Kapasite Kullanım Oranı → Tavan PTF",
+                labels={"capacity_utilization_ratio":"Kapasite Kull. Oranı",
+                        "ptf_try":"PTF (TL/MWh)", "extreme_driver":"Tetikleyici"})
+            dark(fig3)
+            st.plotly_chart(fig3, use_container_width=True, key="ext_cap_util")
+
+        with col_t2:
+            hourly_tavan = tavan.groupby("hour").size().reset_index(name="count")
+            fig4 = px.bar(hourly_tavan, x="hour", y="count",
+                color="count", color_continuous_scale=["#f59e0b","#ef4444"],
+                title="Tavan Saatlerinin Saat Dağılımı",
+                labels={"hour":"Saat","count":"Tavan Saati Adedi"})
+            dark(fig4, height=380, coloraxis_showscale=False,
+                 xaxis=dict(tickmode="linear"))
+            st.plotly_chart(fig4, use_container_width=True, key="ext_hour_dist")
+
+    # Minimum hours: residual load analysis
+    if not minimum.empty and "residual_load_mwh" in minimum.columns:
+        st.markdown("### 🟢 Minimum Saati Analizi")
+        col_m1, col_m2 = st.columns(2)
+
+        with col_m1:
+            fig5 = px.scatter(minimum.dropna(subset=["residual_load_mwh","ptf_try"]),
+                x="residual_load_mwh", y="ptf_try",
+                color="extreme_driver",
+                color_discrete_sequence=px.colors.qualitative.Pastel,
+                opacity=0.7,
+                title="Residual Yük → Minimum PTF",
+                labels={"residual_load_mwh":"Residual Yük (MWh)",
+                        "ptf_try":"PTF (TL/MWh)", "extreme_driver":"Tetikleyici"})
+            dark(fig5)
+            st.plotly_chart(fig5, use_container_width=True, key="ext_res_min")
+
+        with col_m2:
+            monthly_min = dfy.groupby("month")["ptf_category"].apply(
+                lambda s: (s == "MINIMUM").sum()).reset_index(name="min_count")
+            monthly_tav = dfy.groupby("month")["ptf_category"].apply(
+                lambda s: (s == "TAVAN").sum()).reset_index(name="tav_count")
+            monthly_ext = monthly_min.merge(monthly_tav, on="month")
+            monthly_ext["ay"] = monthly_ext["month"].map(MONTHS_TR)
+            fig6 = go.Figure()
+            fig6.add_trace(go.Bar(x=monthly_ext["ay"], y=monthly_ext["tav_count"],
+                name="Tavan Saatleri", marker_color="rgba(239,68,68,0.7)"))
+            fig6.add_trace(go.Bar(x=monthly_ext["ay"], y=monthly_ext["min_count"],
+                name="Minimum Saatleri", marker_color="rgba(16,185,129,0.7)"))
+            dark(fig6, height=380, title="Aylık Tavan & Minimum Saat Dağılımı",
+                 barmode="group",
+                 xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+                 yaxis=dict(title="Saat Sayısı", gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig6, use_container_width=True, key="ext_monthly")
