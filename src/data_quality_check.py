@@ -16,11 +16,14 @@ Kullanım:
   python src/data_quality_check.py --source pricing  # Tek kaynak
 """
 
+from __future__ import annotations  # Python 3.8 uyumlu generic type hints
+
 import os
 import sys
 import argparse
 import logging
 from datetime import date, datetime
+from typing import Dict, List, Optional
 import pandas as pd
 from google.cloud import bigquery
 

@@ -60,7 +60,7 @@ sources:
 
       - name: sbfgp
         description: "KGÜP — Kesinleşmiş Günlük Üretim Planı (GİP sonrası)"
-        freshness: {warn_after: {count: 72, period: hour}, error_after: {count: 168, period: hour}}
+        # Freshness yok: tablo henüz mevcut değil, silver_sbfgp_backfill bekleniyor
 
       # --- Tüketim ve Talep ---
       - name: load_estimation
@@ -100,6 +100,7 @@ sources:
 
       - name: outages
         description: "Santral arıza ve bakım bildirimleri"
+        loaded_at_field: "day"   # silver.outages'da tarih kolonu 'day', 'date' değil
         freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
 
       - name: weather
