@@ -82,8 +82,11 @@ class WeatherClient:
             inclusive="left",
         )
 
+        # Format as ISO string to avoid TIMESTAMP(NANOS) in parquet.
+        # Spark 3.5 rejects INT64(TIMESTAMP(NANOS,true)) — writing timezone-aware
+        # DatetimeIndex directly produces this type via pyarrow.
         df = pd.DataFrame({
-            "datetime": times,
+            "datetime": times.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "city": city_name,
             "temperature_2m": hourly.Variables(0).ValuesAsNumpy(),
             "wind_speed_10m": hourly.Variables(1).ValuesAsNumpy(),

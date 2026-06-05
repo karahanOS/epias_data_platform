@@ -12,6 +12,12 @@ class WeatherSilverJob(BaseEpiasSparkJob):
         )
 
     def run(self, ds: str):
+        # Open-meteo writes timezone-aware DatetimeIndex as TIMESTAMP(NANOS,true).
+        # Spark 3.5 rejects this type by default; nanosAsLong reads it as bigint
+        # (nanoseconds since epoch) instead of failing.  Newer bronze files write
+        # the datetime column as an ISO string (no NANOS issue), so we handle both.
+        self.spark.conf.set("spark.sql.legacy.parquet.nanosAsLong", "true")
+
         df = self.read_bronze(ds)
         if df.rdd.isEmpty(): return
 
@@ -20,14 +26,23 @@ class WeatherSilverJob(BaseEpiasSparkJob):
             df = df.withColumnRenamed("datetime", "date")
 
         # Güvenli Zaman Dönüşümü
-        df = df.withColumn(
-            "date", 
-            F.coalesce(
-                F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"),
-                F.to_timestamp(F.col("date"), "yyyy-MM-dd HH:mm:ss"),
-                F.col("date").cast("timestamp")
+        # nanosAsLong → "date" arrives as bigint (nanos since epoch); divide to seconds.
+        # ISO-string files → normal coalesce parse path.
+        date_type = dict(df.dtypes).get("date", "")
+        if date_type in ("bigint", "long"):
+            df = df.withColumn(
+                "date",
+                (F.col("date").cast("double") / 1_000_000_000).cast("timestamp")
             )
-        )
+        else:
+            df = df.withColumn(
+                "date",
+                F.coalesce(
+                    F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"),
+                    F.to_timestamp(F.col("date"), "yyyy-MM-dd HH:mm:ss"),
+                    F.col("date").cast("timestamp")
+                )
+            )
 
         # Sayısal alanları cast et
         numeric_cols = ["temperature_2m", "wind_speed_10m", "shortwave_radiation", "relative_humidity_2m"]
