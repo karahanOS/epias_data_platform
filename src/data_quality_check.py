@@ -51,7 +51,12 @@ HOURLY_TABLES = {
     "stg_system_direction":  {"key_col": "system_direction",      "min_val": None, "label": "Sistem Yönü"},
     "stg_order_up":          {"key_col": "up_regulation_delivered_mwh", "min_val": 0, "label": "YAL"},
     "stg_order_down":        {"key_col": "down_regulation_delivered_mwh", "min_val": 0, "label": "YAT"},
-    "stg_outages":           {"key_col": "outage_capacity_mwh",   "min_val": 0,    "label": "Arıza Kapasite"},
+    # stg_outages HOURLY_TABLES'ta değil — olay bazlı (id PK, hour kolonu yok)
+}
+
+# Olay bazlı tablolar (tarih var ama saat granüllü değil)
+EVENT_TABLES = {
+    "stg_outages": {"key_col": "outage_capacity_mwh", "label": "Arıza/Bakım Bildirimleri"},
 }
 
 # Günlük granüllü tablolar (date bazlı)
@@ -181,11 +186,24 @@ def find_missing_dates(client, table: str) -> int:
 
 # ── 4. Mart Sağlık Kontrolü ──────────────────────────────────────────────────
 def check_mart(client, table: str) -> dict:
+    # Bazı mart'lar 'date' yerine farklı kolon kullanır
+    DATE_COL_MAP = {
+        "mart_gip_company_activity":           "trade_date",
+        "mart_gold_monthly_executive_metrics": "year_month",  # aylık mart
+    }
+    date_col = DATE_COL_MAP.get(table, "date")
+
+    # Aylık mart'lar için DATE dönüşümü
+    if date_col == "year_month":
+        date_expr = f"PARSE_DATE('%Y-%m', CAST({date_col} AS STRING))"
+    else:
+        date_expr = date_col
+
     sql = f"""
     SELECT
-        COUNT(*)       AS total_rows,
-        MIN(date)      AS min_date,
-        MAX(date)      AS max_date
+        COUNT(*)           AS total_rows,
+        MIN({date_expr})   AS min_date,
+        MAX({date_expr})   AS max_date
     FROM `{PROJECT}.{GOLD}.{table}`
     """
     df = q(client, sql)
@@ -232,17 +250,18 @@ def check_weather(client) -> dict:
     sql = f"""
     SELECT
         city_name,
-        MIN(date) AS min_date,
-        MAX(date) AS max_date,
-        COUNT(*)  AS rows,
-        COUNT(DISTINCT date) AS days
+        MIN(CAST(date AS DATE))           AS min_date,
+        MAX(CAST(date AS DATE))           AS max_date,
+        COUNT(*)                          AS total_rows,
+        COUNT(DISTINCT CAST(date AS DATE)) AS days
     FROM `{PROJECT}.{GOLD}.stg_weather`
-    WHERE date >= '{START_DATE}'
+    WHERE CAST(date AS DATE) >= '{START_DATE}'
     GROUP BY city_name
     ORDER BY city_name
     """
     df = q(client, sql)
     if "error" in df.columns:
+        logger.warning(f"stg_weather: {df['error'][0][:80]}")
         return {}
     return df.to_dict("records")
 
@@ -253,19 +272,31 @@ def print_section(title: str):
     print(f"{'═'*70}")
 
 def print_hourly_result(r: dict):
+    if r.get("status") == "ERROR" and "error" in r:
+        print(f"  ❌ {r.get('label', r['table']):<28} — {r['error'][:60]}")
+        return
+
     ic = icon(r["status"] == "OK", r["status"] == "WARN")
-    fresh = f"{r['freshness_days']}g önce" if r.get("freshness_days", 999) > 0 else "bugün"
+    fd = r.get("freshness_days", 999)
+    fresh = "bugün" if fd == 0 else f"{fd}g önce"
+    comp  = r.get("completeness_pct", 0)
+
+    # 590%+ gibi değerler → "çoklu satır/saat" uyarısı
+    comp_str = f"{comp:>6.1f}%" if comp <= 110 else f"~{comp/100:.0f}x ⚠️ "
+
     print(
-        f"  {ic} {r['label']:<28} "
-        f"{r['completeness_pct']:>6.1f}%  "
-        f"{r['total_rows']:>7,} satır  "
-        f"[{r['min_date']} → {r['max_date']}]  "
+        f"  {ic} {r.get('label', r['table']):<28} "
+        f"{comp_str:>9}  "
+        f"{r.get('total_rows', 0):>7,} satır  "
+        f"[{r.get('min_date','?')} → {r.get('max_date','?')}]  "
         f"son güncelleme: {fresh}"
     )
     if r.get("null_pct", 0) > 1:
-        print(f"       ⚠️  NULL: {r['null_pct']:.1f}%")
-    if r.get("below_min_pct", 0) > 0.1:
+        print(f"       ⚠️  NULL oranı: {r['null_pct']:.1f}%")
+    if 0 < r.get("below_min_pct", 0) <= 100 and r.get("completeness_pct", 200) <= 110:
         print(f"       ⚠️  Min-altı değer: {r['below_min_pct']:.2f}%")
+    if comp > 110:
+        print(f"       ℹ️  Çoklu satır/saat — kaynak data kategorik olabilir (RES tipi vb.)")
 
 # ── ANA FONKSİYON ────────────────────────────────────────────────────────────
 def main():
@@ -332,6 +363,27 @@ def main():
                     f"{r['freshness_days']}g"
                 )
 
+    # ── Olay-bazlı tablolar ───────────────────────────────────────────────
+    if not args.quick:
+        print_section("2b. OLAY BAZLI TABLOLAR (saatlik değil)")
+        for table, meta in EVENT_TABLES.items():
+            sql = f"""
+            SELECT COUNT(*) AS total_rows, MIN(date) AS min_date, MAX(date) AS max_date,
+                   COUNT(DISTINCT date) AS days
+            FROM `{PROJECT}.{GOLD}.{table}`
+            WHERE date >= '{START_DATE}'
+            """
+            df = q(client, sql)
+            if "error" in df.columns:
+                print(f"  ❌ {meta['label']}: {df['error'][0][:60]}")
+                continue
+            row = df.iloc[0]
+            total = int(row["rows"])
+            days  = int(row["days"])
+            cov   = round(days / EXPECTED_DAYS * 100, 1)
+            ic    = icon(cov >= 95, cov >= 80)
+            print(f"  {ic} {meta['label']:<35} {total:>7,} kayıt  {days} gün  kapsam: {cov}%")
+
     # ── PTF sanity ────────────────────────────────────────────────────────
     print_section("3. PTF DEĞER GEÇERLİLİĞİ")
     ptf = ptf_sanity(client)
@@ -372,8 +424,9 @@ def main():
     print(f"  ⚠️  Uyarı      : {warn_count}/{total_chk}")
     print(f"  ❌ Hatalı     : {err_count}/{total_chk}")
 
-    # Genel kapsam skoru
-    completed = [r for r in results.values() if "completeness_pct" in r]
+    # Genel kapsam skoru — %110 üstü multi-row tabloları hariç tut
+    completed = [r for r in results.values()
+                 if "completeness_pct" in r and r["completeness_pct"] <= 110]
     if completed:
         avg_coverage = sum(r["completeness_pct"] for r in completed) / len(completed)
         stale = [r for r in completed if r.get("freshness_days", 0) > 2]

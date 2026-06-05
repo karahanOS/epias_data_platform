@@ -100,8 +100,8 @@ sources:
 
       - name: outages
         description: "Santral arıza ve bakım bildirimleri"
-        loaded_at_field: "day"   # silver.outages'da tarih kolonu 'day', 'date' değil
-        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+        # Freshness yok: silver.outages.day INTEGER (epoch-ms) — timestamp değil,
+        # dbt source freshness bu tipi desteklemiyor
 
       - name: weather
         description: "Açık Meteo saatlik hava durumu (4 şehir: İstanbul, İzmir, Konya, Ankara)"

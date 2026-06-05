@@ -4,11 +4,17 @@
 -- which turns the 'time' string column into NULL for all rows.
 -- Using EXTRACT(HOUR FROM date) matches stg_pricing.sql's approach and produces
 -- consistent UTC hours that align correctly with stg_load_estimation.
+-- Kaynak veri kategori bazlı (rüzgar/güneş/jeotermal vb.) — saatte ~6 satır.
+-- SUM + GROUP BY ile saatlik aggregate alıyoruz (unique_key='date,hour' ile tutarlı).
 SELECT
-    CAST(date AS DATE) AS date,
-    EXTRACT(HOUR FROM date) AS hour,
-    CAST(forecast AS FLOAT64) AS forecasted_res_mwh,
-    CAST(generation AS FLOAT64) AS actual_res_generation_mwh
+    CAST(date AS DATE)                       AS date,
+    EXTRACT(HOUR FROM date)                  AS hour,
+    SUM(CAST(forecast    AS FLOAT64))        AS forecasted_res_mwh,
+    SUM(CAST(generation  AS FLOAT64))        AS actual_res_generation_mwh
 FROM {{ source('silver', 'res_forecast') }}
 
-{% if is_incremental() %} WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
+{% if is_incremental() %}
+WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }})
+{% endif %}
+
+GROUP BY 1, 2
