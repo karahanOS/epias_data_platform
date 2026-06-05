@@ -1,41 +1,107 @@
-# epias_dbt/models/staging/sources.yml
 version: 2
 
 sources:
   - name: silver
-    # Ortam değişkeninden GCP Proje ID'sini çeker, bulamazsa varsayılan olarak epias-data-platform kullanır.
     database: "{{ env_var('GCP_PROJECT_ID', 'epias-data-platform') }}"
     schema: silver
+
+    # dbt source freshness: `dbt source freshness` ile çalıştır
+    # warn_after  → son veriden bu kadar saat geçince uyarı
+    # error_after → bu kadar geçince hata (DAG fail)
+    loaded_at_field: date
+
     tables:
       # --- Piyasalar ve Fiyatlar ---
       - name: pricing
+        description: "Saatlik PTF fiyatları (Gün Öncesi Piyasası kapanış)"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: dam_clearing
+        description: "GÖP saatlik alış/satış eşleşme hacimleri"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: idm_transactions
+        description: "GİP (Gün İçi Piyasası) bireysel işlem kayıtları"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: smf
+        description: "Sistem Marjinal Fiyatı (DGP uzlaştırma fiyatı)"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: system_direction
-      
+        description: "Saatlik sistem yönü (ENERGY_DEFICIT / ENERGY_SURPLUS / IN_BALANCE)"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       # --- Üretim ve Arz ---
       - name: generation
+        description: "Kaynak bazlı saatlik gerçekleşen üretim (MWh)"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: unlicensed
+        description: "YEKDEM lisanssız üretim saatlik verileri"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: res_forecast
+        description: "RES (Yenilenebilir Enerji) tahmin vs gerçekleşen"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: aic
+        description: "Emre Amade (kullanılabilir) kapasite kaynak bazlı"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: supply_demand
-      - name: dpp       # BGÜP — Beyan Edilen Günlük Üretim Planı
-      - name: sbfgp     # KGÜP — Kesinleşmiş Günlük Üretim Planı (GİP sonrası)
-      
+        description: "Arz-Talep eğrisi veri noktaları"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
+      - name: dpp
+        description: "BGÜP — Beyan Edilen Günlük Üretim Planı (gün öncesi plan)"
+        # Backfill beklemede — freshness geçici olarak geniş tutuldu
+        freshness: {warn_after: {count: 72, period: hour}, error_after: {count: 168, period: hour}}
+
+      - name: sbfgp
+        description: "KGÜP — Kesinleşmiş Günlük Üretim Planı (GİP sonrası)"
+        freshness: {warn_after: {count: 72, period: hour}, error_after: {count: 168, period: hour}}
+
       # --- Tüketim ve Talep ---
       - name: load_estimation
+        description: "LEP yük tahmin planı (saatlik)"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: price_ind_bid
+        description: "Fiyattan bağımsız teklifler"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: consumption
-      
+        description: "Gerçekleşen tüketim verileri"
+
       # --- Dengesizlik ve DGP ---
       - name: imbalance
+        description: "Saatlik net dengesizlik miktarları"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: order_up
+        description: "YAL (Yük Alma) saatlik sistem geneli regülasyon hacimleri"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: order_down
-      
-      # --- Boyut (Dimension) ve Dış Faktör Tabloları ---
+        description: "YAT (Yük Atma) saatlik sistem geneli regülasyon hacimleri"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
+      # --- Boyut ve Dış Faktör Tabloları ---
       - name: participants
+        description: "EPIAŞ piyasa katılımcıları (şirket listesi)"
+
       - name: uevcb_list
+        description: "Uzlaştırma birimi listesi"
+
       - name: dams
+        description: "Baraj doluluk ve rezerv verileri (günlük)"
+        freshness: {warn_after: {count: 30, period: hour}, error_after: {count: 72, period: hour}}
+
       - name: outages
+        description: "Santral arıza ve bakım bildirimleri"
+        freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
+
       - name: weather
+        description: "Açık Meteo saatlik hava durumu (4 şehir: İstanbul, İzmir, Konya, Ankara)"
+        freshness: {warn_after: {count: 30, period: hour}, error_after: {count: 72, period: hour}}

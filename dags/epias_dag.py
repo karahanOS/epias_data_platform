@@ -250,11 +250,14 @@ with DAG(
 
     run_dbt = BashOperator(
         task_id='run_dbt_gold_models',
-        # stg_dpp/stg_sbfgp silver backfill tamamlanana kadar exclude'da
-        # mart_production_plan her ikisine bağlı — backfill sonrası kaldır
+        # Silver backfill'ler tamamlanana kadar exclude'da.
+        # Her backfill çalıştıktan sonra ilgili model bu listeden çıkarılacak:
+        #   stg_dpp         → silver_dpp_backfill
+        #   stg_sbfgp       → silver_sbfgp_backfill
+        #   stg_res_forecast → silver_res_forecast_backfill
         bash_command=(
             'cd /opt/airflow/epias_dbt && dbt run --profiles-dir . '
-            '--exclude stg_dpp stg_sbfgp mart_production_plan'
+            '--exclude stg_dpp stg_sbfgp stg_res_forecast mart_production_plan'
         ),
     )
     

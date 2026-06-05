@@ -8,11 +8,25 @@ class ResForecastSilverJob(BaseEpiasSparkJob):
         super().__init__(app_name="BronzeToSilver_ResForecast", source_name="res_forecast", primary_keys=["date"])
 
     def run(self, ds: str):
+        # Bronze Parquet may contain TIMESTAMP(NANOS,true) if the date column was
+        # written from a timezone-aware pandas DatetimeIndex.  nanosAsLong converts
+        # it to bigint (nanos since epoch) instead of throwing AnalysisException.
+        self.spark.conf.set("spark.sql.legacy.parquet.nanosAsLong", "true")
+
         df = self.read_bronze(ds)
         if df.rdd.isEmpty(): return
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+
+        # Handle both: ISO-string date and bigint nanoseconds-since-epoch date.
+        date_type = dict(df.dtypes).get("date", "")
+        if date_type in ("bigint", "long"):
+            df = df.withColumn("date", (F.col("date").cast("double") / 1_000_000_000).cast("timestamp"))
+        else:
+            df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+
         for col in df.columns:
-            if col != "date": df = df.withColumn(col, F.col(col).cast(DoubleType()))
+            if col != "date":
+                df = df.withColumn(col, F.col(col).cast(DoubleType()))
+
         self.write_silver(self.deduplicate(self.add_partition_columns(df, ds)))
         self.spark.stop()
 
