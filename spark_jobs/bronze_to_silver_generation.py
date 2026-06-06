@@ -32,7 +32,7 @@ class GenerationSilverJob(BaseEpiasSparkJob):
 
         self.logger.info("Lisanslı Üretim (Generation) verileri dönüştürülüyor...")
         
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
         
         # Olası kaynak tipleri (API'den dönen yapıya göre genişletilebilir)
         gen_types = ["total", "naturalGas", "dammedHydro", "lignite", "river", "importedCoal", "wind", "solar", "geothermal"]

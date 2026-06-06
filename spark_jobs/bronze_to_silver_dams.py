@@ -21,7 +21,7 @@ class DamsSilverJob(BaseEpiasSparkJob):
         if df.rdd.isEmpty(): return
 
         # Tarih kolonunu standart formata çeviriyoruz
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
 
         # Hacim ve seviye metriklerini ondalıklı sayıya (Double) çevir
         numeric_cols = ["activeVolume", "waterLevel", "totalCapacity"]

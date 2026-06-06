@@ -21,7 +21,7 @@ class ResForecastSilverJob(BaseEpiasSparkJob):
         if date_type in ("bigint", "long"):
             df = df.withColumn("date", (F.col("date").cast("double") / 1_000_000_000).cast("timestamp"))
         else:
-            df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+            df = df.withColumn("date", self.parse_epias_timestamp())
 
         for col in df.columns:
             if col != "date":

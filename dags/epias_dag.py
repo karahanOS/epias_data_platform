@@ -17,6 +17,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from epias_sources import EPIAS_SOURCES, DBT_EXCLUDE_PENDING_BACKFILL, SPARK_CONN_ID, make_silver_task
 
 # ── MODÜL YOLU ────────────────────────────────────────────────────────────────
 sys.path.insert(0, "/opt/airflow/src")
@@ -30,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 # ── AYARLAR ───────────────────────────────────────────────────────────────────
 BUCKET_NAME   = "epias-data-lake"
-SPARK_CONN_ID = "spark_default"
 
 # ── VERİ GECİKME TABLOSU ─────────────────────────────────────────────────────
 DATA_DELAYS: Dict[str, int] = {
@@ -151,35 +151,8 @@ with DAG(
     # =========================================================================
     # BRONZE LAYER (Sadece Yeni Mimarideki Aktif Kaynaklar)
     # =========================================================================
-    HOURLY_SOURCES: dict[str, tuple[str, str, bool]] = {
-        "pricing":          ("get_ptf_smf_sdf",                  "bronze/pricing",          False),
-        "smf":              ("get_smf",                          "bronze/smf",              False),
-        "consumption":      ("get_realtime_consumption",         "bronze/consumption",      False),
-        "supply_demand":    ("get_supply_demand",                "bronze/supply_demand",    False),
-        "dam_clearing":     ("get_dam_clearing_quantity",        "bronze/dam_clearing",     False),
-        "price_ind_bid":    ("get_price_independent_bid",        "bronze/price_ind_bid",    False),
-        "idm_transactions": ("get_idm_transaction_history",      "bronze/idm_transactions", False),
-        "order_up":         ("get_order_summary_up",             "bronze/order_up",         False),
-        "order_down":       ("get_order_summary_down",           "bronze/order_down",       False),
-        "system_direction": ("get_system_direction",             "bronze/system_direction", False),
-        "dpp":              ("get_dpp",                          "bronze/dpp",              False),
-        "injection":        ("get_injection_quantity",           "bronze/injection",        True),
-        "aic":              ("get_aic",                          "bronze/aic",              False),
-        "imbalance":        ("get_imbalance_quantity",           "bronze/imbalance",        False),
-        "unlicensed":       ("get_unlicensed_generation",        "bronze/unlicensed",       False),
-        "res_forecast":     ("get_res_generation_and_forecast",  "bronze/res_forecast",     False),
-        "generation":       ("get_realtime_generation",          "bronze/generation",       False),
-        "load_estimation":  ("get_load_estimation_plan",         "bronze/load_estimation",  False),
-        "uevcb_list":       ("get_uevcb_list",                   "bronze/uevcb_list",       True),
-        "outages":          ("get_outages",                      "bronze/outages",          False),
-        "dams":             ("get_dams",                         "bronze/dams",             False),
-    }
-
-    STATIC_SOURCES: Dict[str, Tuple[str, str, bool]] = {
-        "participants": ("get_market_participants", "bronze/participants", True),
-    }
-
-    ALL_SOURCES = {**HOURLY_SOURCES, **STATIC_SOURCES}
+    # v[4] = daily_eligible; v[:3] = (method_name, gcs_path, allow_empty)
+    ALL_SOURCES = {k: v[:3] for k, v in EPIAS_SOURCES.items() if v[4]}
 
     # Hava Durumu Özel Akış
     get_weather = PythonOperator(task_id="get_weather", python_callable=get_weather_data_callable)
@@ -226,16 +199,7 @@ with DAG(
 
     # API'den gelen veriler için silver task'lar
     for key in ALL_SOURCES:
-        silver_t = SparkSubmitOperator(
-            task_id=f"silver_{key}",
-            application=f"/opt/airflow/spark/bronze_to_silver_{key}.py",
-            py_files="/opt/airflow/spark/spark_utils.py",
-            jars="/opt/spark/jars/gcs-connector.jar",
-            conn_id=SPARK_CONN_ID,
-            application_args=["{{ ds }}"],
-            deploy_mode="client",
-            name=f"epias_silver_{key}",
-        )
+        silver_t = make_silver_task(dag, key)
         bronze_save_tasks[key] >> silver_t
         silver_tasks[key] = silver_t
 
@@ -250,14 +214,9 @@ with DAG(
 
     run_dbt = BashOperator(
         task_id='run_dbt_gold_models',
-        # Silver backfill'ler tamamlanana kadar exclude'da.
-        # Her backfill çalıştıktan sonra ilgili model bu listeden çıkarılacak:
-        #   stg_dpp         → silver_dpp_backfill
-        #   stg_sbfgp       → silver_sbfgp_backfill
-        #   stg_res_forecast → silver_res_forecast_backfill
         bash_command=(
             'cd /opt/airflow/epias_dbt && dbt run --profiles-dir . '
-            '--exclude stg_dpp stg_sbfgp stg_res_forecast mart_production_plan'
+            '--exclude ' + ' '.join(DBT_EXCLUDE_PENDING_BACKFILL)
         ),
     )
     

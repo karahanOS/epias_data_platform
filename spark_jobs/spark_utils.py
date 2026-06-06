@@ -115,6 +115,11 @@ class BaseEpiasSparkJob:
             df = df.select(F.explode("items").alias("data")).select("data.*")
         return df
 
+    @staticmethod
+    def parse_epias_timestamp(col_name: str = "date"):
+        """Parse an EPIAS ISO-8601 timestamp column to Spark TimestampType."""
+        return F.to_timestamp(F.col(col_name), "yyyy-MM-dd'T'HH:mm:ssXXX")
+
     def add_partition_columns(self, df, ds: str):
         """
         Normal mode : partition columns from the run date string (ds).

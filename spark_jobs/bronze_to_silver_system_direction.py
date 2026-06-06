@@ -22,7 +22,7 @@ class SystemDirectionSilverJob(BaseEpiasSparkJob):
 
         # Zaman formatını düzeltme
         if "date" in df.columns:
-            df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+            df = df.withColumn("date", self.parse_epias_timestamp())
 
         # Akıllı tekilleştirme ve yazma
         df = self.add_partition_columns(df, ds)

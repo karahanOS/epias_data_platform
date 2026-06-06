@@ -6,20 +6,17 @@ Purpose : Full retraining on all historical data. Saves model artifact to GCS.
 Runtime : 5–20 minutes. Acceptable for weekly/daily batch.
 """
 
-import os
 import logging
 import joblib
 import pandas as pd
 import xgboost as xgb
-from google.cloud import bigquery, storage
+from google.cloud import storage
 from sklearn.metrics import mean_absolute_error
+from config import GCP_PROJECT_ID as PROJECT_ID, BQ_GOLD_DATASET as DATASET_ID, GCS_BUCKET, get_bq_client
+from ptf_features import build_ptf_features
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("PTFTrainer")
-
-PROJECT_ID   = os.getenv("GCP_PROJECT_ID",   "epias-data-platform")
-DATASET_ID   = os.getenv("BQ_GOLD_DATASET",  "epias_gold")
-GCS_BUCKET   = os.getenv("GCS_BUCKET",       "epias-data-lake")
 MODEL_GCS_PATH = "models/ptf_xgb_model.joblib"
 IMPORTANCE_GCS_PATH = "models/ptf_shap_importance.csv"
 LOCAL_TMP    = "/tmp"
@@ -30,7 +27,7 @@ LOCAL_TMP    = "/tmp"
 def extract_training_data() -> pd.DataFrame:
     """Pull full history from Gold layer for training."""
     logger.info("Pulling full training data from BigQuery...")
-    client = bigquery.Client(project=PROJECT_ID)
+    client = get_bq_client()
 
     query = f"""
         SELECT
@@ -60,25 +57,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """Build full feature set for training. Requires full history for lag correctness."""
     logger.info("Engineering features...")
 
-    df["hour"]         = df.index.hour
-    df["day_of_week"]  = df.index.dayofweek
-    df["month"]        = df.index.month
-    df["is_weekend"]   = df["day_of_week"].isin([5, 6]).astype(int)
-
-    df["ptf_lag_24h"]  = df["ptf_try"].shift(24)
-    df["ptf_lag_168h"] = df["ptf_try"].shift(168)
-
-    # Supply shock columns come from a LEFT JOIN on mart_supply_shock_index, which is
-    # keyed by outage *start* date — not by the date each outage was *active*.  Outages
-    # that started before the training window have no matching row, so the join produces
-    # NULL for most dates.  Forward-fill propagates the last known value across the gap
-    # (reasonable: an outage present yesterday is likely still present today); any
-    # remaining NaN (e.g., no outage history at all) is filled with 0 (no supply shock).
-    for col in ["supply_shock_index", "total_outage_mwh", "total_available_capacity_mwh"]:
-        if col in df.columns:
-            df[col] = df[col].ffill().fillna(0.0)
-
-    df["supply_shock_trend_7d"] = df["supply_shock_index"].rolling(window=168).mean()
+    df = build_ptf_features(df)
 
     # Diagnose NaN distribution before dropping so failures are debuggable.
     nan_counts = df.isna().sum()

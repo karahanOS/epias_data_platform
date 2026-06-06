@@ -29,7 +29,7 @@ class SbfgpSilverJob(BaseEpiasSparkJob):
 
         self.logger.info("SBFGP (KGÜP) verisi için tipler dönüştürülüyor...")
 
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
 
         # Cast all numeric columns to Double to prevent INT64/DOUBLE schema drift
         _id_cols = {"date", "time"}

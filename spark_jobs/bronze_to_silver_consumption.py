@@ -20,7 +20,7 @@ class ConsumptionSilverJob(BaseEpiasSparkJob):
             df = df.withColumnRenamed("actualConsumption", "consumption")
 
         # Zaman dönüşümü
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
         
         # Sayısal alanları cast et
         df = df.withColumn("consumption", F.col("consumption").cast(DoubleType()))

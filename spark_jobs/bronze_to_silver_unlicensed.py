@@ -33,7 +33,7 @@ class UnlicensedSilverJob(BaseEpiasSparkJob):
         self.logger.info("Lisanssız üretim tipleri dönüştürülüyor...")
         
         # Tarih standardizasyonu
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
         
         # Üretim tiplerini topluca Double yapıyoruz
         generation_types = ["solar", "wind", "biogas", "biomass", "canalType", "river", "total"]

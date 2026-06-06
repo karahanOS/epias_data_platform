@@ -18,7 +18,6 @@ Kullanım:
 
 from __future__ import annotations  # Python 3.8 uyumlu generic type hints
 
-import os
 import sys
 import argparse
 import logging
@@ -26,12 +25,10 @@ from datetime import date, datetime
 from typing import Dict, List, Optional
 import pandas as pd
 from google.cloud import bigquery
+from config import GCP_PROJECT_ID as PROJECT, BQ_GOLD_DATASET as GOLD, get_bq_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("DQCheck")
-
-PROJECT   = os.getenv("GCP_PROJECT_ID", "epias-data-platform")
-GOLD      = os.getenv("BQ_GOLD_DATASET", "epias_gold")
 START_DATE = date(2025, 1, 1)
 TODAY      = date.today()
 EXPECTED_DAYS  = (TODAY - START_DATE).days + 1
@@ -82,7 +79,7 @@ MART_TABLES = [
 
 # ── Bağlantı ────────────────────────────────────────────────────────────────
 def get_client() -> bigquery.Client:
-    return bigquery.Client(project=PROJECT)
+    return get_bq_client()
 
 def q(client: bigquery.Client, sql: str) -> pd.DataFrame:
     try:

@@ -29,7 +29,7 @@ class InjectionSilverJob(BaseEpiasSparkJob):
 
         self.logger.info("Gerçekleşen Üretim (Injection) tipleri dönüştürülüyor...")
         
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
         
         if "total" in df.columns:
             df = df.withColumn("total", F.col("total").cast(DoubleType()))

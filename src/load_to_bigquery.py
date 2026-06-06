@@ -6,10 +6,10 @@ BigQuery'de "External Table" olarak yaratır/günceller.
 Veri kopyalanmaz, dbt doğrudan bu tabloları okuyarak Gold katmanını BigQuery içinde inşa eder.
 """
 
-import os
 import logging
 from google.cloud import bigquery
 from google.api_core.exceptions import NotFound
+from config import GCP_PROJECT_ID, GCS_BUCKET, get_bq_client
 
 # Loglama Ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,14 +17,10 @@ logger = logging.getLogger("BQLoader")
 
 class BQExternalTableManager:
     def __init__(self):
-        # 1. FIX: Proje adını dinamik ve doğru şekilde çek (Varsayılanı senin GCP'deki asıl adın yap)
-        # ÖNEMLİ: Eğer GCP projenin adı "epias-data-platform" ise aşağıdaki varsayılanı ona göre değiştir!
-        self.project_id = os.getenv("GCP_PROJECT_ID", "epias-data-platform")  # <--- BURAYI KONTROL ET
-        
-        # Diğer ayarlar
+        self.project_id = GCP_PROJECT_ID
         self.dataset_id = "silver"
-        self.bucket_name = "epias-data-lake"
-        self.client = bigquery.Client(project=self.project_id)
+        self.bucket_name = GCS_BUCKET
+        self.client = get_bq_client()
         
         self._ensure_dataset_exists()
 

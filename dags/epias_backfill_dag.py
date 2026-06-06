@@ -28,6 +28,7 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.models import Variable
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from epias_sources import EPIAS_SOURCES, DBT_EXCLUDE_PENDING_BACKFILL, SPARK_CONN_ID, make_silver_task
 
 sys.path.insert(0, "/opt/airflow/src")
 try:
@@ -43,32 +44,12 @@ BACKFILL_START_DATE = Variable.get("backfill_start_date", default_var="2025-01-0
 BACKFILL_END_DATE   = datetime.utcnow().strftime("%Y-%m-%d")
 WEEK_CHUNK_DAYS     = 7      # Process 1 week at a time per task
 BUCKET_NAME         = "epias-data-lake"
-SPARK_CONN_ID       = "spark_default"
 
 # ── SOURCES TO BACKFILL ───────────────────────────────────────────────────────
 # Only include sources where historical data is meaningful.
 # Excluded: get_market_participants (static, no date), get_uevcb_list (slow bulk)
-BACKFILL_SOURCES: dict[str, tuple[str, str, bool]] = {
-    "pricing":          ("get_ptf_smf_sdf",                 "bronze/pricing",          False),
-    "smf":              ("get_smf",                         "bronze/smf",              False),
-    "consumption":      ("get_realtime_consumption",        "bronze/consumption",      False),
-    "supply_demand":    ("get_supply_demand",               "bronze/supply_demand",    False),
-    "dam_clearing":     ("get_dam_clearing_quantity",       "bronze/dam_clearing",     False),
-    "price_ind_bid":    ("get_price_independent_bid",       "bronze/price_ind_bid",    False),
-    "idm_transactions": ("get_idm_transaction_history",     "bronze/idm_transactions", False),
-    "order_up":         ("get_order_summary_up",            "bronze/order_up",         False),
-    "order_down":       ("get_order_summary_down",          "bronze/order_down",       False),
-    "system_direction": ("get_system_direction",            "bronze/system_direction", False),
-    "dpp":              ("get_dpp",                         "bronze/dpp",              False),
-    "sbfgp":           ("get_sbfgp",                        "bronze/sbfgp",            False),
-    "aic":              ("get_aic",                         "bronze/aic",              False),
-    "imbalance":        ("get_imbalance_quantity",          "bronze/imbalance",        False),
-    "res_forecast":     ("get_res_generation_and_forecast", "bronze/res_forecast",     False),
-    "generation":       ("get_realtime_generation",         "bronze/generation",       False),
-    "load_estimation":  ("get_load_estimation_plan",        "bronze/load_estimation",  False),
-    "outages":          ("get_outages",                     "bronze/outages",          False),
-    "dams":             ("get_dams",                        "bronze/dams",             False),
-}
+# v[3] = backfill_eligible; v[:3] = (method_name, gcs_path, allow_empty)
+BACKFILL_SOURCES = {k: v[:3] for k, v in EPIAS_SOURCES.items() if v[3]}
 
 # ── CHUNK GENERATOR ───────────────────────────────────────────────────────────
 
@@ -234,24 +215,7 @@ with DAG(
     silver_tasks: dict[str, SparkSubmitOperator] = {}
 
     for source_key in BACKFILL_SOURCES:
-        silver_t = SparkSubmitOperator(
-            task_id=f"silver_{source_key}_backfill",
-            application=f"/opt/airflow/spark/bronze_to_silver_{source_key}.py",
-            py_files="/opt/airflow/spark/spark_utils.py",
-            jars="/opt/spark/jars/gcs-connector.jar",
-            conn_id=SPARK_CONN_ID,
-            # Pass dummy date + --backfill flag; actual dates come from the data itself
-            application_args=["1970-01-01", "--backfill"],
-            deploy_mode="client",
-            name=f"epias_silver_{source_key}_backfill",
-            # NOTE: No executor_memory/cores override here.
-            # The Spark worker registered with 1024 MiB — requesting more than
-            # that causes immediate failure (no executor can be placed).
-            # OOM is prevented in spark_utils.py via:
-            #   - SYNCABLE_COMPOSITE GCS streaming (no full-partition heap buffer)
-            #   - repartition(200) before write (small files per task)
-            #   - AQE coalescing disabled via spark.sql.shuffle.partitions=400
-        )
+        silver_t = make_silver_task(dag, source_key, is_backfill=True)
         # Bronze last chunk → Silver Spark job (per source, independent of other sources)
         bronze_last_tasks[source_key] >> silver_t
         silver_tasks[source_key] = silver_t
@@ -301,15 +265,9 @@ with DAG(
     # =========================================================================
     run_dbt_backfill = BashOperator(
         task_id="run_dbt_full_refresh",
-        # Bekleyen silver backfill'ler tamamlanana kadar exclude'da:
-        #   stg_dpp        : silver.dpp INT64/DOUBLE drift (silver_dpp_backfill sonrası kaldır)
-        #   stg_sbfgp      : silver.sbfgp henüz yok (silver_sbfgp_backfill sonrası kaldır)
-        #   stg_res_forecast: silver.res_forecast TIMESTAMP(NANOS)/int overflow
-        #                     (silver_res_forecast_backfill sonrası kaldır)
-        #   Downstream'lar dbt tarafından otomatik SKIP edilir; burada belirtmeye gerek yok.
         bash_command=(
             "cd /opt/airflow/epias_dbt && dbt run --profiles-dir . --full-refresh "
-            "--exclude stg_dpp stg_sbfgp stg_res_forecast mart_production_plan"
+            "--exclude " + " ".join(DBT_EXCLUDE_PENDING_BACKFILL)
         ),
     )
 

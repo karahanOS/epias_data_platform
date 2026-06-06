@@ -23,12 +23,12 @@ class OutagesSilverJob(BaseEpiasSparkJob):
         # Kesinti verilerinde bazen doğrudan 'date' yerine 'startDate' ve 'endDate' bulunur.
         # Partitioning için 'date' kolonu üretiyoruz.
         if "date" in df.columns:
-            df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+            df = df.withColumn("date", self.parse_epias_timestamp())
         elif "startDate" in df.columns:
-            df = df.withColumn("date", F.to_timestamp(F.col("startDate"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
-            df = df.withColumn("startDate", F.to_timestamp(F.col("startDate"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+            df = df.withColumn("date", self.parse_epias_timestamp("startDate"))
+            df = df.withColumn("startDate", self.parse_epias_timestamp("startDate"))
             if "endDate" in df.columns:
-                df = df.withColumn("endDate", F.to_timestamp(F.col("endDate"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+                df = df.withColumn("endDate", self.parse_epias_timestamp("endDate"))
 
         # Kapasite kayıplarını Double yapıyoruz
         numeric_cols = ["installedCapacity", "availableCapacity", "outageCapacity"]

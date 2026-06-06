@@ -10,7 +10,7 @@ class GenForecastSilverJob(BaseEpiasSparkJob):
     def run(self, ds: str):
         df = self.read_bronze(ds)
         if df.rdd.isEmpty(): return
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
         for col in df.columns:
             if col != "date": df = df.withColumn(col, F.col(col).cast(DoubleType()))
         self.write_silver(self.deduplicate(self.add_partition_columns(df, ds)))

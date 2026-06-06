@@ -15,7 +15,7 @@ class SmfSilverJob(BaseEpiasSparkJob):
         df = self.read_bronze(ds)
         if df.rdd.isEmpty(): return
         
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
         
         if "systemMarginalPrice" in df.columns:
             df = df.withColumn("systemMarginalPrice", F.col("systemMarginalPrice").cast(DoubleType()))

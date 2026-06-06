@@ -7,20 +7,17 @@ Purpose : Load pre-trained model from GCS, pull only the last 168 rows needed
 Runtime : 3–8 seconds. Scales to any cadence without retraining.
 """
 
-import os
 import logging
 import joblib
 import tempfile
 import pandas as pd
 from datetime import datetime, timezone
-from google.cloud import bigquery, storage
+from google.cloud import storage
+from config import GCP_PROJECT_ID as PROJECT_ID, BQ_GOLD_DATASET as DATASET_ID, GCS_BUCKET, get_bq_client
+from ptf_features import build_ptf_features
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("PTFInference")
-
-PROJECT_ID      = os.getenv("GCP_PROJECT_ID",  "epias-data-platform")
-DATASET_ID      = os.getenv("BQ_GOLD_DATASET", "epias_gold")
-GCS_BUCKET      = os.getenv("GCS_BUCKET",      "epias-data-lake")
 MODEL_GCS_PATH  = "models/ptf_xgb_model.joblib"
 PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_ptf_predictions"
 
@@ -46,7 +43,7 @@ def load_model_from_gcs() -> dict:
 def extract_recent_data() -> pd.DataFrame:
     """Pull only the last LOOKBACK_HOURS rows — not the full history."""
     logger.info(f"Pulling last {LOOKBACK_HOURS} hours from BigQuery...")
-    client = bigquery.Client(project=PROJECT_ID)
+    client = get_bq_client()
 
     query = f"""
         SELECT
@@ -74,15 +71,7 @@ def extract_recent_data() -> pd.DataFrame:
 
 def build_inference_features(df: pd.DataFrame, required_features: list) -> pd.DataFrame:
     """Build the same feature set as training, return only the latest row."""
-    df["hour"]        = df.index.hour
-    df["day_of_week"] = df.index.dayofweek
-    df["month"]       = df.index.month
-    df["is_weekend"]  = df["day_of_week"].isin([5, 6]).astype(int)
-
-    df["ptf_lag_24h"]  = df["ptf_try"].shift(24)
-    df["ptf_lag_168h"] = df["ptf_try"].shift(168)
-
-    df["supply_shock_trend_7d"] = df["supply_shock_index"].rolling(window=168).mean()
+    df = build_ptf_features(df)
 
     df.dropna(inplace=True)
 
@@ -96,7 +85,7 @@ def build_inference_features(df: pd.DataFrame, required_features: list) -> pd.Da
 
 def write_prediction_to_bq(predicted_date: pd.Timestamp, hour: int, predicted_ptf: float) -> None:
     """Append a single prediction row to BigQuery."""
-    client = bigquery.Client(project=PROJECT_ID)
+    client = get_bq_client()
     rows = [{
         "predicted_date": predicted_date.strftime("%Y-%m-%d"),
         "hour":           str(hour),

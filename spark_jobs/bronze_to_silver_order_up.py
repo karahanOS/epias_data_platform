@@ -29,7 +29,7 @@ class OrderUpSilverJob(BaseEpiasSparkJob):
 
         self.logger.info("Yük Alma (YAL) verileri dönüştürülüyor...")
         
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
         
         dgp_metrics = [
             "upRegulationZeroCodedOfferPrice",

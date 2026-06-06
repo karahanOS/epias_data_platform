@@ -36,7 +36,7 @@ class DamClearingSilverJob(BaseEpiasSparkJob):
         self.logger.info("Dam Clearing verisi için tipler dönüştürülüyor...")
         
         # Tarih formatını standartlaştır
-        df = df.withColumn("date", F.to_timestamp(F.col("date"), "yyyy-MM-dd'T'HH:mm:ssXXX"))
+        df = df.withColumn("date", self.parse_epias_timestamp())
         
         # Miktar ve hacim kolonlarını güvenli bir şekilde Double'a cast et
         numeric_cols = [
