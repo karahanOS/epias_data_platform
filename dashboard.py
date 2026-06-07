@@ -981,14 +981,24 @@ elif page == "🤖 PTF Tahmin & ML":
         df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
         df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").astype(int)
 
-        # BigQuery DATE columns arrive as Python datetime.date objects (object dtype).
-        # pd.to_datetime() on predicted_date produces datetime64[ns].
-        # Merging object vs datetime64 raises ValueError in pandas — coerce both sides
-        # to datetime64[ns] so the join keys share the same dtype.
-        df_lag["date"] = pd.to_datetime(df_lag["date"])
+        # Backtesting: fetch actual PTF for the EXACT date range present in
+        # gold_ptf_predictions — independent of the sidebar year/month filter.
+        # Using df_lag (which is year/month-filtered) would cause an empty merge
+        # whenever predictions fall outside the selected period (e.g. today's
+        # predictions with a month filter on, or predictions from a future year).
+        _bt_min = df_pred["predicted_date"].min().strftime("%Y-%m-%d")
+        _bt_max = df_pred["predicted_date"].max().strftime("%Y-%m-%d")
+        df_actual = query(f"""
+            SELECT date, hour, ptf_try
+            FROM {tbl('mart_ptf_lag_features')}
+            WHERE date BETWEEN '{_bt_min}' AND '{_bt_max}'
+            ORDER BY date, hour
+        """)
+        df_actual["date"] = pd.to_datetime(df_actual["date"])
 
-        merged = df_lag.merge(
-            df_pred, left_on=["date","hour"], right_on=["predicted_date","hour"], how="inner")
+        merged = df_actual.merge(
+            df_pred, left_on=["date", "hour"], right_on=["predicted_date", "hour"],
+            how="inner")
 
         if not merged.empty:
             mae = (merged["ptf_try"] - merged["predicted_ptf"]).abs().mean()
