@@ -14,7 +14,7 @@ import pandas as pd
 from datetime import datetime, timezone
 from google.cloud import storage, bigquery
 from config import GCP_PROJECT_ID as PROJECT_ID, BQ_GOLD_DATASET as DATASET_ID, GCS_BUCKET, get_bq_client
-from ptf_features import build_ptf_features
+from ptf_features import build_ptf_features, FEATURE_COLS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("PTFInference")
@@ -48,34 +48,32 @@ def load_model_from_gcs() -> dict:
 # ── FEATURE EXTRACTION ────────────────────────────────────────────────────────
 
 def extract_recent_data() -> pd.DataFrame:
-    """Pull only the last LOOKBACK_HOURS rows — not the full history."""
-    logger.info(f"Pulling last {LOOKBACK_HOURS} hours from BigQuery...")
+    """Pull only the last LOOKBACK_HOURS rows from mart_ptf_lag_features.
+
+    Uses the same Gold table as the trainer so feature columns match exactly.
+    LIMIT + DESC ordering fetches only the tail of history — fast for inference.
+    """
+    logger.info(f"Pulling last {LOOKBACK_HOURS} hours from mart_ptf_lag_features...")
     client = get_bq_client()
 
-    # Use `datetime` (hourly TIMESTAMP), not `date` (daily DATE).
-    # mart_forecasted_residual_load exposes both; `datetime` is
-    # TIMESTAMP_ADD(CAST(date AS TIMESTAMP), INTERVAL hour HOUR) — the
-    # same index that ptf_trainer.py sets, so lag/rolling features align.
-    # Ordering by `f.datetime` instead of `f.date` is also unambiguous:
-    # `ORDER BY f.date` is non-deterministic within the same day (24 rows
-    # share the same date value), leading to random row ordering.
     query = f"""
-        SELECT
-            f.datetime,
-            f.ptf_try,
-            f.forecasted_residual_load_mwh,
-            f.price_independent_bid_mwh,
-            s.total_available_capacity_mwh,
-            s.total_outage_mwh,
-            s.supply_shock_index
-        FROM `{PROJECT_ID}.{DATASET_ID}.mart_forecasted_residual_load` f
-        LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.mart_supply_shock_index` s
-            ON f.date = s.date
-        ORDER BY f.datetime DESC
+        SELECT *
+        FROM `{PROJECT_ID}.{DATASET_ID}.mart_ptf_lag_features`
+        WHERE date IS NOT NULL AND ptf_try IS NOT NULL
+        ORDER BY date DESC, hour DESC
         LIMIT {LOOKBACK_HOURS}
     """
     df = client.query(query).to_dataframe()
-    df["datetime"] = pd.to_datetime(df["datetime"])
+
+    # Build datetime index (Turkish local, UTC+3)
+    if "datetime" in df.columns:
+        df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_localize(None)
+    else:
+        df["datetime"] = (
+            pd.to_datetime(df["date"].astype(str))
+            + pd.to_timedelta(df["hour"], unit="h")
+        )
+
     df = df.sort_values("datetime").set_index("datetime")
     logger.info(f"Fetched {len(df)} rows — latest: {df.index.max()}")
     return df
@@ -94,7 +92,7 @@ def build_inference_features(df: pd.DataFrame, required_features: list) -> pd.Da
     # being backfilled (e.g. stg_res_forecast pending backfill).  A bare dropna()
     # would wipe the entire DataFrame, causing the downstream iloc[[-1]] crash.
     # XGBoost handles NaN feature values natively, so sparse columns are safe.
-    core_cols = [c for c in ["ptf_lag_24h", "ptf_lag_168h", "supply_shock_trend_7d"]
+    core_cols = [c for c in ["ptf_lag_24h", "ptf_lag_168h"]
                  if c in df.columns]
     df.dropna(subset=core_cols, inplace=True)
 

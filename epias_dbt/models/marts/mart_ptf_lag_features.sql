@@ -21,17 +21,36 @@ WITH base AS (
 with_lags AS (
     SELECT
         *,
-        -- 1 saat önceki PTF
-        LAG(ptf_try, 1) OVER (ORDER BY date, hour) AS ptf_lag_1h,
-        -- 24 saat önceki PTF (Dün aynı saat)
-        LAG(ptf_try, 24) OVER (ORDER BY date, hour) AS ptf_lag_24h,
-        -- 168 saat önceki PTF (Geçen hafta aynı saat)
-        LAG(ptf_try , 168) OVER (ORDER BY date, hour) AS ptf_lag_168h,
-        -- Son 24 saatin ortalaması
+        -- Datetime sütunu (trainer için datetime index)
+        TIMESTAMP_ADD(
+            TIMESTAMP(date, 'Asia/Istanbul'),
+            INTERVAL CAST(hour AS INT64) HOUR
+        ) AS datetime,
+
+        -- PTF Lag özellikleri
+        LAG(ptf_try, 1)   OVER (ORDER BY date, hour) AS ptf_lag_1h,
+        LAG(ptf_try, 24)  OVER (ORDER BY date, hour) AS ptf_lag_24h,
+        LAG(ptf_try, 168) OVER (ORDER BY date, hour) AS ptf_lag_168h,
+
+        -- Son 24 saatlik istatistikler (önceki gün aynı saat profili)
         AVG(ptf_try) OVER (
-            ORDER BY date, hour 
+            ORDER BY date, hour
             ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING
-        ) AS ptf_rolling_avg_24h
+        ) AS ptf_rolling_avg_24h,
+        MAX(ptf_try) OVER (
+            ORDER BY date, hour
+            ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING
+        ) AS ptf_rolling_max_24h,
+        MIN(ptf_try) OVER (
+            ORDER BY date, hour
+            ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING
+        ) AS ptf_rolling_min_24h,
+
+        -- Son 168 saatlik (7 gün) hareketli ortalama — haftalık mevsimsellik
+        AVG(ptf_try) OVER (
+            ORDER BY date, hour
+            ROWS BETWEEN 168 PRECEDING AND 1 PRECEDING
+        ) AS ptf_rolling_avg_168h
     FROM base
 )
 

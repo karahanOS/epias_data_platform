@@ -59,18 +59,48 @@ aic AS (
 -- ── Gerçekleşen Üretim Karışımı ──────────────────────────────────────────
 -- Yenilenebilir (rüzgar+güneş+akarsu) / toplam üretim oranı
 -- Literature: merit-order effect → yüksek RES penetrasyonu PTF'i aşağı iter
+-- Ayrıca gaz ve baraj üretimi PTF tahmininde önemli merit-order sinyalleridir.
 gen AS (
     SELECT
         date, hour,
-        -- stg_generation kolon isimleri: wind_generation_mwh, solar_generation_mwh, river_generation_mwh
-        wind_generation_mwh + solar_generation_mwh + river_generation_mwh
-                                                        AS actual_renewable_mwh,
+        COALESCE(wind_generation_mwh, 0)                AS wind_generation_mwh,
+        COALESCE(solar_generation_mwh, 0)               AS solar_generation_mwh,
+        COALESCE(dam_generation_mwh, 0)
+            + COALESCE(river_generation_mwh, 0)         AS hydro_generation_mwh,
+        COALESCE(gas_generation_mwh, 0)                 AS gas_generation_mwh,
         total_generation_mwh,
+        COALESCE(wind_generation_mwh, 0)
+            + COALESCE(solar_generation_mwh, 0)
+            + COALESCE(river_generation_mwh, 0)
+            + COALESCE(dam_generation_mwh, 0)           AS actual_renewable_mwh,
         SAFE_DIVIDE(
-            wind_generation_mwh + solar_generation_mwh + river_generation_mwh,
+            COALESCE(wind_generation_mwh, 0)
+                + COALESCE(solar_generation_mwh, 0)
+                + COALESCE(river_generation_mwh, 0)
+                + COALESCE(dam_generation_mwh, 0),
             total_generation_mwh
         )                                               AS actual_renewable_ratio
     FROM {{ ref('stg_generation') }}
+),
+-- ── Gerçekleşen Tüketim ───────────────────────────────────────────────────
+-- Talep sürprizi = gerçekleşen − tahmin → güçlü PTF sinyali
+consumption AS (
+    SELECT date, hour, actual_consumption AS actual_consumption_mwh
+    FROM {{ ref('stg_load_vs_actual') }}
+),
+-- ── Hava Durumu (Ulusal Ortalama) ─────────────────────────────────────────
+-- Şehir bazlı verinin ulusal ortalaması; sıcaklık ısıtma/soğutma yükünü,
+-- rüzgar hızı rüzgar üretimini, güneş radyasyonu güneş üretimini etkiler.
+-- stg_weather granülüne göre birden fazla şehir olabilir → AVG alıyoruz.
+weather_nat AS (
+    SELECT
+        date, hour,
+        AVG(temperature_celsius)   AS temperature_celsius,
+        AVG(wind_speed_kmh)        AS wind_speed_kmh,
+        AVG(shortwave_radiation)   AS shortwave_radiation,
+        AVG(relative_humidity)     AS relative_humidity
+    FROM {{ ref('stg_weather') }}
+    GROUP BY 1, 2
 ),
 -- ── Net İmbalans (DGP Baskısı) ────────────────────────────────────────────
 imbalance AS (
@@ -135,6 +165,12 @@ SELECT
     -- ── 5. Gerçekleşen Üretim Karışımı ───────────────────────────────────
     COALESCE(g.actual_renewable_mwh, 0)             AS actual_renewable_mwh,
     COALESCE(g.actual_renewable_ratio, 0)           AS actual_renewable_ratio,
+    -- Bireysel kaynak türleri (merit order sıralaması için)
+    COALESCE(g.wind_generation_mwh, 0)              AS wind_generation_mwh,
+    COALESCE(g.solar_generation_mwh, 0)             AS solar_generation_mwh,
+    COALESCE(g.hydro_generation_mwh, 0)             AS hydro_generation_mwh,
+    COALESCE(g.gas_generation_mwh, 0)               AS gas_generation_mwh,
+    COALESCE(g.total_generation_mwh, 0)             AS total_generation_mwh,
 
     -- ── 6. İmbalans Sinyali ───────────────────────────────────────────────
     COALESCE(imb.net_imbalance_mwh, 0)              AS net_imbalance_mwh,
@@ -153,7 +189,18 @@ SELECT
     COALESCE(cl.yat_delivered_mwh, 0)              AS yat_lag24,
     COALESCE(cl.net_dgp_mwh, 0)                   AS net_dgp_lag24,
 
-    -- ── 9. Zaman Bileşenleri (sin/cos Python'da eklenir) ─────────────────
+    -- ── 9. Gerçekleşen Tüketim & Talep Sürprizi ─────────────────────────
+    -- Talep sürprizi = gerçekleşen − tahmin; pozitif → beklentiden yüksek tüketim
+    c.actual_consumption_mwh,
+    (c.actual_consumption_mwh - l.forecasted_load_mwh) AS consumption_error_mwh,
+
+    -- ── 10. Hava Durumu (Ulusal Ortalama) ────────────────────────────────
+    w.temperature_celsius,
+    w.wind_speed_kmh,
+    w.shortwave_radiation,
+    w.relative_humidity,
+
+    -- ── 11. Zaman Bileşenleri (sin/cos Python'da eklenir) ────────────────
     EXTRACT(DAYOFWEEK FROM p.date)                  AS day_of_week,
     EXTRACT(MONTH FROM p.date)                      AS month,
     EXTRACT(YEAR FROM p.date)                       AS year
@@ -168,6 +215,8 @@ LEFT JOIN aic a           ON p.date = a.date AND p.hour = a.hour
 LEFT JOIN gen g           ON p.date = g.date AND p.hour = g.hour
 LEFT JOIN imbalance imb   ON p.date = imb.date AND p.hour = imb.hour
 LEFT JOIN gip_daily gd    ON p.date = gd.trade_date
+LEFT JOIN consumption c   ON p.date = c.date AND p.hour = c.hour
+LEFT JOIN weather_nat w   ON p.date = w.date AND p.hour = w.hour
 -- T-24 lag: bugünün saati için dünün aynı saatinin cross-market verisi
 LEFT JOIN cross_lag cl    ON cl.date = DATE_SUB(p.date, INTERVAL 1 DAY)
                          AND cl.hour = p.hour
