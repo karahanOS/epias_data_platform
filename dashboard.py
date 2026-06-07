@@ -1013,7 +1013,7 @@ elif page == "🤖 PTF Tahmin & ML":
             st.write("**df_pred** (predictions in BQ):")
             st.write(f"  rows={len(df_pred)}, dtypes: predicted_date={df_pred['predicted_date'].dtype}, hour={df_pred['hour'].dtype}")
             st.dataframe(df_pred.head(10))
-            st.write("**df_actual** (actuals from mart_ptf_lag_features):")
+            st.write("**df_actual** (actuals from mart_forecasted_residual_load):")
             if df_actual.empty:
                 st.error(f"⚠️ df_actual is EMPTY — mart_forecasted_residual_load has no rows with non-null ptf_try for {_bt_min} → {_bt_max}")
             else:
