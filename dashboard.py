@@ -537,9 +537,10 @@ elif page == "📊 GÖP Piyasa Hacimleri":
             fig3.add_trace(go.Scatter(
                 x=out_merit["cumulative_supply_mwh"], y=out_merit["bid_offer_price_try"],
                 mode="lines", name="Eşleşmedi", line=dict(color="#ef4444", width=2)))
+            _demand = df_mo.dropna(subset=["cumulative_demand_mwh"])
             fig3.add_trace(go.Scatter(
-                x=df_mo["cumulative_demand_mwh"].dropna(),
-                y=df_mo["bid_offer_price_try"],
+                x=_demand["cumulative_demand_mwh"],
+                y=_demand["bid_offer_price_try"],
                 mode="lines", name="Talep Eğrisi",
                 line=dict(color="#7c3aed", width=2, dash="dash")))
             if ptf_val is not None:
