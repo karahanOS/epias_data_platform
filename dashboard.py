@@ -23,6 +23,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 from google.cloud import bigquery
+from google.api_core.exceptions import NotFound as BQNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,9 @@ _DARK_AXIS = dict(gridcolor="rgba(255,255,255,0.05)")
 MONTHS_TR = {1:"Oca",2:"Şub",3:"Mar",4:"Nis",5:"May",6:"Haz",
              7:"Tem",8:"Ağu",9:"Eyl",10:"Eki",11:"Kas",12:"Ara"}
 
+# BigQuery EXTRACT(DAYOFWEEK) → 1=Sun … 7=Sat
+DOW_TR = {1:"Paz", 2:"Pzt", 3:"Sal", 4:"Çar", 5:"Per", 6:"Cum", 7:"Cmt"}
+
 def dark(fig, height=420, **extra):
     """Apply dark theme.  Caller xaxis/yaxis dicts are merged with dark defaults."""
     xaxis = {**_DARK_AXIS, **extra.pop("xaxis", {})}
@@ -133,12 +137,26 @@ def get_client():
 def query(sql: str) -> pd.DataFrame:
     try:
         return get_client().query(sql).to_dataframe()
+    except BQNotFound:
+        # Table doesn't exist yet — expected for tables populated by scheduled jobs
+        # (e.g. gold_ptf_predictions before the first inference run).
+        # Return empty silently; callers show context-appropriate messages.
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Sorgu hatası: {e}")
         return pd.DataFrame()
 
 def tbl(mart: str) -> str:
     return f"`{PROJECT}.{DATASET}.{mart}`"
+
+# ── DATA FRESHNESS ────────────────────────────────────────────────────────────
+@st.cache_data(ttl=600)
+def get_last_updated() -> str:
+    """Return the most recent date available in mart_price_analysis."""
+    df = query(f"SELECT MAX(date) AS last_date FROM {tbl('mart_price_analysis')}")
+    if df.empty or pd.isna(df["last_date"].iloc[0]):
+        return "Bilinmiyor"
+    return pd.to_datetime(df["last_date"].iloc[0]).strftime("%Y-%m-%d")
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -166,14 +184,33 @@ with st.sidebar:
     ], label_visibility="collapsed")
 
     st.markdown("---")
+
+    # ── GLOBAL YEAR FILTER ──────────────────────────────────────────────────
+    # Stored in session_state["sel_year"]; all pages read it via the `sel_year`
+    # variable defined below.  Changing it here triggers a full page rerender
+    # so the new year's data is immediately queried server-side.
+    _now_year = pd.Timestamp.now().year
+    _year_opts = [_now_year, _now_year - 1, _now_year - 2, _now_year - 3]
+    st.selectbox("📅 Analiz Yılı", _year_opts, index=0, key="sel_year")
+
+    st.markdown("---")
     if st.button("🔄 Veriyi Yenile", use_container_width=True):
-        st.cache_data.clear()
+        # query.clear() invalidates only BQ cache — @st.cache_resource (BQ client)
+        # is intentionally preserved so the connection is not re-created on refresh.
+        query.clear()
         st.rerun()
+
+    # Data freshness indicator
+    _last_updated = get_last_updated()
     st.markdown(
-        "<div style='font-size:.7rem;color:#64748b;'>"
-        "Kaynak: EPIAŞ Şeffaflık Platformu<br>Pipeline: Airflow → Spark → dbt → BQ"
-        "</div>", unsafe_allow_html=True
+        f"<div style='font-size:.7rem;color:#64748b;margin-top:8px;'>"
+        f"🕐 Son veri: <b style='color:#10b981'>{_last_updated}</b><br>"
+        f"Kaynak: EPIAŞ Şeffaflık Platformu<br>Pipeline: Airflow → Spark → dbt → BQ"
+        f"</div>", unsafe_allow_html=True
     )
+
+# ── GLOBAL YEAR (read from sidebar widget, set in session_state) ──────────────
+sel_year: int = st.session_state.get("sel_year", pd.Timestamp.now().year)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 1 — EXECUTIVE SUMMARY
@@ -186,6 +223,7 @@ if page == "🏠 Executive Summary":
         <p>Türkiye elektrik piyasasına aylık bakış — PTF, tüketim ve sistem yönü</p>
     </div>""", unsafe_allow_html=True)
 
+    # Fetch all years — needed for YoY chart and all-time trend
     df = query(f"SELECT * FROM {tbl('mart_gold_monthly_executive_metrics')} ORDER BY year, month")
     if df.empty:
         st.warning("Veri bulunamadı.")
@@ -256,6 +294,46 @@ if page == "🏠 Executive Summary":
         dark(fig4, height=300, coloraxis_colorbar=dict(title="TL/MWh"))
         st.plotly_chart(fig4, use_container_width=True, key="ex_heat")
 
+    # ── YoY COMPARISON CHART ──────────────────────────────────────────────────
+    df_curr = df[df["year"] == sel_year] if "year" in df.columns else pd.DataFrame()
+    df_prev = df[df["year"] == sel_year - 1] if "year" in df.columns else pd.DataFrame()
+
+    if not df_curr.empty and not df_prev.empty:
+        st.markdown(f"### 📅 Yıllık Karşılaştırma — {sel_year} vs {sel_year - 1}")
+        col_yoy_l, col_yoy_r = st.columns(2)
+
+        with col_yoy_l:
+            fig_yoy = go.Figure()
+            fig_yoy.add_trace(go.Scatter(
+                x=df_curr["month"], y=df_curr["avg_ptf"],
+                name=str(sel_year), mode="lines+markers",
+                line=dict(color="#00d4ff", width=2.5)))
+            fig_yoy.add_trace(go.Scatter(
+                x=df_prev["month"], y=df_prev["avg_ptf"],
+                name=str(sel_year - 1), mode="lines+markers",
+                line=dict(color="#7c3aed", width=2.5, dash="dash")))
+            dark(fig_yoy, height=360,
+                 title=f"Aylık Ort. PTF: {sel_year} vs {sel_year - 1}",
+                 xaxis=dict(title="Ay", tickmode="linear",
+                            gridcolor="rgba(255,255,255,0.05)"),
+                 yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig_yoy, use_container_width=True, key="ex_yoy_ptf")
+
+        with col_yoy_r:
+            fig_yoy2 = go.Figure()
+            fig_yoy2.add_trace(go.Bar(
+                x=df_curr["month"], y=df_curr["energy_deficit_hours"],
+                name=str(sel_year), marker_color="rgba(0,212,255,0.7)"))
+            fig_yoy2.add_trace(go.Bar(
+                x=df_prev["month"], y=df_prev["energy_deficit_hours"],
+                name=str(sel_year - 1), marker_color="rgba(124,58,237,0.5)"))
+            dark(fig_yoy2, height=360, barmode="group",
+                 title=f"Enerji Açığı (saat): {sel_year} vs {sel_year - 1}",
+                 xaxis=dict(title="Ay", tickmode="linear",
+                            gridcolor="rgba(255,255,255,0.05)"),
+                 yaxis=dict(title="Saat", gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig_yoy2, use_container_width=True, key="ex_yoy_deficit")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 2 — FİYAT ANALİZİ
@@ -270,9 +348,11 @@ elif page == "⚖️ Fiyat Analizi":
 
     df = query(f"""
         SELECT date, hour, ptf_try, smf_try, price_spread, season,
-               EXTRACT(YEAR FROM date)  AS year,
-               EXTRACT(MONTH FROM date) AS month
+               EXTRACT(YEAR FROM date)      AS year,
+               EXTRACT(MONTH FROM date)     AS month,
+               EXTRACT(DAYOFWEEK FROM date) AS day_of_week
         FROM {tbl('mart_price_analysis')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
         ORDER BY date, hour
     """)
     if df.empty:
@@ -282,13 +362,10 @@ elif page == "⚖️ Fiyat Analizi":
     st.sidebar.download_button("📥 CSV İndir", df.to_csv(index=False).encode(),
                                "epias_price.csv", "text/csv")
 
-    years = sorted(df["year"].unique(), reverse=True)
-    col_f1, col_f2 = st.columns(2)
-    sel_year = col_f1.selectbox("Yıl", years)
     seasons_avail = ["Tümü"] + list(df["season"].dropna().unique())
-    sel_season = col_f2.selectbox("Mevsim", seasons_avail)
+    sel_season = st.selectbox("Mevsim", seasons_avail, key="p2_season")
 
-    dfy = df[df["year"] == sel_year]
+    dfy = df.copy()
     if sel_season != "Tümü":
         dfy = dfy[dfy["season"] == sel_season]
 
@@ -352,6 +429,27 @@ elif page == "⚖️ Fiyat Analizi":
     dark(fig4, height=360)
     st.plotly_chart(fig4, use_container_width=True, key="pr_hist")
 
+    # ── HOUR × DAY-OF-WEEK PTF HEATMAP ───────────────────────────────────────
+    if "day_of_week" in dfy.columns:
+        st.markdown("### 🗓️ Saat × Haftanın Günü PTF Isı Haritası")
+        heat_df = dfy.groupby(["day_of_week", "hour"])["ptf_try"].mean().reset_index()
+        heat_df["gun"] = heat_df["day_of_week"].map(DOW_TR)
+        pivot_heat = heat_df.pivot(index="gun", columns="hour", values="ptf_try")
+        # Reorder rows Mon→Sun (Pzt…Paz)
+        _dow_order = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"]
+        pivot_heat = pivot_heat.reindex([d for d in _dow_order if d in pivot_heat.index])
+        fig_heat = px.imshow(
+            pivot_heat,
+            color_continuous_scale=["#0a0e1a", "#00d4ff", "#ff6b35", "#ef4444"],
+            text_auto=".0f",
+            title=f"{sel_year} — Saatlik Ort. PTF (TL/MWh)",
+            labels={"x": "Saat", "y": "Gün", "color": "PTF (TL/MWh)"},
+            aspect="auto",
+        )
+        fig_heat.update_layout(**DARK_LAYOUT, height=340,
+            coloraxis_colorbar=dict(title="TL/MWh"))
+        st.plotly_chart(fig_heat, use_container_width=True, key="pr_dow_heat")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 3 — ÜRETİM & YENİLENEBİLİR
@@ -364,34 +462,39 @@ elif page == "🌱 Üretim & Yenilenebilir":
         <p>Yenilenebilir/fosil oranı, rüzgar tahmini sapması ve yeşil enerji residual yük</p>
     </div>""", unsafe_allow_html=True)
 
-    df_mix = query(f"""
-        SELECT date, hour, total_generation, renewable_ratio, fossil_ratio,
-               EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
-        FROM {tbl('mart_generation_mix')} ORDER BY date, hour
-    """)
-    df_ren = query(f"""
-        SELECT date, hour, ptf_try, licensed_renewable_mwh, total_unlicensed_mwh,
-               total_green_energy_mwh, residual_load_mwh, total_demand_mwh,
-               SAFE_DIVIDE(total_green_energy_mwh, total_demand_mwh) AS renewable_ratio,
-               EXTRACT(YEAR FROM date) AS year
-        FROM {tbl('mart_renawable_impact')} ORDER BY date, hour
-    """)
-    df_deep = query(f"""
-        SELECT date, hour, wind_generation_mwh, solar_generation_mwh,
-               forecasted_res_mwh, wind_forecast_error,
-               EXTRACT(YEAR FROM date) AS year
-        FROM {tbl('mart_renewable_deep')} ORDER BY date, hour
-    """)
+    with st.spinner("Üretim verileri yükleniyor..."):
+        df_mix = query(f"""
+            SELECT date, hour, total_generation, renewable_ratio, fossil_ratio,
+                   EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
+            FROM {tbl('mart_generation_mix')}
+            WHERE EXTRACT(YEAR FROM date) = {sel_year}
+            ORDER BY date, hour
+        """)
+        df_ren = query(f"""
+            SELECT date, hour, ptf_try, licensed_renewable_mwh, total_unlicensed_mwh,
+                   total_green_energy_mwh, residual_load_mwh, total_demand_mwh,
+                   SAFE_DIVIDE(total_green_energy_mwh, total_demand_mwh) AS renewable_ratio,
+                   EXTRACT(YEAR FROM date) AS year
+            FROM {tbl('mart_renawable_impact')}
+            WHERE EXTRACT(YEAR FROM date) = {sel_year}
+            ORDER BY date, hour
+        """)
+        df_deep = query(f"""
+            SELECT date, hour, wind_generation_mwh, solar_generation_mwh,
+                   forecasted_res_mwh, wind_forecast_error,
+                   EXTRACT(YEAR FROM date) AS year
+            FROM {tbl('mart_renewable_deep')}
+            WHERE EXTRACT(YEAR FROM date) = {sel_year}
+            ORDER BY date, hour
+        """)
 
     if df_mix.empty:
         st.warning("Veri bulunamadı.")
         st.stop()
 
-    years = sorted(df_mix["year"].unique(), reverse=True)
-    sel_year = st.selectbox("Yıl", years, key="ren_year")
-    dfy = df_mix[df_mix["year"] == sel_year]
-    dfy_ren = df_ren[df_ren["year"] == sel_year] if not df_ren.empty else pd.DataFrame()
-    dfy_deep = df_deep[df_deep["year"] == sel_year] if not df_deep.empty else pd.DataFrame()
+    dfy      = df_mix
+    dfy_ren  = df_ren  if not df_ren.empty  else pd.DataFrame()
+    dfy_deep = df_deep if not df_deep.empty else pd.DataFrame()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ort. Yenilenebilir %", f"%{dfy['renewable_ratio'].mean()*100:.1f}")
@@ -471,7 +574,9 @@ elif page == "📊 GÖP Piyasa Hacimleri":
     df_vol = query(f"""
         SELECT date, hour, total_buy_mwh, total_sell_mwh, ptf_try, market_volume_try,
                EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
-        FROM {tbl('mart_gop_volume_analysis')} ORDER BY date, hour
+        FROM {tbl('mart_gop_volume_analysis')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        ORDER BY date, hour
     """)
     df_mo = query(f"""
         SELECT date, bid_offer_price_try, cumulative_supply_mwh,
@@ -485,9 +590,7 @@ elif page == "📊 GÖP Piyasa Hacimleri":
         st.warning("Veri bulunamadı.")
         st.stop()
 
-    years = sorted(df_vol["year"].unique(), reverse=True)
-    sel_year = st.selectbox("Yıl", years, key="gop_year")
-    dfy = df_vol[df_vol["year"] == sel_year]
+    dfy = df_vol
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ort. Alış Hacmi", f"{dfy['total_buy_mwh'].mean():,.0f} MWh")
@@ -579,23 +682,25 @@ elif page == "🔋 Arz-Talep & Residual Yük":
         SELECT date, ptf_try, forecasted_load_mwh, forecasted_res_mwh,
                price_independent_bid_mwh, forecasted_residual_load_mwh,
                EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
-        FROM {tbl('mart_forecasted_residual_load')} ORDER BY date
+        FROM {tbl('mart_forecasted_residual_load')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        ORDER BY date
     """)
     df_drv = query(f"""
         SELECT date, hour, ptf_try, smf_try, forecasted_load_mwh,
                forecasted_res_mwh, forecasted_residual_load_mwh,
                EXTRACT(YEAR FROM date) AS year
-        FROM {tbl('mart_ptf_drivers')} ORDER BY date, hour
+        FROM {tbl('mart_ptf_drivers')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        ORDER BY date, hour
     """)
 
     if df_frl.empty:
         st.warning("Veri bulunamadı.")
         st.stop()
 
-    years = sorted(df_frl["year"].unique(), reverse=True)
-    sel_year = st.selectbox("Yıl", years, key="frl_year")
-    dfy = df_frl[df_frl["year"] == sel_year]
-    dfy_d = df_drv[df_drv["year"] == sel_year] if not df_drv.empty else pd.DataFrame()
+    dfy   = df_frl
+    dfy_d = df_drv if not df_drv.empty else pd.DataFrame()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ort PTF", f"{dfy['ptf_try'].mean():,.2f} TL")
@@ -673,16 +778,14 @@ elif page == "🚨 Arz Şoku & Risk":
         SELECT date, total_outage_mwh, total_available_capacity_mwh, supply_shock_index,
                EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_supply_shock_index')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
         ORDER BY date
     """)
     if df.empty:
         st.warning("Veri bulunamadı.")
         st.stop()
 
-    years = sorted(df["year"].unique(), reverse=True)
-    col_f1, col_f2 = st.columns(2)
-    sel_year = col_f1.selectbox("Yıl", years, key="risk_year")
-    dfy = df[df["year"] == sel_year]
+    dfy = df
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ort Arıza Kapasite", f"{dfy['total_outage_mwh'].mean():,.0f} MWh")
@@ -730,8 +833,6 @@ elif page == "🚨 Arz Şoku & Risk":
     pivot = dfy.pivot_table(index="month", values="supply_shock_index", aggfunc="mean")
     if not pivot.empty:
         # Assign via pd.Index so the name "month" is preserved.
-        # A plain list assignment drops the name, making reset_index() produce
-        # a column called "index" (or 0) instead of "month" → px.bar crash.
         pivot.index = pd.Index(
             [MONTHS_TR.get(m, str(m)) for m in pivot.index],
             name=pivot.index.name,
@@ -761,10 +862,12 @@ elif page == "🤖 PTF Tahmin & ML":
                ptf_lag_1h, ptf_lag_24h, ptf_lag_168h, ptf_rolling_avg_24h,
                EXTRACT(YEAR FROM date) AS year
         FROM {tbl('mart_ptf_lag_features')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
         ORDER BY date, hour
     """)
 
-    # Try to fetch predictions table
+    # Fetch ALL predictions (no year filter) — includes future dates for forward panel
+    # and historical dates for backtesting.  query() returns empty silently on BQNotFound.
     df_pred = query(f"""
         SELECT predicted_date, hour, predicted_ptf FROM {tbl('gold_ptf_predictions')}
         ORDER BY predicted_date, hour
@@ -774,10 +877,7 @@ elif page == "🤖 PTF Tahmin & ML":
         st.warning("Veri bulunamadı.")
         st.stop()
 
-    years = sorted(df_lag["year"].unique(), reverse=True)
-    sel_year = st.selectbox("Yıl", years, key="ml_year")
-    dfy = df_lag[df_lag["year"] == sel_year].dropna(
-        subset=["ptf_lag_24h", "ptf_lag_168h", "ptf_rolling_avg_24h"])
+    dfy = df_lag.dropna(subset=["ptf_lag_24h", "ptf_lag_168h", "ptf_rolling_avg_24h"])
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ort PTF", f"{dfy['ptf_try'].mean():,.2f} TL")
@@ -809,8 +909,50 @@ elif page == "🤖 PTF Tahmin & ML":
         dark(fig2)
         st.plotly_chart(fig2, use_container_width=True, key="ml_lag168")
 
-    # Backtesting: actual vs predicted
+    # ── FORWARD FORECAST PANEL ────────────────────────────────────────────────
+    # Shows future predictions (predicted_date >= today).  Appears only when
+    # the gold_ptf_predictions table exists and has upcoming rows.
     if not df_pred.empty:
+        df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
+        _today = pd.Timestamp.now().normalize()
+        df_forward = df_pred[df_pred["predicted_date"] >= _today].copy()
+
+        if not df_forward.empty:
+            st.markdown("### 🔮 İleriye Yönelik 24h Tahmin")
+            df_forward["hour"] = pd.to_numeric(df_forward["hour"], errors="coerce").astype(int)
+            df_forward["ts"] = df_forward["predicted_date"] + pd.to_timedelta(df_forward["hour"], unit="h")
+            df_forward = df_forward.sort_values("ts")
+
+            fig_fwd = go.Figure()
+            fig_fwd.add_trace(go.Scatter(
+                x=df_forward["ts"], y=df_forward["predicted_ptf"],
+                mode="lines+markers",
+                name="XGBoost Tahmin",
+                line=dict(color="#ff6b35", width=2.5),
+                fill="tozeroy", fillcolor="rgba(255,107,53,0.07)",
+                hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
+            ))
+            dark(fig_fwd, height=360,
+                 title=f"Önümüzdeki Saatlik PTF Tahminleri (XGBoost)",
+                 yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
+                 hovermode="x unified")
+            st.plotly_chart(fig_fwd, use_container_width=True, key="ml_forward")
+
+            # Summary metrics for forward window
+            fw1, fw2, fw3 = st.columns(3)
+            fw1.metric("Tahmin Ort. PTF", f"{df_forward['predicted_ptf'].mean():,.2f} TL/MWh")
+            fw2.metric("Tahmin Maks PTF", f"{df_forward['predicted_ptf'].max():,.2f} TL/MWh")
+            fw3.metric("Tahmin Min PTF",  f"{df_forward['predicted_ptf'].min():,.2f} TL/MWh")
+
+    # ── BACKTESTING ───────────────────────────────────────────────────────────
+    if df_pred.empty:
+        st.info(
+            "**Tahmin tablosu henüz mevcut değil.**  \n"
+            "`gold_ptf_predictions` tablosu ilk `ptf_inference.py` çalışması "
+            "tamamlandıktan sonra otomatik olarak oluşturulur.  \n"
+            "Airflow DAG: `ptf_hourly_inference → run_ptf_inference`"
+        )
+    else:
         st.markdown("### 🎯 Model Backtesting — Gerçekleşen vs Tahmin")
 
         df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
@@ -887,6 +1029,7 @@ elif page == "🌿 Lisanssız Üretim (YEKDEM)":
         SELECT date, total_unlicensed_mwh, ptf_try, estimated_market_value_try,
                EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_unlicensed_impact')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
         ORDER BY date
     """)
     if df.empty:
@@ -896,9 +1039,7 @@ elif page == "🌿 Lisanssız Üretim (YEKDEM)":
     st.sidebar.download_button("📥 CSV İndir", df.to_csv(index=False).encode(),
                                "epias_yekdem.csv", "text/csv")
 
-    years = sorted(df["year"].unique(), reverse=True)
-    sel_year = st.selectbox("Yıl", years, key="yek_year")
-    dfy = df[df["year"] == sel_year]
+    dfy = df
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ort Lisanssız Üretim", f"{dfy['total_unlicensed_mwh'].mean():,.0f} MWh")
@@ -974,6 +1115,7 @@ elif page == "⚡ GİP & Hava Durumu":
                EXTRACT(YEAR FROM trade_date) AS year,
                EXTRACT(MONTH FROM trade_date) AS month
         FROM {tbl('mart_gip_company_activity')}
+        WHERE EXTRACT(YEAR FROM trade_date) = {sel_year}
         ORDER BY trade_date, hour
     """)
     df_wx = query(f"""
@@ -981,6 +1123,7 @@ elif page == "⚡ GİP & Hava Durumu":
                wind_speed_kmh, shortwave_radiation, relative_humidity,
                EXTRACT(YEAR FROM date) AS year
         FROM {tbl('stg_weather')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
         ORDER BY date, hour, city_name
     """)
 
@@ -988,14 +1131,11 @@ elif page == "⚡ GİP & Hava Durumu":
         st.warning("GİP verisi bulunamadı.")
         st.stop()
 
-    years = sorted(df_gip["year"].unique(), reverse=True)
-    col_f1, col_f2 = st.columns(2)
-    sel_year = col_f1.selectbox("Yıl", years, key="gip_year")
     cities = ["Tümü"] + sorted(df_wx["city_name"].dropna().unique().tolist()) if not df_wx.empty else ["Tümü"]
-    sel_city = col_f2.selectbox("Şehir (Hava)", cities, key="gip_city")
+    sel_city = st.selectbox("Şehir (Hava)", cities, key="gip_city")
 
-    dfy = df_gip[df_gip["year"] == sel_year]
-    dfy_wx = df_wx[df_wx["year"] == sel_year] if not df_wx.empty else pd.DataFrame()
+    dfy    = df_gip
+    dfy_wx = df_wx if not df_wx.empty else pd.DataFrame()
     if sel_city != "Tümü" and not dfy_wx.empty:
         dfy_wx = dfy_wx[dfy_wx["city_name"] == sel_city]
 
@@ -1103,15 +1243,14 @@ elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
                EXTRACT(YEAR FROM date) AS year,
                EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_production_plan')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
         ORDER BY date, hour
     """)
     if df.empty:
         st.warning("Veri bulunamadı.")
         st.stop()
 
-    years = sorted(df["year"].unique(), reverse=True)
-    sel_year = st.selectbox("Yıl", years, key="bgup_year")
-    dfy = df[df["year"] == sel_year].dropna(subset=["bgup_total_mwh", "kgup_total_mwh"])
+    dfy = df.dropna(subset=["bgup_total_mwh", "kgup_total_mwh"])
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ort BGÜP", f"{dfy['bgup_total_mwh'].mean():,.0f} MWh")
@@ -1211,15 +1350,14 @@ elif page == "🔥 PTF Tavan & Minimum Analizi":
                EXTRACT(YEAR FROM date) AS year,
                EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_ptf_extremes')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
         ORDER BY date, hour
     """)
     if df.empty:
         st.warning("Veri bulunamadı.")
         st.stop()
 
-    years = sorted(df["year"].unique(), reverse=True)
-    sel_year = st.selectbox("Yıl", years, key="ext_year")
-    dfy = df[df["year"] == sel_year]
+    dfy = df
 
     p95 = dfy["p95_ptf"].iloc[0] if not dfy.empty else 0
     p5  = dfy["p5_ptf"].iloc[0] if not dfy.empty else 0
@@ -1352,19 +1490,17 @@ elif page == "📈 Çapraz Piyasa Arbitraj":
                EXTRACT(YEAR  FROM date) AS year,
                EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_cross_market_spread')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}
         ORDER BY date, hour
     """)
     if df.empty:
         st.warning("Veri bulunamadı.")
         st.stop()
 
-    years = sorted(df["year"].unique(), reverse=True)
-    col_f1, col_f2 = st.columns(2)
-    sel_year = col_f1.selectbox("Yıl", years, key="arb_year")
     cascades = ["Tümü"] + sorted(df["price_cascade"].dropna().unique().tolist())
-    sel_cascade = col_f2.selectbox("Kademeli Yapı", cascades, key="arb_cascade")
+    sel_cascade = st.selectbox("Kademeli Yapı", cascades, key="arb_cascade")
 
-    dfy = df[df["year"] == sel_year]
+    dfy = df.copy()
     if sel_cascade != "Tümü":
         dfy = dfy[dfy["price_cascade"] == sel_cascade]
 
