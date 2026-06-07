@@ -1942,3 +1942,260 @@ elif page == "📈 Çapraz Piyasa Arbitraj":
         labels={"count": "Saat", "ay": "", "price_cascade": "Yapı"})
     dark(fig7, height=360)
     st.plotly_chart(fig7, use_container_width=True, key="arb_cascade_monthly")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 13 — RES ÖNGÖRÜ HATASI
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "⚡ RES Öngörü Hatası":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>YEP HATA</span>
+        <h1>RES Öngörü Hatası Analizi</h1>
+        <p>EPİAŞ rüzgar/güneş tahmin (YEP) ile gerçekleşen üretim farkı — RMSE, MAPE ve yön dağılımı</p>
+    </div>""", unsafe_allow_html=True)
+
+    df_fe = query(f"""
+        SELECT date, hour,
+               forecasted_res_mwh, actual_res_mwh, wind_mwh, solar_mwh,
+               forecast_error_mwh, abs_error_mwh, error_pct, error_direction,
+               daily_rmse_mwh, daily_mape_pct,
+               EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_forecast_error')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
+          AND forecasted_res_mwh IS NOT NULL
+          AND actual_res_mwh IS NOT NULL
+        ORDER BY date, hour
+    """)
+
+    if df_fe.empty:
+        st.warning("Veri bulunamadı. `dbt run --select mart_forecast_error` komutunu çalıştırın.")
+        st.stop()
+
+    # ── KPI'lar ───────────────────────────────────────────────────────────────
+    avg_rmse  = df_fe.groupby("date")["daily_rmse_mwh"].first().mean()
+    avg_mape  = df_fe.groupby("date")["daily_mape_pct"].first().mean()
+    over_pct  = (df_fe["error_direction"] == "Aşırı Tahmin").mean() * 100
+    avg_abs   = df_fe["abs_error_mwh"].mean()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Günlük Ort. RMSE", f"{avg_rmse:,.0f} MWh")
+    c2.metric("Ort. MAPE", f"%{avg_mape:.1f}")
+    c3.metric("Aşırı Tahmin Oranı", f"%{over_pct:.1f}")
+    c4.metric("Ort. Mutlak Hata", f"{avg_abs:,.0f} MWh")
+
+    st.markdown("---")
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        # Günlük RMSE trendi
+        daily_rmse = df_fe.groupby("date")["daily_rmse_mwh"].first().reset_index()
+        fig_rmse = go.Figure(go.Scatter(
+            x=daily_rmse["date"], y=daily_rmse["daily_rmse_mwh"],
+            mode="lines", line=dict(color="#f59e0b", width=1.8),
+            fill="tozeroy", fillcolor="rgba(245,158,11,0.08)"))
+        dark(fig_rmse, height=360, title="Günlük RMSE Trendi (MWh)",
+             yaxis=dict(title="RMSE (MWh)", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig_rmse, use_container_width=True, key="fe_rmse_trend")
+
+    with col_r:
+        # Hata yönü dağılımı
+        dir_cnt = df_fe["error_direction"].value_counts().reset_index()
+        dir_cnt.columns = ["Yön", "Saat"]
+        fig_dir = go.Figure(go.Pie(
+            labels=dir_cnt["Yön"], values=dir_cnt["Saat"],
+            hole=0.55,
+            marker_colors=["#ef4444", "#10b981", "#64748b"]))
+        dark(fig_dir, height=360, title="Öngörü Hatası Yön Dağılımı")
+        st.plotly_chart(fig_dir, use_container_width=True, key="fe_dir_pie")
+
+    # Tahmin vs Gerçekleşen profil
+    st.markdown("### 📊 Saatlik Ortalama: Tahmin vs Gerçekleşen")
+    col_h1, col_h2 = st.columns(2)
+
+    with col_h1:
+        hourly_fe = df_fe.groupby("hour").agg(
+            forecast=("forecasted_res_mwh", "mean"),
+            actual=("actual_res_mwh", "mean"),
+            err=("forecast_error_mwh", "mean"),
+        ).reset_index()
+        fig_hvsa = go.Figure()
+        fig_hvsa.add_trace(go.Scatter(x=hourly_fe["hour"], y=hourly_fe["forecast"],
+            name="Tahmin", line=dict(color="#00d4ff", width=2)))
+        fig_hvsa.add_trace(go.Scatter(x=hourly_fe["hour"], y=hourly_fe["actual"],
+            name="Gerçekleşen", line=dict(color="#10b981", width=2)))
+        fig_hvsa.add_trace(go.Bar(x=hourly_fe["hour"], y=hourly_fe["err"],
+            name="Hata", marker_color="rgba(245,158,11,0.5)"),)
+        fig_hvsa.update_layout(**DARK_LAYOUT, height=380, barmode="overlay",
+            title="Saat Bazlı Ort. Tahmin / Gerçekleşen / Hata",
+            xaxis=dict(title="Saat", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig_hvsa, use_container_width=True, key="fe_hourly_profile")
+
+    with col_h2:
+        # Hata % dağılımı
+        fig_mape = px.histogram(
+            df_fe[df_fe["error_pct"].notna() & (df_fe["error_pct"] < 200)],
+            x="error_pct", nbins=60, color="error_direction",
+            color_discrete_map={"Aşırı Tahmin": "#ef4444",
+                                 "Eksik Tahmin": "#10b981", "Eşleşme": "#64748b"},
+            barmode="overlay", opacity=0.7,
+            title="Saatlik Hata % Dağılımı",
+            labels={"error_pct": "Hata (%)", "error_direction": "Yön"},
+        )
+        dark(fig_mape, height=380)
+        st.plotly_chart(fig_mape, use_container_width=True, key="fe_mape_hist")
+
+    # Aylık MAPE kutu grafiği
+    if "month" in df_fe.columns:
+        st.markdown("### 🗓️ Aylık Hata Analizi")
+        df_fe["ay"] = df_fe["month"].map(MONTHS_TR)
+        fig_box = px.box(
+            df_fe[df_fe["error_pct"] < 200].dropna(subset=["error_pct"]),
+            x="ay", y="error_pct", color="error_direction",
+            color_discrete_map={"Aşırı Tahmin": "#ef4444",
+                                 "Eksik Tahmin": "#10b981", "Eşleşme": "#64748b"},
+            title=f"{sel_year} — Aylık Öngörü Hatası (%) Dağılımı",
+            labels={"error_pct": "Hata (%)", "ay": "", "error_direction": "Yön"},
+        )
+        dark(fig_box, height=400)
+        st.plotly_chart(fig_box, use_container_width=True, key="fe_monthly_box")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 14 — HİDROLİK & BARAJ
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "💧 Hidrolik & Baraj":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>HİDRO</span>
+        <h1>Hidrolik Rezervuar & Baraj Analizi</h1>
+        <p>Aktif hacim trendleri, stres endeksi ve haftalık değişim — baraj boşalması PTF baskısı sinyali</p>
+    </div>""", unsafe_allow_html=True)
+
+    df_hr = query(f"""
+        SELECT date, dam_id, basin_name, dam_name,
+               active_volume, rolling_90d_min, rolling_90d_max, rolling_90d_avg,
+               rolling_7d_avg, wow_volume_change, wow_volume_change_pct,
+               hydro_stress_index, basin_avg_stress_index,
+               basin_total_active_volume_mwh
+        FROM {tbl('mart_hydro_risk')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
+        ORDER BY date, dam_id
+    """)
+
+    if df_hr.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    # ── KPI'lar (basin düzeyinde en son gün) ─────────────────────────────────
+    latest = df_hr[df_hr["date"] == df_hr["date"].max()]
+    avg_stress = latest["hydro_stress_index"].mean()
+    n_critical = (latest["hydro_stress_index"] < 0.25).sum()
+    n_warning  = ((latest["hydro_stress_index"] >= 0.25) & (latest["hydro_stress_index"] < 0.5)).sum()
+    total_vol  = latest["active_volume"].sum()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort. Stres Endeksi", f"{avg_stress:.2f}",
+              help="0=boş, 1=90g max; <0.25 kriz")
+    c2.metric("🔴 Kritik Baraj (<0.25)", f"{n_critical:,}")
+    c3.metric("🟡 Dikkat Barajı (0.25–0.50)", f"{n_warning:,}")
+    c4.metric("Toplam Aktif Hacim", f"{total_vol/1e6:.2f} TWh")
+
+    st.markdown("---")
+
+    # Havza filtreleme
+    basins = ["Tümü"] + sorted(df_hr["basin_name"].dropna().unique().tolist())
+    sel_basin = st.selectbox("🌊 Havza", basins, key="hydro_basin")
+    dfb = df_hr.copy()
+    if sel_basin != "Tümü":
+        dfb = dfb[dfb["basin_name"] == sel_basin]
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        # Günlük toplam aktif hacim trendi
+        daily_vol = dfb.groupby("date")["active_volume"].sum().reset_index()
+        fig_vol = go.Figure(go.Scatter(
+            x=daily_vol["date"], y=daily_vol["active_volume"] / 1e6,
+            mode="lines", line=dict(color="#00d4ff", width=2),
+            fill="tozeroy", fillcolor="rgba(0,212,255,0.07)"))
+        dark(fig_vol, height=360,
+             title="Günlük Toplam Aktif Rezervuar Hacmi",
+             yaxis=dict(title="TWh", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig_vol, use_container_width=True, key="hyd_vol_trend")
+
+    with col_r:
+        # Stres endeksi dağılımı (en son gün)
+        latest_b = dfb[dfb["date"] == dfb["date"].max()].copy()
+        latest_b["stres_kategori"] = pd.cut(
+            latest_b["hydro_stress_index"],
+            bins=[-0.01, 0.25, 0.50, 1.01, 99],
+            labels=["Kriz (<0.25)", "Dikkat (0.25–0.50)", "Normal (0.50–1.0)", "Fazla (>1.0)"],
+        )
+        stress_cnt = latest_b["stres_kategori"].value_counts().reset_index()
+        stress_cnt.columns = ["Kategori", "Baraj"]
+        fig_stress = go.Figure(go.Pie(
+            labels=stress_cnt["Kategori"], values=stress_cnt["Baraj"],
+            hole=0.55,
+            marker_colors=["#ef4444", "#f59e0b", "#10b981", "#00d4ff"]))
+        dark(fig_stress, height=360,
+             title=f"Baraj Stres Dağılımı — {dfb['date'].max().strftime('%d.%m.%Y') if hasattr(dfb['date'].max(), 'strftime') else dfb['date'].max()}")
+        st.plotly_chart(fig_stress, use_container_width=True, key="hyd_stress_pie")
+
+    # Stres endeksi trend + haftalık değişim
+    st.markdown("### 📈 Stres Endeksi Trendi & Haftalık Değişim")
+    col_s1, col_s2 = st.columns(2)
+
+    with col_s1:
+        daily_stress = dfb.groupby("date")["basin_avg_stress_index"].mean().reset_index()
+        fig_si = go.Figure(go.Scatter(
+            x=daily_stress["date"], y=daily_stress["basin_avg_stress_index"],
+            mode="lines", line=dict(color="#f59e0b", width=2)))
+        fig_si.add_hrect(y0=0, y1=0.25, fillcolor="rgba(239,68,68,0.12)",
+                         line_width=0, annotation_text="Kriz", annotation_position="left")
+        fig_si.add_hrect(y0=0.25, y1=0.5, fillcolor="rgba(245,158,11,0.08)",
+                         line_width=0, annotation_text="Dikkat", annotation_position="left")
+        dark(fig_si, height=360, title="Günlük Ort. Havza Stres Endeksi",
+             yaxis=dict(title="Stres Endeksi [0–1]", gridcolor="rgba(255,255,255,0.05)",
+                        range=[-0.05, 1.15]))
+        st.plotly_chart(fig_si, use_container_width=True, key="hyd_stress_trend")
+
+    with col_s2:
+        # Haftalık değişim dağılımı (son tarih)
+        wow_df = dfb[dfb["date"] == dfb["date"].max()].dropna(subset=["wow_volume_change_pct"])
+        if not wow_df.empty:
+            wow_df = wow_df.sort_values("wow_volume_change_pct")
+            colors = ["#ef4444" if v < 0 else "#10b981" for v in wow_df["wow_volume_change_pct"]]
+            fig_wow = go.Figure(go.Bar(
+                x=wow_df["dam_name"], y=wow_df["wow_volume_change_pct"] * 100,
+                marker_color=colors, name="HaH Değişim %"))
+            dark(fig_wow, height=360,
+                 title="Haftalık Hacim Değişimi (%) — Son Gün",
+                 xaxis=dict(tickangle=45, gridcolor="rgba(255,255,255,0.05)"),
+                 yaxis=dict(title="%", gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig_wow, use_container_width=True, key="hyd_wow_bar")
+        else:
+            st.info("Haftalık değişim verisi için yeterli tarihsel veri yok.")
+
+    # Baraj bazlı tablo
+    st.markdown("### 🗄️ Baraj Detay Tablosu (En Son Gün)")
+    tbl_cols = ["dam_name", "basin_name", "active_volume", "hydro_stress_index",
+                "wow_volume_change", "wow_volume_change_pct"]
+    show_cols = [c for c in tbl_cols if c in latest_b.columns]
+    tbl_display = latest_b[show_cols].copy()
+    if "hydro_stress_index" in tbl_display.columns:
+        def _stress_color(v):
+            if v < 0.25: return "background-color: rgba(239,68,68,0.3)"
+            if v < 0.50: return "background-color: rgba(245,158,11,0.2)"
+            return ""
+        tbl_display = tbl_display.sort_values("hydro_stress_index")
+        st.dataframe(
+            tbl_display.style.applymap(_stress_color, subset=["hydro_stress_index"]).format(
+                {"active_volume": "{:,.0f}", "hydro_stress_index": "{:.3f}",
+                 "wow_volume_change": "{:+,.0f}", "wow_volume_change_pct": "{:+.1%}"},
+                na_rep="—"
+            ),
+            use_container_width=True,
+            height=400,
+        )
