@@ -15,6 +15,7 @@ Sayfalar:
 """
 
 import os
+import sys
 import logging
 import pandas as pd
 import plotly.express as px
@@ -26,8 +27,14 @@ from google.cloud import bigquery
 logger = logging.getLogger(__name__)
 
 # ── CONSTANTS ─────────────────────────────────────────────────────────────────
-PROJECT = os.getenv("GCP_PROJECT_ID", "epias-data-platform")
-DATASET = os.getenv("BQ_GOLD_DATASET", "epias_gold")
+# Import shared GCP config so dashboard stays in sync with the pipeline.
+# Falls back to env-var defaults when running outside the container (local dev).
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+    from config import GCP_PROJECT_ID as PROJECT, BQ_GOLD_DATASET as DATASET
+except ImportError:
+    PROJECT = os.getenv("GCP_PROJECT_ID", "epias-data-platform")
+    DATASET = os.getenv("BQ_GOLD_DATASET", "epias_gold")
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -391,7 +398,7 @@ elif page == "🌱 Üretim & Yenilenebilir":
     c2.metric("Ort. Fosil %", f"%{dfy['fossil_ratio'].mean()*100:.1f}")
     c3.metric("Ort. Toplam Üretim", f"{dfy['total_generation'].mean():,.0f} MWh")
     if not dfy_ren.empty:
-        corr = dfy_ren["renewable_ratio"].corr(dfy_ren["ptf_try"]) if "renewable_ratio" in dfy_ren else None
+        corr = dfy_ren["renewable_ratio"].corr(dfy_ren["ptf_try"]) if "renewable_ratio" in dfy_ren.columns else None
         if corr is not None:
             c4.metric("Yenilenebilir~PTF Korel.", f"{corr:.3f}")
 
@@ -535,7 +542,7 @@ elif page == "📊 GÖP Piyasa Hacimleri":
                 y=df_mo["bid_offer_price_try"],
                 mode="lines", name="Talep Eğrisi",
                 line=dict(color="#7c3aed", width=2, dash="dash")))
-            if ptf_val:
+            if ptf_val is not None:
                 fig3.add_hline(y=ptf_val, line_dash="dot",
                                line_color="#ff6b35",
                                annotation_text=f"PTF: {ptf_val:,.0f} TL",
@@ -706,7 +713,9 @@ elif page == "🚨 Arz Şoku & Risk":
             mode="lines", fill="tozeroy",
             fillcolor="rgba(255,107,53,0.12)",
             line=dict(color="#ff6b35", width=2)))
-        fig2.add_hrect(y0=0.1, y1=dfy["supply_shock_index"].max()+0.01,
+        shock_max = dfy["supply_shock_index"].max(skipna=True)
+        shock_max = shock_max if pd.notna(shock_max) else 0.5
+        fig2.add_hrect(y0=0.1, y1=shock_max + 0.01,
                        fillcolor="rgba(239,68,68,0.07)",
                        line_width=0, annotation_text="Yüksek Risk Bölgesi",
                        annotation_font_color="#ef4444", annotation_position="top left")
@@ -756,7 +765,7 @@ elif page == "🤖 PTF Tahmin & ML":
 
     # Try to fetch predictions table
     df_pred = query(f"""
-        SELECT predicted_date, hour, predicted_ptf FROM `{PROJECT}.{DATASET}.gold_ptf_predictions`
+        SELECT predicted_date, hour, predicted_ptf FROM {tbl('gold_ptf_predictions')}
         ORDER BY predicted_date, hour
     """)
 
@@ -804,7 +813,7 @@ elif page == "🤖 PTF Tahmin & ML":
         st.markdown("### 🎯 Model Backtesting — Gerçekleşen vs Tahmin")
 
         df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
-        df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").astype("Int64")
+        df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").astype(int)
 
         merged = df_lag.merge(
             df_pred, left_on=["date","hour"], right_on=["predicted_date","hour"], how="inner")
@@ -835,7 +844,8 @@ elif page == "🤖 PTF Tahmin & ML":
 
     # SHAP importance
     try:
-        shap_df = pd.read_csv("models/ptf_shap_importance.csv")
+        _shap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "ptf_shap_importance.csv")
+        shap_df = pd.read_csv(_shap_path)
         fig4 = px.bar(shap_df.head(12),
             x="feature_importance_vals", y="col_name", orientation="h",
             color="feature_importance_vals", color_continuous_scale="Blues",
