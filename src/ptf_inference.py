@@ -10,11 +10,9 @@ Runtime : 3–8 seconds. Scales to any cadence without retraining.
 import logging
 import joblib
 import tempfile
-import time
 import pandas as pd
 from datetime import datetime, timezone
 from google.cloud import storage, bigquery
-from google.api_core.exceptions import NotFound as BQNotFound
 from config import GCP_PROJECT_ID as PROJECT_ID, BQ_GOLD_DATASET as DATASET_ID, GCS_BUCKET, get_bq_client
 from ptf_features import build_ptf_features
 
@@ -153,55 +151,51 @@ def _ensure_predictions_table(client: bigquery.Client) -> None:
 
 
 def write_prediction_to_bq(predicted_date: pd.Timestamp, hour: int, predicted_ptf: float) -> None:
-    """Ensure the predictions table exists, then append a single row.
+    """Idempotent upsert of a single prediction row to BigQuery.
 
-    Retry pattern handles the BigQuery streaming-insert propagation delay:
-    create_table() succeeds on the control plane, but the insertAll data-plane
-    endpoint can return 404 for up to ~30 seconds on a freshly created table.
-    Subsequent runs (table already exists) never hit this branch.
+    Uses a DML MERGE statement so that Airflow task retries cannot create
+    duplicate rows.  The natural key is (predicted_date, hour): if a row
+    already exists for this period, its predicted_ptf and predicted_at are
+    updated in place rather than a second row being appended.
 
-    Backoff schedule: 5 s → 10 s → 20 s → 40 s (4 attempts, ~75 s total max).
+    DML jobs run on the BigQuery query engine (not the streaming API), so they
+    are not subject to the streaming-insert propagation delay that previously
+    caused 404 errors immediately after table creation.
     """
     client = get_bq_client()
 
     # Auto-create the table on first inference run — no manual DDL required.
     _ensure_predictions_table(client)
 
-    rows = [{
-        "predicted_date": predicted_date.strftime("%Y-%m-%d"),
-        "hour":           int(hour),           # INTEGER column — not str
-        "predicted_ptf":  round(float(predicted_ptf), 4),
-        "predicted_at":   datetime.now(timezone.utc).isoformat(),
-    }]
+    date_str     = predicted_date.strftime("%Y-%m-%d")
+    ptf_rounded  = round(float(predicted_ptf), 4)
+    predicted_at = datetime.now(timezone.utc).isoformat()
 
-    max_attempts = 4
-    delay = 5  # seconds — initial back-off
-    for attempt in range(1, max_attempts + 1):
-        try:
-            errors = client.insert_rows_json(PREDICTIONS_TABLE, rows)
-        except BQNotFound:
-            # Table just created; data plane hasn't propagated it yet.
-            if attempt == max_attempts:
-                raise
-            logger.info(
-                f"Table not yet visible on data plane (attempt {attempt}/{max_attempts}). "
-                f"Retrying in {delay}s..."
-            )
-            time.sleep(delay)
-            delay *= 2
-            continue
+    # MERGE upsert: INSERT if (predicted_date, hour) is new; UPDATE if it
+    # already exists (idempotent — safe on any number of Airflow retries).
+    merge_sql = f"""
+        MERGE `{PREDICTIONS_TABLE}` T
+        USING (
+            SELECT
+                DATE '{date_str}'                 AS predicted_date,
+                {int(hour)}                        AS hour,
+                {ptf_rounded}                      AS predicted_ptf,
+                TIMESTAMP '{predicted_at}'         AS predicted_at
+        ) S
+        ON T.predicted_date = S.predicted_date AND T.hour = S.hour
+        WHEN MATCHED THEN
+            UPDATE SET
+                predicted_ptf = S.predicted_ptf,
+                predicted_at  = S.predicted_at
+        WHEN NOT MATCHED THEN
+            INSERT (predicted_date, hour, predicted_ptf, predicted_at)
+            VALUES (S.predicted_date, S.hour, S.predicted_ptf, S.predicted_at)
+    """
 
-        if not errors:
-            break
+    job = client.query(merge_sql)
+    job.result()   # blocks until the DML job completes
 
-        # insert_rows_json can also return error dicts (partial failures).
-        if attempt == max_attempts:
-            raise RuntimeError(f"BigQuery insert failed after {max_attempts} attempts: {errors}")
-        logger.warning(f"insert_rows_json errors (attempt {attempt}): {errors}. Retrying in {delay}s...")
-        time.sleep(delay)
-        delay *= 2
-
-    logger.info(f"✅ Prediction written — {predicted_date.date()} hour={hour} PTF={predicted_ptf:.2f} TRY")
+    logger.info(f"✅ Prediction upserted — {date_str} hour={hour} PTF={predicted_ptf:.2f} TRY")
 
 
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────
