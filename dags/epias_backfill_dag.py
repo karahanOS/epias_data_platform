@@ -27,7 +27,13 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.models import Variable
-from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+try:
+    from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+except ImportError as _spark_err:
+    raise ImportError(
+        "apache-airflow-providers-apache-spark is required. "
+        "Install it with: pip install apache-airflow-providers-apache-spark"
+    ) from _spark_err
 from epias_sources import EPIAS_SOURCES, DBT_EXCLUDE_PENDING_BACKFILL, SPARK_CONN_ID, make_silver_task
 
 sys.path.insert(0, "/opt/airflow/src")
@@ -39,8 +45,17 @@ except ImportError as exc:
 logger = logging.getLogger(__name__)
 
 # ── BACKFILL PARAMETERS ───────────────────────────────────────────────────────
-# Adjust via Airflow Variable "backfill_start_date" or hardcode below.
-BACKFILL_START_DATE = Variable.get("backfill_start_date", default_var="2025-01-01")
+# Variable.get() must NOT be called at module scope — Airflow's scheduler may
+# parse DAGs before the metadata DB is ready (startup race), causing
+# OperationalError which marks the DAG as broken.
+# Pattern: wrap in try/except; fall back to a safe default so the DAG always
+# parses cleanly.  The actual runtime value comes from the Airflow Variable
+# (set via UI or `airflow variables set backfill_start_date 2025-01-01`).
+try:
+    BACKFILL_START_DATE = Variable.get("backfill_start_date", default_var="2025-01-01")
+except Exception:
+    BACKFILL_START_DATE = "2025-01-01"   # safe parse-time fallback
+
 BACKFILL_END_DATE   = datetime.utcnow().strftime("%Y-%m-%d")
 WEEK_CHUNK_DAYS     = 7      # Process 1 week at a time per task
 BUCKET_NAME         = "epias-data-lake"

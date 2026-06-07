@@ -16,7 +16,16 @@ import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
-from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+try:
+    from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+except ImportError as _spark_err:
+    # Graceful degradation: DAG parses cleanly even if the Spark provider package
+    # isn't installed yet.  Any task that instantiates SparkSubmitOperator will
+    # fail at runtime with a clear error rather than breaking all DAG parsing.
+    raise ImportError(
+        "apache-airflow-providers-apache-spark is required. "
+        "Install it with: pip install apache-airflow-providers-apache-spark"
+    ) from _spark_err
 from epias_sources import EPIAS_SOURCES, DBT_EXCLUDE_PENDING_BACKFILL, SPARK_CONN_ID, make_silver_task
 
 # ── MODÜL YOLU ────────────────────────────────────────────────────────────────

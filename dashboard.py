@@ -136,7 +136,15 @@ def get_client():
 @st.cache_data(ttl=3600, show_spinner="BigQuery sorgulanıyor...")
 def query(sql: str) -> pd.DataFrame:
     try:
-        return get_client().query(sql).to_dataframe()
+        df = get_client().query(sql).to_dataframe()
+        # BigQuery Storage API returns pandas nullable extension types (Float64, Int64).
+        # On all-null columns, .sum()/.mean() return pd.NA — not np.nan.
+        # f"{pd.NA:,.1f}" raises TypeError; converting to numpy float64 fixes this
+        # (pd.NA → np.nan, and np.nan formats safely as "nan").
+        for col in df.select_dtypes(include="number").columns:
+            if pd.api.types.is_extension_array_dtype(df[col].dtype):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
     except BQNotFound:
         # Table doesn't exist yet — expected for tables populated by scheduled jobs
         # (e.g. gold_ptf_predictions before the first inference run).
@@ -973,6 +981,12 @@ elif page == "🤖 PTF Tahmin & ML":
         df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
         df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").astype(int)
 
+        # BigQuery DATE columns arrive as Python datetime.date objects (object dtype).
+        # pd.to_datetime() on predicted_date produces datetime64[ns].
+        # Merging object vs datetime64 raises ValueError in pandas — coerce both sides
+        # to datetime64[ns] so the join keys share the same dtype.
+        df_lag["date"] = pd.to_datetime(df_lag["date"])
+
         merged = df_lag.merge(
             df_pred, left_on=["date","hour"], right_on=["predicted_date","hour"], how="inner")
 
@@ -1262,7 +1276,12 @@ elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
         ORDER BY date, hour
     """)
     if df.empty:
-        st.warning("Veri bulunamadı.")
+        st.info(
+            "🔄 **Üretim Planı verisi henüz mevcut değil.**\n\n"
+            "Bu sayfa `mart_production_plan` tablosunu kullanır. Tablo, Silver katmanı "
+            "backfill'i tamamlandıktan sonra `dbt run` ile oluşturulacak. "
+            "Backfill durumunu Airflow UI'den takip edebilirsiniz."
+        )
         st.stop()
 
     dfy = df.dropna(subset=["bgup_total_mwh", "kgup_total_mwh"])

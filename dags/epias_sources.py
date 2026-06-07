@@ -7,6 +7,7 @@ Tuple fields: (method_name, gcs_path, allow_empty, backfill_eligible, daily_elig
   - backfill_eligible : include in epias_backfill_dag.py runs
   - daily_eligible    : include in epias_dag.py daily runs
 """
+from __future__ import annotations  # PEP 563 — defers annotation evaluation (Python 3.8 compat)
 
 SPARK_CONN_ID       = "spark_default"
 GCS_CONNECTOR_JAR   = "/opt/spark/jars/gcs-connector.jar"
