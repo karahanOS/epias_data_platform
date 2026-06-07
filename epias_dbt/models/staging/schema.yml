@@ -1,7 +1,128 @@
-# epias_dbt/models/marts/schema.yml
+# epias_dbt/models/staging/schema.yml
 version: 2
 
+# ──────────────────────────────────────────────────────────────
+# STAGING MODEL TESTS
+# hour: accepted_values 0-23 + not_null for all time-series models
+# ──────────────────────────────────────────────────────────────
 models:
+  - name: stg_pricing
+    description: "PTF/SMF fiyatları — saatlik (EPIAS GÖP)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+  - name: stg_weather
+    description: "Saatlik hava durumu — İstanbul/Ankara/İzmir/Konya (open-meteo)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+      - name: city_name
+        tests: [not_null]
+
+  - name: stg_generation
+    description: "Gerçek zamanlı üretim — kaynak tipi bazlı saatlik (EPIAS)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+  - name: stg_aic
+    description: "Uzlaştırma esas üretim — kaynak tipi bazlı saatlik (EPIAS)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+  - name: stg_dpp
+    description: "Doğal pozisyon planı — kaynak tipi bazlı saatlik (EPIAS)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+  - name: stg_order_up
+    description: "Yukarı yönlü düzenleme emirleri — saatlik (EPIAS DGP)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+  - name: stg_order_down
+    description: "Aşağı yönlü düzenleme emirleri — saatlik (EPIAS DGP)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+  - name: stg_res_forecast
+    description: "Yenilenebilir kaynak üretim tahmini — saatlik (EPIAS)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+  - name: stg_outages
+    description: "Güç santrali arıza/bakım olayları — olay bazlı (span)"
+    columns:
+      - name: id
+        tests: [not_null]
+      - name: date
+        tests: [not_null]
+
+  - name: stg_outages_daily
+    description: "Arıza/bakım olayları — GENERATE_DATE_ARRAY ile günlük genişletilmiş"
+    columns:
+      - name: id
+        tests: [not_null]
+      - name: active_date
+        tests: [not_null]
+
+  - name: stg_dams
+    description: "Baraj aktif hacimleri — günlük (EPIAS)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: dam_id
+        tests: [not_null]
+
+# ──────────────────────────────────────────────────────────────
+# MART MODEL TESTS
+# ──────────────────────────────────────────────────────────────
   - name: mart_gop_volume_analysis
     description: "GÖP işlem hacimleri ve blok teklif analizleri"
     columns:
@@ -25,6 +146,45 @@ models:
           - not_null
       - name: renewable_penetration_pct
         tests:
-          - dbt_utils.accepted_range: # Yenilenebilir oranı %0 ile %100 arasında olmalıdır
+          - dbt_utils.accepted_range:
               min_value: 0
               max_value: 100
+
+  - name: mart_capacity_utilization
+    description: "Kaynak tipi bazında kapasite kullanım oranları (AİÇ / Üretim)"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+  - name: mart_regulation_depth
+    description: "DGP düzenleme derinliği — kodlu seviye aktivasyon oranları"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+
+  - name: mart_hydro_risk
+    description: "Hidrolik stres endeksi — baraj hacimleri ve tarihsel yüzdelik"
+    columns:
+      - name: date
+        tests: [not_null]
+
+  - name: mart_res_intraday_volatility
+    description: "Yenilenebilir saat-içi oynaklık — tahmin hata istatistikleri"
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]

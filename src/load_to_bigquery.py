@@ -82,6 +82,8 @@ class BQExternalTableManager:
             "unlicensed",
             "res_forecast",
             "aic",
+            "dpp",
+            "injection",
             "supply_demand",
             "load_estimation",
             "price_ind_bid",

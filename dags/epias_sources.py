@@ -53,6 +53,8 @@ DBT_EXCLUDE_PENDING_BACKFILL: list[str] = [
     "stg_sbfgp",
     "stg_res_forecast",
     "mart_production_plan",
+    # mart_res_intraday_volatility depends on stg_res_forecast — exclude until backfill completes
+    "mart_res_intraday_volatility",
 ]
 
 

@@ -185,13 +185,16 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── GLOBAL YEAR FILTER ──────────────────────────────────────────────────
-    # Stored in session_state["sel_year"]; all pages read it via the `sel_year`
-    # variable defined below.  Changing it here triggers a full page rerender
-    # so the new year's data is immediately queried server-side.
+    # ── GLOBAL YEAR & MONTH FILTERS ─────────────────────────────────────────
+    # Both stored in session_state and read below as `sel_year` / `sel_month`.
+    # Changing either widget triggers a full rerender so all page SQL queries
+    # instantly reflect the new selection.
     _now_year = pd.Timestamp.now().year
     _year_opts = [_now_year, _now_year - 1, _now_year - 2, _now_year - 3]
     st.selectbox("📅 Analiz Yılı", _year_opts, index=0, key="sel_year")
+
+    _month_labels = ["Tümü"] + list(MONTHS_TR.values())  # ["Tümü","Oca",…,"Ara"]
+    st.selectbox("📆 Ay", _month_labels, index=0, key="sel_month")
 
     st.markdown("---")
     if st.button("🔄 Veriyi Yenile", use_container_width=True):
@@ -209,8 +212,17 @@ with st.sidebar:
         f"</div>", unsafe_allow_html=True
     )
 
-# ── GLOBAL YEAR (read from sidebar widget, set in session_state) ──────────────
-sel_year: int = st.session_state.get("sel_year", pd.Timestamp.now().year)
+# ── GLOBAL YEAR + MONTH (read from sidebar widgets via session_state) ────────
+_MONTHS_TR_INV: dict[str, int] = {v: k for k, v in MONTHS_TR.items()}
+sel_year: int       = st.session_state.get("sel_year", pd.Timestamp.now().year)
+sel_month: int|None = _MONTHS_TR_INV.get(st.session_state.get("sel_month", "Tümü"))
+
+# SQL fragments appended after the year WHERE clause.
+# Empty string when "Tümü" (all months) is selected.
+#   _month_filter    → for columns named `date`
+#   _month_filter_td → for columns named `trade_date` (Page 9 GİP query)
+_month_filter    = f" AND EXTRACT(MONTH FROM date) = {sel_month}"       if sel_month else ""
+_month_filter_td = f" AND EXTRACT(MONTH FROM trade_date) = {sel_month}" if sel_month else ""
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 1 — EXECUTIVE SUMMARY
@@ -295,8 +307,11 @@ if page == "🏠 Executive Summary":
         st.plotly_chart(fig4, use_container_width=True, key="ex_heat")
 
     # ── YoY COMPARISON CHART ──────────────────────────────────────────────────
-    df_curr = df[df["year"] == sel_year] if "year" in df.columns else pd.DataFrame()
+    df_curr = df[df["year"] == sel_year]     if "year" in df.columns else pd.DataFrame()
     df_prev = df[df["year"] == sel_year - 1] if "year" in df.columns else pd.DataFrame()
+    if sel_month and "month" in df.columns:
+        df_curr = df_curr[df_curr["month"] == sel_month]
+        df_prev = df_prev[df_prev["month"] == sel_month]
 
     if not df_curr.empty and not df_prev.empty:
         st.markdown(f"### 📅 Yıllık Karşılaştırma — {sel_year} vs {sel_year - 1}")
@@ -352,7 +367,7 @@ elif page == "⚖️ Fiyat Analizi":
                EXTRACT(MONTH FROM date)     AS month,
                EXTRACT(DAYOFWEEK FROM date) AS day_of_week
         FROM {tbl('mart_price_analysis')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date, hour
     """)
     if df.empty:
@@ -467,7 +482,7 @@ elif page == "🌱 Üretim & Yenilenebilir":
             SELECT date, hour, total_generation, renewable_ratio, fossil_ratio,
                    EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
             FROM {tbl('mart_generation_mix')}
-            WHERE EXTRACT(YEAR FROM date) = {sel_year}
+            WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
             ORDER BY date, hour
         """)
         df_ren = query(f"""
@@ -476,7 +491,7 @@ elif page == "🌱 Üretim & Yenilenebilir":
                    SAFE_DIVIDE(total_green_energy_mwh, total_demand_mwh) AS renewable_ratio,
                    EXTRACT(YEAR FROM date) AS year
             FROM {tbl('mart_renawable_impact')}
-            WHERE EXTRACT(YEAR FROM date) = {sel_year}
+            WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
             ORDER BY date, hour
         """)
         df_deep = query(f"""
@@ -484,7 +499,7 @@ elif page == "🌱 Üretim & Yenilenebilir":
                    forecasted_res_mwh, wind_forecast_error,
                    EXTRACT(YEAR FROM date) AS year
             FROM {tbl('mart_renewable_deep')}
-            WHERE EXTRACT(YEAR FROM date) = {sel_year}
+            WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
             ORDER BY date, hour
         """)
 
@@ -575,7 +590,7 @@ elif page == "📊 GÖP Piyasa Hacimleri":
         SELECT date, hour, total_buy_mwh, total_sell_mwh, ptf_try, market_volume_try,
                EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_gop_volume_analysis')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date, hour
     """)
     df_mo = query(f"""
@@ -683,7 +698,7 @@ elif page == "🔋 Arz-Talep & Residual Yük":
                price_independent_bid_mwh, forecasted_residual_load_mwh,
                EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_forecasted_residual_load')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date
     """)
     df_drv = query(f"""
@@ -691,7 +706,7 @@ elif page == "🔋 Arz-Talep & Residual Yük":
                forecasted_res_mwh, forecasted_residual_load_mwh,
                EXTRACT(YEAR FROM date) AS year
         FROM {tbl('mart_ptf_drivers')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date, hour
     """)
 
@@ -778,7 +793,7 @@ elif page == "🚨 Arz Şoku & Risk":
         SELECT date, total_outage_mwh, total_available_capacity_mwh, supply_shock_index,
                EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_supply_shock_index')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date
     """)
     if df.empty:
@@ -862,7 +877,7 @@ elif page == "🤖 PTF Tahmin & ML":
                ptf_lag_1h, ptf_lag_24h, ptf_lag_168h, ptf_rolling_avg_24h,
                EXTRACT(YEAR FROM date) AS year
         FROM {tbl('mart_ptf_lag_features')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date, hour
     """)
 
@@ -1029,7 +1044,7 @@ elif page == "🌿 Lisanssız Üretim (YEKDEM)":
         SELECT date, total_unlicensed_mwh, ptf_try, estimated_market_value_try,
                EXTRACT(YEAR FROM date) AS year, EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_unlicensed_impact')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date
     """)
     if df.empty:
@@ -1115,7 +1130,7 @@ elif page == "⚡ GİP & Hava Durumu":
                EXTRACT(YEAR FROM trade_date) AS year,
                EXTRACT(MONTH FROM trade_date) AS month
         FROM {tbl('mart_gip_company_activity')}
-        WHERE EXTRACT(YEAR FROM trade_date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM trade_date) = {sel_year}{_month_filter_td}
         ORDER BY trade_date, hour
     """)
     df_wx = query(f"""
@@ -1123,7 +1138,7 @@ elif page == "⚡ GİP & Hava Durumu":
                wind_speed_kmh, shortwave_radiation, relative_humidity,
                EXTRACT(YEAR FROM date) AS year
         FROM {tbl('stg_weather')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date, hour, city_name
     """)
 
@@ -1243,7 +1258,7 @@ elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
                EXTRACT(YEAR FROM date) AS year,
                EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_production_plan')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date, hour
     """)
     if df.empty:
@@ -1350,7 +1365,7 @@ elif page == "🔥 PTF Tavan & Minimum Analizi":
                EXTRACT(YEAR FROM date) AS year,
                EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_ptf_extremes')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date, hour
     """)
     if df.empty:
@@ -1490,7 +1505,7 @@ elif page == "📈 Çapraz Piyasa Arbitraj":
                EXTRACT(YEAR  FROM date) AS year,
                EXTRACT(MONTH FROM date) AS month
         FROM {tbl('mart_cross_market_spread')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date, hour
     """)
     if df.empty:

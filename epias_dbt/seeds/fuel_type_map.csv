@@ -1,0 +1,19 @@
+canonical_name,aic_column,generation_column,dpp_column,display_name_tr,display_name_en
+gas,gas_aic_mwh,gas_generation_mwh,gas_dpp_mwh,Doğalgaz,Natural Gas
+wind,wind_aic_mwh,wind_generation_mwh,wind_dpp_mwh,Rüzgar,Wind
+solar,solar_aic_mwh,solar_generation_mwh,solar_dpp_mwh,Güneş,Solar
+lignite,lignite_aic_mwh,lignite_generation_mwh,lignite_dpp_mwh,Linyit,Lignite
+hard_coal,hard_coal_aic_mwh,,hard_coal_dpp_mwh,Taş Kömürü,Hard Coal
+imported_coal,imported_coal_aic_mwh,imported_coal_generation_mwh,imported_coal_dpp_mwh,İthal Kömür,Imported Coal
+fueloil,fueloil_aic_mwh,fueloil_generation_mwh,fueloil_dpp_mwh,Fuel Oil,Fuel Oil
+geothermal,geothermal_aic_mwh,geothermal_generation_mwh,geothermal_dpp_mwh,Jeotermal,Geothermal
+dam_hydro,dam_aic_mwh,dam_generation_mwh,dam_dpp_mwh,Barajlı,Dam Hydro
+run_of_river,river_aic_mwh,river_generation_mwh,river_dpp_mwh,Akarsu,Run-of-River
+naphtha,naphtha_aic_mwh,naphtha_generation_mwh,,Nafta,Naphtha
+biomass,biomass_aic_mwh,biomass_generation_mwh,biomass_dpp_mwh,Biyokütle,Biomass
+lng,,lng_generation_mwh,,LNG,LNG
+asphaltite_coal,,asphaltite_coal_generation_mwh,,Asfaltit Kömür,Asphaltite Coal
+black_coal,,black_coal_generation_mwh,,Taş Kömürü (İthal),Black Coal
+waste_heat,,waste_heat_generation_mwh,,Atık Isı,Waste Heat
+import_export,,import_export_mwh,,İthalat/İhracat,Import/Export
+other,,,other_dpp_mwh,Diğer,Other
