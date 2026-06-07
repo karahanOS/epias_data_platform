@@ -189,6 +189,8 @@ with st.sidebar:
         "🏭 Üretim Planı (BGÜP vs KGÜP)",
         "🔥 PTF Tavan & Minimum Analizi",
         "📈 Çapraz Piyasa Arbitraj",
+        "⚡ RES Öngörü Hatası",
+        "💧 Hidrolik & Baraj",
     ], label_visibility="collapsed")
 
     st.markdown("---")
@@ -804,6 +806,47 @@ elif page == "📊 GÖP Piyasa Hacimleri":
                     hole=0.6, marker_colors=["#10b981", "#ef4444"]))
                 dark(fig4, height=380, title="Merit Dağılımı")
                 st.plotly_chart(fig4, use_container_width=True, key="gop_pie")
+
+    # ── Fiyat Bağımsız Teklifler (Price-Independent Bids) ────────────────────
+    df_pib = query(f"""
+        SELECT date, hour, price_independent_bid_mwh
+        FROM {tbl('stg_price_ind_bid')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
+        ORDER BY date, hour
+    """)
+    if not df_pib.empty:
+        st.markdown("---")
+        st.markdown("### 📌 Fiyat Bağımsız Teklifler (FBT)")
+        st.caption("Fiyat bağımsız teklifler piyasa dışı zorunlu yükü temsil eder (ör. sözleşmeli tüketim). "
+                   "Yüksek FBT hacmi PTF'yi yukarı iter.")
+
+        col_p1, col_p2 = st.columns(2)
+
+        with col_p1:
+            daily_pib = df_pib.groupby("date")["price_independent_bid_mwh"].sum().reset_index()
+            # Merge with daily volume for share calc
+            daily_vol2 = dfy.groupby("date")["total_buy_mwh"].sum().reset_index() if not dfy.empty else pd.DataFrame()
+            if not daily_vol2.empty:
+                daily_pib = daily_pib.merge(daily_vol2, on="date", how="left")
+                daily_pib["pib_share"] = daily_pib["price_independent_bid_mwh"] / daily_pib["total_buy_mwh"] * 100
+            fig_pib = go.Figure()
+            fig_pib.add_trace(go.Bar(
+                x=daily_pib["date"], y=daily_pib["price_independent_bid_mwh"],
+                name="FBT Hacmi (MWh)", marker_color="rgba(124,58,237,0.6)"))
+            dark(fig_pib, height=380, title="Günlük Fiyat Bağımsız Teklif Hacmi",
+                 yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig_pib, use_container_width=True, key="gop_pib_daily")
+
+        with col_p2:
+            hourly_pib = df_pib.groupby("hour")["price_independent_bid_mwh"].mean().reset_index()
+            fig_pib2 = go.Figure(go.Bar(
+                x=hourly_pib["hour"], y=hourly_pib["price_independent_bid_mwh"],
+                marker_color="rgba(124,58,237,0.7)", name="Ort. FBT"))
+            dark(fig_pib2, height=380, title="Saatlik Ort. Fiyat Bağımsız Teklif (MWh)",
+                 xaxis=dict(title="Saat", tickmode="linear",
+                            gridcolor="rgba(255,255,255,0.05)"),
+                 yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig_pib2, use_container_width=True, key="gop_pib_hourly")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
