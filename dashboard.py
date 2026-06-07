@@ -371,6 +371,9 @@ elif page == "⚖️ Fiyat Analizi":
 
     df = query(f"""
         SELECT date, hour, ptf_try, smf_try, price_spread, season,
+               price_block, daily_ptf_range,
+               deficit_settlement_price, surplus_settlement_price,
+               cap_proximity_pct, is_zero_price,
                EXTRACT(YEAR FROM date)      AS year,
                EXTRACT(MONTH FROM date)     AS month,
                EXTRACT(DAYOFWEEK FROM date) AS day_of_week
@@ -397,6 +400,23 @@ elif page == "⚖️ Fiyat Analizi":
     c2.metric("Ort. SMF", f"{dfy['smf_try'].mean():,.2f} TL")
     c3.metric("Ort. Makas", f"{dfy['price_spread'].mean():,.2f} TL")
     c4.metric("Maks Makas", f"{dfy['price_spread'].max():,.2f} TL")
+
+    # ── Fiyat Bloğu & Tavan KPI'ları ─────────────────────────────────────────
+    _has_blocks = "price_block" in dfy.columns and not dfy["price_block"].isna().all()
+    if _has_blocks:
+        st.markdown("---")
+        cb1, cb2, cb3, cb4, cb5 = st.columns(5)
+        _gece  = dfy[dfy["price_block"] == "Gece"]["ptf_try"].mean()
+        _gunduz = dfy[dfy["price_block"] == "Gündüz"]["ptf_try"].mean()
+        _puant = dfy[dfy["price_block"] == "Puant"]["ptf_try"].mean()
+        _zero_cnt = int(dfy["is_zero_price"].sum()) if "is_zero_price" in dfy.columns else 0
+        _cap_max  = dfy["cap_proximity_pct"].max() if "cap_proximity_pct" in dfy.columns else 0
+        cb1.metric("🌙 Gece (22–05)", f"{_gece:,.0f} TL")
+        cb2.metric("☀️ Gündüz (06–16)", f"{_gunduz:,.0f} TL")
+        cb3.metric("⚡ Puant (17–21)", f"{_puant:,.0f} TL")
+        cb4.metric("⚠️ Sıfır Fiyat Saati", f"{_zero_cnt:,}")
+        cb5.metric("🔴 Maks Tavan Yakınlık", f"%{_cap_max:.1f}",
+                   help="4.500 TL/MWh tavan (EPDK 04.04.2026)")
 
     st.markdown("---")
 
@@ -472,6 +492,102 @@ elif page == "⚖️ Fiyat Analizi":
         fig_heat.update_layout(**DARK_LAYOUT, height=340,
             coloraxis_colorbar=dict(title="TL/MWh"))
         st.plotly_chart(fig_heat, use_container_width=True, key="pr_dow_heat")
+
+    # ── DUY Takas Fiyatları & Tavan Yakınlığı ────────────────────────────────
+    if _has_blocks and "deficit_settlement_price" in dfy.columns:
+        st.markdown("---")
+        st.markdown("### 💰 DUY Takas Fiyatları & Tavan Analizi")
+
+        col_s1, col_s2 = st.columns(2)
+
+        with col_s1:
+            # Günlük ort. takas fiyatları (açık vs fazla)
+            daily_settle = dfy.groupby("date").agg(
+                deficit=("deficit_settlement_price", "mean"),
+                surplus=("surplus_settlement_price", "mean"),
+                ptf=("ptf_try", "mean"),
+            ).reset_index()
+            fig_settle = go.Figure()
+            fig_settle.add_trace(go.Scatter(
+                x=daily_settle["date"], y=daily_settle["ptf"],
+                name="Ort PTF", line=dict(color="#00d4ff", width=1.5)))
+            fig_settle.add_trace(go.Scatter(
+                x=daily_settle["date"], y=daily_settle["deficit"],
+                name="Açık Takas (×1.03)", line=dict(color="#ef4444", width=1.5, dash="dot")))
+            fig_settle.add_trace(go.Scatter(
+                x=daily_settle["date"], y=daily_settle["surplus"],
+                name="Fazla Takas (×0.97)", line=dict(color="#10b981", width=1.5, dash="dot")))
+            fig_settle.add_hline(y=4500, line_dash="dash", line_color="#f59e0b",
+                annotation_text="Tavan 4.500 TL", annotation_font_color="#f59e0b")
+            dark(fig_settle, height=380,
+                 title="Günlük Ort. DUY Takas Fiyatları vs PTF",
+                 yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig_settle, use_container_width=True, key="pr_settle_daily")
+
+        with col_s2:
+            # Tavan yakınlık dağılımı
+            if "cap_proximity_pct" in dfy.columns:
+                fig_cap = px.histogram(
+                    dfy[dfy["ptf_try"] > 0], x="cap_proximity_pct",
+                    nbins=50, color="price_block",
+                    color_discrete_map={"Puant": "#ef4444", "Gündüz": "#f59e0b", "Gece": "#7c3aed"},
+                    barmode="overlay", opacity=0.75,
+                    title="Tavan Yakınlık Dağılımı (PTF > 0 saatler)",
+                    labels={"cap_proximity_pct": "Tavan Yakınlık (%)", "price_block": "Blok"},
+                )
+                fig_cap.add_vline(x=100, line_dash="dash", line_color="#ef4444",
+                                  annotation_text="Tavan", annotation_font_color="#ef4444")
+                dark(fig_cap, height=380)
+                st.plotly_chart(fig_cap, use_container_width=True, key="pr_cap_hist")
+
+        # Fiyat blok saatlik profili
+        st.markdown("### 📊 Fiyat Bloğu Saatlik Profili")
+        col_b1, col_b2 = st.columns(2)
+
+        with col_b1:
+            block_hourly = dfy.groupby(["hour", "price_block"])["ptf_try"].mean().reset_index()
+            fig_blk = px.bar(
+                block_hourly, x="hour", y="ptf_try", color="price_block",
+                color_discrete_map={"Puant": "#ef4444", "Gündüz": "#f59e0b", "Gece": "#7c3aed"},
+                barmode="group",
+                title="Blok × Saat Ort. PTF",
+                labels={"ptf_try": "Ort PTF (TL/MWh)", "hour": "Saat", "price_block": "Blok"},
+            )
+            dark(fig_blk, height=360,
+                 xaxis=dict(tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
+                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig_blk, use_container_width=True, key="pr_block_hourly")
+
+        with col_b2:
+            # Sıfır fiyat saati dağılımı
+            zero_df = dfy[dfy["is_zero_price"] == True] if "is_zero_price" in dfy.columns else pd.DataFrame()
+            if not zero_df.empty:
+                zero_hour = zero_df.groupby("hour").size().reset_index(name="count")
+                fig_zero = go.Figure(go.Bar(
+                    x=zero_hour["hour"], y=zero_hour["count"],
+                    marker_color="rgba(245,158,11,0.7)", name="Sıfır Fiyat Saati",
+                ))
+                dark(fig_zero, height=360,
+                     title=f"Sıfır Fiyat Saati Dağılımı ({_zero_cnt} saat toplam)",
+                     xaxis=dict(title="Saat", tickmode="linear",
+                                gridcolor="rgba(255,255,255,0.05)"),
+                     yaxis=dict(title="Saat Sayısı", gridcolor="rgba(255,255,255,0.05)"))
+                st.plotly_chart(fig_zero, use_container_width=True, key="pr_zero_price")
+            else:
+                st.info("Seçili dönemde sıfır fiyat saati bulunmamaktadır.")
+
+        # Günlük PTF aralığı (volatilite)
+        if "daily_ptf_range" in dfy.columns:
+            st.markdown("### 📈 Günlük PTF Volatilitesi (Maks − Min Aralık)")
+            daily_range = dfy.groupby("date")["daily_ptf_range"].first().reset_index()
+            fig_range = go.Figure(go.Bar(
+                x=daily_range["date"], y=daily_range["daily_ptf_range"],
+                marker_color="rgba(0,212,255,0.5)", name="PTF Aralığı",
+            ))
+            dark(fig_range, height=300,
+                 title="Günlük PTF Aralığı (TL/MWh)",
+                 yaxis=dict(title="Aralık (TL/MWh)", gridcolor="rgba(255,255,255,0.05)"))
+            st.plotly_chart(fig_range, use_container_width=True, key="pr_daily_range")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
