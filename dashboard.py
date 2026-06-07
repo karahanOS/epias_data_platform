@@ -983,15 +983,23 @@ elif page == "🤖 PTF Tahmin & ML":
 
         # Backtesting: fetch actual PTF for the EXACT date range present in
         # gold_ptf_predictions — independent of the sidebar year/month filter.
-        # Using df_lag (which is year/month-filtered) would cause an empty merge
-        # whenever predictions fall outside the selected period (e.g. today's
-        # predictions with a month filter on, or predictions from a future year).
+        #
+        # Source: mart_forecasted_residual_load (NOT mart_ptf_lag_features).
+        # Reason: the inference reads from mart_forecasted_residual_load whose
+        # driving table is stg_load_estimation (LEP).  mart_ptf_lag_features is
+        # driven by stg_pricing, which can have different hour coverage — LEP
+        # forecasts are published a day in advance while PTF prices settle after
+        # the market closes, so the most recent 1–3 hours of stg_pricing may lag
+        # behind stg_load_estimation.  Querying the same mart the inference used
+        # guarantees that any (date, hour) the inference wrote a prediction for
+        # will also appear in df_actual, making the inner join non-empty.
         _bt_min = df_pred["predicted_date"].min().strftime("%Y-%m-%d")
         _bt_max = df_pred["predicted_date"].max().strftime("%Y-%m-%d")
         df_actual = query(f"""
             SELECT date, hour, ptf_try
-            FROM {tbl('mart_ptf_lag_features')}
+            FROM {tbl('mart_forecasted_residual_load')}
             WHERE date BETWEEN '{_bt_min}' AND '{_bt_max}'
+              AND ptf_try IS NOT NULL
             ORDER BY date, hour
         """)
         df_actual["date"] = pd.to_datetime(df_actual["date"])
@@ -999,6 +1007,20 @@ elif page == "🤖 PTF Tahmin & ML":
         merged = df_actual.merge(
             df_pred, left_on=["date", "hour"], right_on=["predicted_date", "hour"],
             how="inner")
+
+        # ── TEMP DIAGNOSTIC — remove after merge is confirmed working ──────────
+        with st.expander("🔬 Merge Diagnostics", expanded=True):
+            st.write("**df_pred** (predictions in BQ):")
+            st.write(f"  rows={len(df_pred)}, dtypes: predicted_date={df_pred['predicted_date'].dtype}, hour={df_pred['hour'].dtype}")
+            st.dataframe(df_pred.head(10))
+            st.write("**df_actual** (actuals from mart_ptf_lag_features):")
+            if df_actual.empty:
+                st.error(f"⚠️ df_actual is EMPTY — mart_forecasted_residual_load has no rows with non-null ptf_try for {_bt_min} → {_bt_max}")
+            else:
+                st.write(f"  rows={len(df_actual)}, dtypes: date={df_actual['date'].dtype}, hour={df_actual['hour'].dtype}")
+                st.dataframe(df_actual.head(10))
+            st.write(f"**merged** rows: {len(merged)}")
+        # ── END DIAGNOSTIC ──────────────────────────────────────────────────────
 
         if not merged.empty:
             mae = (merged["ptf_try"] - merged["predicted_ptf"]).abs().mean()
