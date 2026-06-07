@@ -37,9 +37,21 @@ pricing AS (
 SELECT
     l.date,
     l.hour,
-    -- Reconstruct the full hourly timestamp so downstream consumers (ptf_trainer.py)
-    -- can use it as a proper time-series index with correct .hour, lag, and rolling features.
-    TIMESTAMP_ADD(CAST(l.date AS TIMESTAMP), INTERVAL l.hour HOUR) AS datetime,
+    -- Reconstruct the correct UTC timestamp for this Turkish local (date, hour) slot.
+    --
+    -- l.date  = Turkish local calendar date (DATE type)
+    -- l.hour  = Turkish local hour 1–24 (from stg_load_estimation's `time` field)
+    --
+    -- TIMESTAMP(l.date, 'Asia/Istanbul') gives UTC midnight for the Turkish calendar
+    -- date, e.g. '2026-06-05' → '2026-06-04T21:00:00Z'.
+    -- Adding l.hour hours then lands on the correct UTC slot:
+    --   hour=1  → '2026-06-04T22:00:00Z'  (Turkish 01:00 on 2026-06-05) ✓
+    --   hour=22 → '2026-06-05T19:00:00Z'  (Turkish 22:00 on 2026-06-05) ✓
+    --
+    -- The previous formula TIMESTAMP_ADD(CAST(l.date AS TIMESTAMP), INTERVAL l.hour HOUR)
+    -- used UTC midnight instead of Istanbul midnight, producing timestamps 3 h too late
+    -- (Turkish 22:00 came out as '2026-06-05T22:00:00Z' instead of '2026-06-05T19:00:00Z').
+    TIMESTAMP_ADD(TIMESTAMP(l.date, 'Asia/Istanbul'), INTERVAL l.hour HOUR) AS datetime,
     p.ptf_try,
     l.forecasted_load_mwh,
     r.forecasted_res_mwh,

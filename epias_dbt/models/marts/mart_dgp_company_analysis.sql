@@ -3,8 +3,10 @@
     partition_by={"field": "date", "data_type": "date"}
 ) }}
 
--- ─────────────────────────────────────────────────────────────────────────────
--- mart_dgp_company_analysis → mart_dgp_system_analysis
+-- ⚠️  DEPRECATED — bu model mart_dgp_system_analysis olarak yeniden adlandırıldı.
+--     Yeni kod mart_dgp_system_analysis'i kullanmalıdır.
+--     Bu dosya backward-compatibility için korunmaktadır;
+--     bir sonraki sprint'te `git mv` ile kaldırılacaktır.
 --
 -- Not: EPIAS order_summary_up/down endpoint'i sistem geneli aggregate veri
 -- döndürür; organizasyon bazlı breakdown mevcut değil. Bu mart saatlik

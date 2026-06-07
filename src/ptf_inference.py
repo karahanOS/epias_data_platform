@@ -24,6 +24,13 @@ PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_ptf_predictions"
 # Minimum lookback for lag-168 + rolling-168 features
 LOOKBACK_HOURS = 180
 
+# Turkey is permanently UTC+3 (DST abolished in 2016).
+# All staging models (stg_pricing, stg_load_estimation, etc.) use Turkish local
+# date/hour as their (date, hour) key.  We apply this offset when converting the
+# UTC datetime index from mart_forecasted_residual_load to a Turkish (date, hour)
+# key before writing to gold_ptf_predictions.
+_TR_UTC_OFFSET = pd.Timedelta(hours=3)
+
 
 # ── MODEL LOADER ──────────────────────────────────────────────────────────────
 
@@ -150,7 +157,7 @@ def _ensure_predictions_table(client: bigquery.Client) -> None:
         logger.debug(f"Table already exists: {PREDICTIONS_TABLE}")
 
 
-def write_prediction_to_bq(predicted_date: pd.Timestamp, hour: int, predicted_ptf: float) -> None:
+def write_prediction_to_bq(predicted_date: pd.Timestamp, predicted_ptf: float) -> None:
     """Idempotent upsert of a single prediction row to BigQuery.
 
     Uses a DML MERGE statement so that Airflow task retries cannot create
@@ -161,13 +168,27 @@ def write_prediction_to_bq(predicted_date: pd.Timestamp, hour: int, predicted_pt
     DML jobs run on the BigQuery query engine (not the streaming API), so they
     are not subject to the streaming-insert propagation delay that previously
     caused 404 errors immediately after table creation.
+
+    Key convention — Turkish local time (UTC+3):
+        mart_forecasted_residual_load.datetime is a *UTC* TIMESTAMP.  All staging
+        models use Turkish local date/hour as their natural key (stg_pricing,
+        stg_load_estimation, etc.).  We therefore add _TR_UTC_OFFSET to convert the
+        UTC index to Turkish local before computing predicted_date / hour, so that
+        gold_ptf_predictions keys can be directly joined with stg_pricing in the
+        backtesting section of the dashboard.
     """
     client = get_bq_client()
 
     # Auto-create the table on first inference run — no manual DDL required.
     _ensure_predictions_table(client)
 
-    date_str     = predicted_date.strftime("%Y-%m-%d")
+    # Convert UTC timestamp to Turkish local for storage
+    ts_utc  = predicted_date.tz_localize(None) if predicted_date.tzinfo is None else \
+              predicted_date.tz_convert("UTC").tz_localize(None)
+    ts_tr   = ts_utc + _TR_UTC_OFFSET          # naive datetime in Turkish local time
+    date_str = ts_tr.strftime("%Y-%m-%d")
+    hour     = int(ts_tr.hour)
+
     ptf_rounded  = round(float(predicted_ptf), 4)
     predicted_at = datetime.now(timezone.utc).isoformat()
 
@@ -209,11 +230,12 @@ def run():
     X_latest          = build_inference_features(df_recent, required_features)
 
     predicted_ptf     = model.predict(X_latest)[0]
-    predicted_ts      = X_latest.index[0]
+    predicted_ts      = X_latest.index[0]   # UTC TIMESTAMP from mart_forecasted_residual_load
 
+    # write_prediction_to_bq converts predicted_ts (UTC) → Turkish local internally
+    # before computing predicted_date / hour stored in gold_ptf_predictions.
     write_prediction_to_bq(
         predicted_date=predicted_ts,
-        hour=predicted_ts.hour,
         predicted_ptf=predicted_ptf,
     )
     logger.info("🏁 Inference job complete.")

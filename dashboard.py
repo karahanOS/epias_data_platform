@@ -1278,6 +1278,81 @@ elif page == "⚡ GİP & Hava Durumu":
                 dark(fig4, height=360, coloraxis_colorbar=dict(title="Rüzgar"))
                 st.plotly_chart(fig4, use_container_width=True, key="gip_wx_corr")
 
+    # ── COMPANY ACTIVITY ─────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🏢 Şirket Bazlı GİP Aktivitesi")
+
+    df_co = query(f"""
+        SELECT
+            trade_date AS date,
+            organization_name,
+            organization_code,
+            SUM(total_buy_mwh)          AS buy_mwh,
+            SUM(total_sell_mwh)         AS sell_mwh,
+            SUM(net_position_mwh)       AS net_mwh,
+            SUM(total_volume_mwh)       AS vol_mwh,
+            SUM(total_transaction_count) AS txn_count
+        FROM {tbl('mart_gip_company_analysis')}
+        WHERE EXTRACT(YEAR FROM trade_date) = {sel_year}{_month_filter_td}
+          AND organization_name IS NOT NULL
+        GROUP BY 1, 2, 3
+        ORDER BY vol_mwh DESC
+    """)
+
+    if df_co.empty:
+        st.info("Şirket bazlı GİP verisi henüz mevcut değil. "
+                "stg_idm_transactions ve mart_gip_company_analysis rebuild gerekebilir.")
+    else:
+        # ── Top-10 by volume ──────────────────────────────────────────────
+        top10 = (df_co.groupby("organization_name")[["buy_mwh","sell_mwh","vol_mwh"]]
+                 .sum().sort_values("vol_mwh", ascending=False).head(10).reset_index())
+
+        col_co1, col_co2 = st.columns(2)
+
+        with col_co1:
+            fig_co = go.Figure()
+            fig_co.add_trace(go.Bar(
+                y=top10["organization_name"], x=top10["buy_mwh"],
+                name="Alış (MWh)", orientation="h",
+                marker_color="rgba(16,185,129,0.75)"))
+            fig_co.add_trace(go.Bar(
+                y=top10["organization_name"], x=top10["sell_mwh"],
+                name="Satış (MWh)", orientation="h",
+                marker_color="rgba(239,68,68,0.75)"))
+            fig_co.update_layout(**DARK_LAYOUT, barmode="stack", height=400,
+                title="En Aktif 10 Şirket — Alış / Satış Hacmi",
+                xaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
+                yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig_co, use_container_width=True, key="gip_co_bar")
+
+        with col_co2:
+            # Net position: buyer-heavy vs seller-heavy companies
+            net = (df_co.groupby("organization_name")["net_mwh"]
+                   .sum().sort_values().reset_index())
+            colors = ["rgba(239,68,68,0.75)" if v < 0 else "rgba(16,185,129,0.75)"
+                      for v in net["net_mwh"]]
+            fig_net = go.Figure(go.Bar(
+                y=net["organization_name"], x=net["net_mwh"],
+                orientation="h", marker_color=colors))
+            fig_net.update_layout(**DARK_LAYOUT, height=400,
+                title="Net Pozisyon (Alış − Satış MWh)",
+                xaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)",
+                           zeroline=True, zerolinecolor="rgba(255,255,255,0.2)"),
+                yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig_net, use_container_width=True, key="gip_co_net")
+
+        # ── Summary table ─────────────────────────────────────────────────
+        st.markdown("#### Şirket Özet Tablosu")
+        summary = (df_co.groupby(["organization_name","organization_code"])
+                   [["buy_mwh","sell_mwh","net_mwh","vol_mwh","txn_count"]]
+                   .sum().sort_values("vol_mwh", ascending=False).reset_index())
+        summary.columns = ["Şirket", "Kod", "Alış (MWh)", "Satış (MWh)",
+                            "Net Pozisyon (MWh)", "Toplam Hacim (MWh)", "İşlem Adedi"]
+        for col in ["Alış (MWh)","Satış (MWh)","Net Pozisyon (MWh)","Toplam Hacim (MWh)"]:
+            summary[col] = summary[col].map(lambda x: f"{x:,.1f}")
+        summary["İşlem Adedi"] = summary["İşlem Adedi"].map(lambda x: f"{x:,}")
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 10 — ÜRETİM PLANI (BGÜP vs KGÜP)
