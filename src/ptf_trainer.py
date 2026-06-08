@@ -7,6 +7,7 @@ Runtime : 10–30 minutes (Optuna adds ~10 min on top of base training).
 """
 
 import logging
+import tempfile
 import warnings
 import joblib
 import numpy as np
@@ -31,7 +32,7 @@ logger = logging.getLogger("PTFTrainer")
 
 MODEL_GCS_PATH      = "models/ptf_xgb_model.joblib"
 IMPORTANCE_GCS_PATH = "models/ptf_shap_importance.csv"
-LOCAL_TMP           = "/tmp"
+LOCAL_TMP           = tempfile.gettempdir()   # /tmp on Linux/Docker, %TEMP% on Windows
 
 # Number of Optuna trials — 20 gives good coverage; reduce to 5 for CI/smoke
 OPTUNA_N_TRIALS = 20
@@ -110,6 +111,9 @@ def _optimise_hyperparams(X_train: pd.DataFrame, y_train: pd.Series,
 
     tscv = TimeSeriesSplit(n_splits=3)
 
+    # Ensure float64 dtype — BigQuery returns some numeric cols as object
+    X_f = X_train.apply(pd.to_numeric, errors="coerce").fillna(0).astype("float64")
+
     def objective(trial):
         params = {
             "n_estimators":      trial.suggest_int("n_estimators", 200, 1200),
@@ -125,10 +129,10 @@ def _optimise_hyperparams(X_train: pd.DataFrame, y_train: pd.Series,
             "objective":         "reg:squarederror",
         }
         scores = []
-        for tr_idx, val_idx in tscv.split(X_train):
+        for tr_idx, val_idx in tscv.split(X_f):
             m = xgb.XGBRegressor(**params)
-            m.fit(X_train.iloc[tr_idx], y_train.iloc[tr_idx], verbose=False)
-            preds = m.predict(X_train.iloc[val_idx])
+            m.fit(X_f.iloc[tr_idx], y_train.iloc[tr_idx], verbose=False)
+            preds = m.predict(X_f.iloc[val_idx])
             scores.append(mean_absolute_error(y_train.iloc[val_idx], preds))
         return float(np.mean(scores))
 
@@ -168,10 +172,14 @@ def train(df: pd.DataFrame) -> tuple:
     # Drop rows where ALL selected features are NaN (degenerate rows)
     df = df.dropna(subset=[target])
 
+    def _to_float(df_slice: pd.DataFrame) -> pd.DataFrame:
+        """Cast every column to float64, coercing non-numeric values to NaN, then fill."""
+        return df_slice.apply(pd.to_numeric, errors="coerce").fillna(0).astype("float64")
+
     split_date = df.index.max() - pd.Timedelta(days=30)
-    X_train = df.loc[df.index <  split_date, features].fillna(0)
+    X_train = _to_float(df.loc[df.index <  split_date, features])
     y_train = df.loc[df.index <  split_date, target]
-    X_test  = df.loc[df.index >= split_date, features].fillna(0)
+    X_test  = _to_float(df.loc[df.index >= split_date, features])
     y_test  = df.loc[df.index >= split_date, target]
 
     logger.info(f"Train: {len(X_train):,} rows | Test (last 30d): {len(X_test):,} rows | "
