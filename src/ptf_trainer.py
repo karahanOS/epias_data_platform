@@ -189,12 +189,15 @@ def train(df: pd.DataFrame) -> tuple:
     if _OPTUNA_AVAILABLE:
         logger.info(f"Running Optuna with {OPTUNA_N_TRIALS} trials...")
         best_params = _optimise_hyperparams(X_train, y_train)
-        # early_stopping_rounds is passed to fit(), not the constructor in new XGB
+        # These are passed explicitly to XGBRegressor() below — pop them from
+        # best_params regardless of what Optuna returns so there is never a
+        # "multiple values for keyword argument" crash.
         best_params.pop("early_stopping_rounds", None)
+        best_params.pop("random_state", None)
     else:
         logger.warning("Optuna not installed — using default hyperparameters.")
         best_params = {k: v for k, v in _DEFAULT_PARAMS.items()
-                       if k != "early_stopping_rounds"}
+                       if k not in ("early_stopping_rounds", "random_state")}
 
     model = xgb.XGBRegressor(**best_params, early_stopping_rounds=50,
                               random_state=42)

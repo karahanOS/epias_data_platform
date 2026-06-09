@@ -6,6 +6,15 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- mart_gip_company_analysis: "Hangi şirket GİP piyasasını kullanıyor?"
 --
+-- ⚠️  DATA AVAILABILITY NOTE (2026-06-09):
+-- EPİAŞ /v1/markets/idm/data/transaction-history does NOT return
+-- buyerOrganizationId / sellerOrganizationId.  stg_idm_transactions falls back
+-- to CAST(NULL AS INT64) for both columns when they are absent from Silver.
+-- As a result the WHERE ... IS NOT NULL clauses in both CTEs produce 0 rows and
+-- this mart is always empty until EPİAŞ exposes participant IDs on that endpoint
+-- (or a separate company-level IDM endpoint is wired up in epias_client.py).
+-- The dashboard's GİP page already handles the 0-row case gracefully.
+--
 -- Her IDM (GİP) işleminin hem alıcı (buyer) hem satıcı (seller) tarafını
 -- stg_participants ile çözümleyerek şirket adını ve net pozisyonunu hesaplar.
 --

@@ -6,8 +6,8 @@
 ) }}
 
 SELECT
-    CAST(date AS DATE) AS date,
-    CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64) AS hour,
+    DATE(date, 'Asia/Istanbul')                              AS date,
+    EXTRACT(HOUR FROM date AT TIME ZONE 'Asia/Istanbul')     AS hour,
     CAST(toplam AS FLOAT64) AS total_aic_mwh,
     CAST(dogalgaz AS FLOAT64) AS gas_aic_mwh,
     CAST(ruzgar AS FLOAT64) AS wind_aic_mwh,
@@ -24,5 +24,5 @@ SELECT
 FROM {{ source('silver', 'aic') }}
 
 {% if is_incremental() %}
-  WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }})
+  WHERE DATE(date, 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }})
 {% endif %}

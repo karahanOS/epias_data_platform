@@ -276,13 +276,22 @@ with DAG(
     silver_weather_backfill >> register_bq_tables
 
     # =========================================================================
-    # PHASE 4 — GOLD: dbt full-refresh rebuilds all mart tables from scratch
+    # PHASE 4 — GOLD: dbt rebuild
+    #
+    # Default (full_refresh=True): DROP + CREATE every Gold table so the full
+    # historical Silver dataset is reflected.  Use this on the first real backfill.
+    #
+    # Repair mode (full_refresh=False): regular incremental run — tables are NOT
+    # dropped, so the Streamlit dashboard stays live while specific models are fixed.
+    # Trigger with: Airflow UI → "Trigger DAG w/ config" → {"full_refresh": false}
     # =========================================================================
+    _fr_flag    = "{{ '--full-refresh ' if dag_run.conf.get('full_refresh', True) else '' }}"
+    _excl_list  = " ".join(DBT_EXCLUDE_PENDING_BACKFILL)
     run_dbt_backfill = BashOperator(
         task_id="run_dbt_full_refresh",
         bash_command=(
-            "cd /opt/airflow/epias_dbt && dbt run --profiles-dir . --target prod --full-refresh "
-            "--exclude " + " ".join(DBT_EXCLUDE_PENDING_BACKFILL)
+            f"cd /opt/airflow/epias_dbt && dbt run --profiles-dir . --target prod "
+            f"{_fr_flag}--exclude {_excl_list}"
         ),
     )
 
