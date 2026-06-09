@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # parses cleanly.  The actual runtime value comes from the Airflow Variable
 # (set via UI or `airflow variables set backfill_start_date 2025-01-01`).
 try:
-    BACKFILL_START_DATE = Variable.get("backfill_start_date", default_var="2026-06-01")
+    BACKFILL_START_DATE = Variable.get("backfill_start_date", default_var="2025-01-01")
 except Exception:
     BACKFILL_START_DATE = "2025-01-01"   # safe parse-time fallback
 
