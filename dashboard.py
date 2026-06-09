@@ -14,6 +14,7 @@ Sayfalar:
   8. 🌿 Lisanssız Üretim (YEKDEM)— mart_unlicensed_impact
 """
 
+import decimal as _decimal
 import os
 import sys
 import logging
@@ -137,13 +138,26 @@ def get_client():
 def query(sql: str) -> pd.DataFrame:
     try:
         df = get_client().query(sql).to_dataframe()
-        # BigQuery Storage API returns pandas nullable extension types (Float64, Int64).
-        # On all-null columns, .sum()/.mean() return pd.NA — not np.nan.
-        # f"{pd.NA:,.1f}" raises TypeError; converting to numpy float64 fixes this
-        # (pd.NA → np.nan, and np.nan formats safely as "nan").
-        for col in df.select_dtypes(include="number").columns:
-            if pd.api.types.is_extension_array_dtype(df[col].dtype):
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+        # ── Numeric type normalisation ────────────────────────────────────────
+        # BigQuery returns three flavours of numeric that need fixing:
+        #
+        # 1. Pandas nullable extension types (Float64, Int64, boolean):
+        #    .sum()/.mean() return pd.NA on all-null columns; f"{pd.NA:,.1f}"
+        #    raises TypeError.  → convert to numpy float64.
+        #
+        # 2. BigQuery NUMERIC / BIGNUMERIC:
+        #    pandas represents these as Python decimal.Decimal inside an object
+        #    Series.  decimal.Decimal / float raises TypeError, and the column
+        #    is invisible to df.select_dtypes(include="number").
+        #    → detect and convert to float64.
+        for col in df.columns:
+            s = df[col]
+            if pd.api.types.is_extension_array_dtype(s.dtype):
+                df[col] = pd.to_numeric(s, errors="coerce")
+            elif s.dtype == object:
+                first_valid = s.dropna()
+                if not first_valid.empty and isinstance(first_valid.iloc[0], _decimal.Decimal):
+                    df[col] = pd.to_numeric(s, errors="coerce")
         return df
     except BQNotFound:
         # Table doesn't exist yet — expected for tables populated by scheduled jobs
@@ -2172,18 +2186,32 @@ elif page == "💧 Hidrolik & Baraj":
     """)
 
     if df_hr.empty:
-        st.warning("Veri bulunamadı.")
+        st.warning(
+            "Baraj verisi bulunamadı. `mart_hydro_risk` tablosu henüz oluşturulmamış.  \n"
+            "Çözüm: `cd epias_dbt && dbt run --select mart_hydro_risk --profiles-dir . --target prod`"
+        )
         st.stop()
 
     # ── KPI'lar (basin düzeyinde en son gün) ─────────────────────────────────
     latest = df_hr[df_hr["date"] == df_hr["date"].max()]
-    avg_stress = latest["hydro_stress_index"].mean()
-    n_critical = (latest["hydro_stress_index"] < 0.25).sum()
-    n_warning  = ((latest["hydro_stress_index"] >= 0.25) & (latest["hydro_stress_index"] < 0.5)).sum()
+    avg_stress = latest["hydro_stress_index"].mean()   # NaN until 90-day window fills
+    n_critical = int((latest["hydro_stress_index"].fillna(-1) < 0.25).sum())
+    n_warning  = int(((latest["hydro_stress_index"] >= 0.25) & (latest["hydro_stress_index"] < 0.5)).sum())
     total_vol  = latest["active_volume"].sum()
 
+    # Show info banner when stress index isn't usable yet (< 90 days of dam history)
+    n_dates = df_hr["date"].nunique()
+    if pd.isna(avg_stress) or n_dates < 7:
+        st.info(
+            f"ℹ️  Stres endeksi 90 günlük kayan pencere gerektirir — şu an **{n_dates} günlük** baraj "
+            "verisi mevcut.  Aktif hacim grafikleri görünür; stres endeksi daha fazla geçmiş "
+            "verisi geldikçe otomatik olarak dolacak.  \n"
+            "Tam geçmiş için Airflow'dan `epias_historical_backfill` DAG'ını tetikleyin."
+        )
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Ort. Stres Endeksi", f"{avg_stress:.2f}",
+    c1.metric("Ort. Stres Endeksi",
+              f"{avg_stress:.2f}" if pd.notna(avg_stress) else "—",
               help="0=boş, 1=90g max; <0.25 kriz")
     c2.metric("🔴 Kritik Baraj (<0.25)", f"{n_critical:,}")
     c3.metric("🟡 Dikkat Barajı (0.25–0.50)", f"{n_warning:,}")

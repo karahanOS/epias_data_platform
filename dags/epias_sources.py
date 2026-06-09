@@ -45,17 +45,16 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
 
 # Models excluded from dbt runs while their Silver backfill is incomplete.
 # Remove a model from this list once its backfill is complete and dbt builds cleanly.
-#   stg_dpp          → remove after silver_dpp_backfill completes
-#   stg_sbfgp        → remove after silver_sbfgp_backfill completes
-#   stg_res_forecast → remove after silver_res_forecast_backfill completes
-#   mart_production_plan → remove after all upstream staging backfills complete
+#
+# Status as of 2026-06-09:
+#   stg_dpp          ⚠️  Silver has rows but Hive partition schema mismatch → still excluded
+#   stg_res_forecast ✅ Gold  has 73 803 rows  — UNBLOCKED, removed from list
+#   stg_sbfgp        ❌ Silver table not found  — still excluded
+#   mart_production_plan → remove after stg_dpp + stg_sbfgp backfills complete
 DBT_EXCLUDE_PENDING_BACKFILL: list[str] = [
     "stg_dpp",
     "stg_sbfgp",
-    "stg_res_forecast",
     "mart_production_plan",
-    # mart_res_intraday_volatility depends on stg_res_forecast — exclude until backfill completes
-    "mart_res_intraday_volatility",
 ]
 
 
