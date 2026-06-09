@@ -50,11 +50,26 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
 #   stg_dpp          ⚠️  Silver has rows but Hive partition schema mismatch → still excluded
 #   stg_res_forecast ✅ Gold  has 73 803 rows  — UNBLOCKED, removed from list
 #   stg_sbfgp        ❌ Silver table not found  — still excluded
+#   stg_order_down   ⚠️  Silver year=2026/month=05/day=29 has a stale INT64 backfill file
+#                        (old backfill append before downRegulationOneCoded was in dgp_metrics cast list)
+#                        Fix: delete gs://epias-data-lake/silver/order_down/year=2026/month=05/day=29/
+#                             re-run: docker exec airflow-scheduler bash -c
+#                               "cd /opt/airflow/epias_dbt && dbt run --select stg_order_down+"
+#                        Then remove from this list.
 #   mart_production_plan → remove after stg_dpp + stg_sbfgp backfills complete
 DBT_EXCLUDE_PENDING_BACKFILL: list[str] = [
     "stg_dpp",
     "stg_sbfgp",
+    "stg_order_down",
     "mart_production_plan",
+    # stg_order_down downstream — skipped until Silver partition is repaired:
+    "mart_dgp_company_analysis",
+    "mart_dgp_system_analysis",
+    "mart_regulation_depth",
+    "mart_cross_market_spread",
+    "mart_system_direction",
+    "mart_ml_features",
+    "mart_ptf_lag_features",
 ]
 
 

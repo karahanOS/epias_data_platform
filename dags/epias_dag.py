@@ -133,6 +133,16 @@ def save_to_gcs_callable(task_id: str, bucket_path: str, allow_empty: bool = Fal
     gcs_path = f"gs://{BUCKET_NAME}/{bucket_path}/{ds}.parquet"
 
     df = pd.DataFrame(flat)
+
+    # Coerce integer columns to float64 so every daily Bronze file uses DOUBLE
+    # physical type in Parquet.  Without this, pandas infers int64 when all API
+    # values for a column happen to be round numbers (e.g. downRegulationOneCoded=0
+    # or 1 all day).  Spark / BigQuery external tables registered as DOUBLE then
+    # refuse to read those partitions — same fix already present in backfill_chunk.
+    int_cols = df.select_dtypes(include=["int32", "int64"]).columns.tolist()
+    if int_cols:
+        df[int_cols] = df[int_cols].astype("float64")
+
     for col in df.select_dtypes(include=["datetimetz"]).columns:
         df[col] = df[col].astype(str)
 
