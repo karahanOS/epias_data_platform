@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # parses cleanly.  The actual runtime value comes from the Airflow Variable
 # (set via UI or `airflow variables set backfill_start_date 2025-01-01`).
 try:
-    BACKFILL_START_DATE = Variable.get("backfill_start_date", default_var="2025-01-01")
+    BACKFILL_START_DATE = Variable.get("backfill_start_date", default_var="2026-06-01")
 except Exception:
     BACKFILL_START_DATE = "2025-01-01"   # safe parse-time fallback
 
@@ -281,7 +281,7 @@ with DAG(
     run_dbt_backfill = BashOperator(
         task_id="run_dbt_full_refresh",
         bash_command=(
-            "cd /opt/airflow/epias_dbt && dbt run --profiles-dir . --full-refresh "
+            "cd /opt/airflow/epias_dbt && dbt run --profiles-dir . --target prod --full-refresh "
             "--exclude " + " ".join(DBT_EXCLUDE_PENDING_BACKFILL)
         ),
     )

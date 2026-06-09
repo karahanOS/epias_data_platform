@@ -1,7 +1,9 @@
 epias_dbt:
-  target: dev
+  # DBT_TARGET env var overrides this default.
+  # Set DBT_TARGET=prod in Docker/Airflow; leave unset on Windows (falls back to dev).
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
   outputs:
-    # 1. Kendi bilgisayarın için (Windows)
+    # 1. Local Windows development
     dev:
       type: bigquery
       method: service-account
@@ -11,12 +13,12 @@ epias_dbt:
       keyfile: C:\epias_data_platform\credentials\gcp-key.json
       location: EU
 
-    # 2. Airflow/Docker için (Linux)
+    # 2. Airflow / Docker (Linux)
     prod:
       type: bigquery
       method: service-account
       project: epias-data-platform
       dataset: epias_gold
       threads: 4
-      keyfile: /opt/airflow/credentials/gcp-key.json # Linux/Docker yolu
+      keyfile: /opt/airflow/credentials/gcp-key.json
       location: EU

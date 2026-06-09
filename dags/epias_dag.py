@@ -224,7 +224,7 @@ with DAG(
     run_dbt = BashOperator(
         task_id='run_dbt_gold_models',
         bash_command=(
-            'cd /opt/airflow/epias_dbt && dbt run --profiles-dir . '
+            'cd /opt/airflow/epias_dbt && dbt run --profiles-dir . --target prod '
             '--exclude ' + ' '.join(DBT_EXCLUDE_PENDING_BACKFILL)
         ),
     )

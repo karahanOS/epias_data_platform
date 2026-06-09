@@ -157,6 +157,21 @@ def query(sql: str) -> pd.DataFrame:
 def tbl(mart: str) -> str:
     return f"`{PROJECT}.{DATASET}.{mart}`"
 
+def _query_noerr(sql: str) -> pd.DataFrame:
+    """Run a BQ query silently — no st.error() on failure.
+
+    Use this only as a schema-probe before a graceful fallback.
+    Not cached (call sparingly).
+    """
+    try:
+        df = get_client().query(sql).to_dataframe()
+        for col in df.select_dtypes(include="number").columns:
+            if pd.api.types.is_extension_array_dtype(df[col].dtype):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 # ── DATA FRESHNESS ────────────────────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def get_last_updated() -> str:
@@ -269,17 +284,24 @@ if page == "🏠 Executive Summary":
 
     st.markdown("---")
 
+    # Year-filtered slice for main trend charts — responds to sidebar year selector.
+    # KPI metrics above intentionally use df.iloc[-1] (latest row regardless of year).
+    # Season heatmap and YoY comparison use df (all years) for cross-year context.
+    _ex_dfy = df[df["year"] == sel_year].copy() if "year" in df.columns else df.copy()
+    if _ex_dfy.empty:
+        _ex_dfy = df.copy()   # safety: sel_year has no data yet → show all
+
     # PTF band (min/avg/max)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df["year_month"], y=df["max_ptf"],
+    fig.add_trace(go.Scatter(x=_ex_dfy["year_month"], y=_ex_dfy["max_ptf"],
         name="Maks PTF", line=dict(color="#ef4444", width=1.5, dash="dot")))
-    fig.add_trace(go.Scatter(x=df["year_month"], y=df["avg_ptf"],
+    fig.add_trace(go.Scatter(x=_ex_dfy["year_month"], y=_ex_dfy["avg_ptf"],
         name="Ort PTF", line=dict(color="#00d4ff", width=2.5),
         fill="tonexty", fillcolor="rgba(0,212,255,0.06)"))
-    fig.add_trace(go.Scatter(x=df["year_month"], y=df["min_ptf"],
+    fig.add_trace(go.Scatter(x=_ex_dfy["year_month"], y=_ex_dfy["min_ptf"],
         name="Min PTF", line=dict(color="#10b981", width=1.5, dash="dot"),
         fill="tonexty", fillcolor="rgba(16,185,129,0.04)"))
-    dark(fig, title="Aylık PTF Bandı (Min / Ort / Maks)",
+    dark(fig, title=f"Aylık PTF Bandı — {sel_year} (Min / Ort / Maks)",
          xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
     st.plotly_chart(fig, use_container_width=True, key="ex_band")
 
@@ -287,23 +309,23 @@ if page == "🏠 Executive Summary":
 
     with col_l:
         fig2 = make_subplots(specs=[[{"secondary_y": True}]])
-        fig2.add_trace(go.Bar(x=df["year_month"], y=df["energy_deficit_hours"],
+        fig2.add_trace(go.Bar(x=_ex_dfy["year_month"], y=_ex_dfy["energy_deficit_hours"],
             name="Enerji Açığı (saat)", marker_color="rgba(239,68,68,0.6)"))
-        fig2.add_trace(go.Bar(x=df["year_month"], y=df["energy_surplus_hours"],
+        fig2.add_trace(go.Bar(x=_ex_dfy["year_month"], y=_ex_dfy["energy_surplus_hours"],
             name="Enerji Fazlası (saat)", marker_color="rgba(16,185,129,0.6)"))
         fig2.update_layout(**DARK_LAYOUT, barmode="group", height=380,
-            title="Aylık Sistem Yönü Dağılımı",
+            title=f"Aylık Sistem Yönü Dağılımı — {sel_year}",
             xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
         st.plotly_chart(fig2, use_container_width=True, key="ex_dir")
 
     with col_r:
         fig3 = go.Figure(go.Scatter(
-            x=df["year_month"], y=df["avg_price_spread"],
+            x=_ex_dfy["year_month"], y=_ex_dfy["avg_price_spread"],
             mode="lines+markers", name="Fiyat Makası",
             line=dict(color="#ff6b35", width=2.5),
             fill="tozeroy", fillcolor="rgba(255,107,53,0.07)"))
         fig3.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.2)")
-        dark(fig3, height=380, title="Aylık Ortalama Fiyat Makası (PTF - SMF)",
+        dark(fig3, height=380, title=f"Aylık Ortalama Fiyat Makası — {sel_year} (PTF - SMF)",
              xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
         st.plotly_chart(fig3, use_container_width=True, key="ex_spread")
 
@@ -371,7 +393,11 @@ elif page == "⚖️ Fiyat Analizi":
         <p>Saatlik PTF, SMF ve fiyat makası — sistem yönü ve mevsimsel örüntüler</p>
     </div>""", unsafe_allow_html=True)
 
-    df = query(f"""
+    # Two-stage query: try the full schema first (includes price_block, cap columns etc.
+    # added in Sprint A).  If the mart hasn't been rebuilt yet those columns won't
+    # exist in BQ and the query returns a 400 error.  Fall back to the base columns
+    # so the page still works, and show an info banner.
+    _price_sql_full = f"""
         SELECT date, hour, ptf_try, smf_try, price_spread, season,
                price_block, daily_ptf_range,
                deficit_settlement_price, surplus_settlement_price,
@@ -382,10 +408,33 @@ elif page == "⚖️ Fiyat Analizi":
         FROM {tbl('mart_price_analysis')}
         WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
         ORDER BY date, hour
-    """)
+    """
+    _price_sql_base = f"""
+        SELECT date, hour, ptf_try, smf_try, price_spread, season,
+               EXTRACT(YEAR FROM date)      AS year,
+               EXTRACT(MONTH FROM date)     AS month,
+               EXTRACT(DAYOFWEEK FROM date) AS day_of_week
+        FROM {tbl('mart_price_analysis')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
+        ORDER BY date, hour
+    """
+    df = _query_noerr(_price_sql_full)
+    _price_fallback = False
+    if df.empty:
+        df = query(_price_sql_base)
+        _price_fallback = True
+
     if df.empty:
         st.warning("Veri bulunamadı.")
         st.stop()
+
+    if _price_fallback:
+        st.info(
+            "ℹ️  `price_block` ve tavan analizi sütunları henüz BigQuery'de mevcut değil — "
+            "temel analiz gösteriliyor.  "
+            "Tam görünüm için dbt'yi yeniden derleyin:  \n"
+            "```\ncd epias_dbt && dbt run --full-refresh --select mart_price_analysis\n```"
+        )
 
     st.sidebar.download_button("📥 CSV İndir", df.to_csv(index=False).encode(),
                                "epias_price.csv", "text/csv")
@@ -1251,7 +1300,16 @@ elif page == "🌿 Lisanssız Üretim (YEKDEM)":
         ORDER BY date
     """)
     if df.empty:
-        st.warning("Veri bulunamadı.")
+        st.warning(
+            "**Lisanssız üretim verisi bulunamadı.**  \n\n"
+            "Bu sayfanın veri kaynağı (`stg_unlicensed_generation`) EPIAŞ tarafından "
+            "**~35 gün gecikmeyle** yayımlanmaktadır.  \n"
+            "Günlük pipeline 35 gün önceki tarihi çeker — dolayısıyla backfill "
+            "tamamlanmadan bu sayfada veri görünmez.  \n\n"
+            "**Çözüm:**  \n"
+            "1. Airflow backfill DAG'ını tetikleyin: `epias_historical_backfill`  \n"
+            "2. Backfill tamamlandıktan sonra: `dbt run --select mart_unlicensed_impact`"
+        )
         st.stop()
 
     st.sidebar.download_button("📥 CSV İndir", df.to_csv(index=False).encode(),
@@ -1346,8 +1404,22 @@ elif page == "⚡ GİP & Hava Durumu":
     """)
 
     if df_gip.empty:
-        st.warning("GİP verisi bulunamadı.")
+        st.warning(
+            "GİP verisi bulunamadı. `mart_gip_company_activity` tablosu henüz "
+            "oluşturulmamış ya da şema eski olabilir.  \n"
+            "Çözüm: `cd epias_dbt && dbt run --select mart_gip_company_activity`"
+        )
         st.stop()
+
+    # Guard: mart may exist but be built from an older schema that lacked total_volume_mwh.
+    # Show an info banner and degrade gracefully rather than crashing with KeyError.
+    _gip_has_volume = "total_volume_mwh" in df_gip.columns
+    if not _gip_has_volume:
+        st.info(
+            "ℹ️  `total_volume_mwh` sütunu BigQuery tablosunda mevcut değil — tablo eski "
+            "bir şemadan derlenmiş olabilir.  Hacim metrikleri devre dışı.  \n"
+            "Çözüm: `cd epias_dbt && dbt run --select mart_gip_company_activity`"
+        )
 
     cities = ["Tümü"] + sorted(df_wx["city_name"].dropna().unique().tolist()) if not df_wx.empty else ["Tümü"]
     sel_city = st.selectbox("Şehir (Hava)", cities, key="gip_city")
@@ -1359,7 +1431,8 @@ elif page == "⚡ GİP & Hava Durumu":
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ort GİP Fiyatı", f"{dfy['avg_transaction_price_try'].mean():,.2f} TL/MWh")
-    c2.metric("Toplam Hacim", f"{dfy['total_volume_mwh'].sum()/1e3:,.1f} GWh")
+    c2.metric("Toplam Hacim",
+              f"{dfy['total_volume_mwh'].sum()/1e3:,.1f} GWh" if _gip_has_volume else "—")
     c3.metric("Toplam İşlem Değ.", f"₺{dfy['total_transaction_value_try'].sum()/1e9:.2f} Mrd")
     c4.metric("Toplam İşlem Adedi", f"{dfy['total_transaction_count'].sum():,}")
 
@@ -1368,32 +1441,46 @@ elif page == "⚡ GİP & Hava Durumu":
     col_l, col_r = st.columns(2)
 
     with col_l:
+        _vol_col = "total_volume_mwh" if _gip_has_volume else "total_transaction_count"
         hourly = dfy.groupby("hour").agg(
-            vol=("total_volume_mwh","mean"),
+            vol=(_vol_col, "mean"),
             price=("avg_transaction_price_try","mean")).reset_index()
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         fig.add_trace(go.Bar(x=hourly["hour"], y=hourly["vol"],
-            name="Ort Hacim (MWh)", marker_color="rgba(0,212,255,0.6)"))
+            name="Ort Hacim (MWh)" if _gip_has_volume else "İşlem Adedi",
+            marker_color="rgba(0,212,255,0.6)"))
         fig.add_trace(go.Scatter(x=hourly["hour"], y=hourly["price"],
             name="Ort Fiyat (TL)", mode="lines+markers",
             line=dict(color="#ff6b35", width=2.5)), secondary_y=True)
         fig.update_layout(**DARK_LAYOUT, height=380, barmode="overlay",
             title="Saatlik GİP Hacim & Fiyat Profili",
             xaxis=dict(title="Saat", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
-            yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(title="MWh" if _gip_has_volume else "Adet",
+                       gridcolor="rgba(255,255,255,0.05)"),
             yaxis2=dict(title="TL/MWh", gridcolor="rgba(0,0,0,0)"))
         st.plotly_chart(fig, use_container_width=True, key="gip_hourly")
 
     with col_r:
-        monthly = dfy.groupby("month")["total_volume_mwh"].sum().reset_index()
-        monthly["ay"] = monthly["month"].map(MONTHS_TR)
-        fig2 = px.bar(monthly, x="ay", y="total_volume_mwh",
-            color="total_volume_mwh",
-            color_continuous_scale=["#10b981","#00d4ff","#7c3aed"],
-            title="Aylık GİP İşlem Hacmi (MWh)",
-            labels={"total_volume_mwh": "MWh", "ay": ""})
-        dark(fig2, height=380, coloraxis_showscale=False)
-        st.plotly_chart(fig2, use_container_width=True, key="gip_monthly")
+        if _gip_has_volume:
+            monthly = dfy.groupby("month")["total_volume_mwh"].sum().reset_index()
+            monthly["ay"] = monthly["month"].map(MONTHS_TR)
+            fig2 = px.bar(monthly, x="ay", y="total_volume_mwh",
+                color="total_volume_mwh",
+                color_continuous_scale=["#10b981","#00d4ff","#7c3aed"],
+                title="Aylık GİP İşlem Hacmi (MWh)",
+                labels={"total_volume_mwh": "MWh", "ay": ""})
+            dark(fig2, height=380, coloraxis_showscale=False)
+            st.plotly_chart(fig2, use_container_width=True, key="gip_monthly")
+        else:
+            monthly = dfy.groupby("month")["total_transaction_count"].sum().reset_index()
+            monthly["ay"] = monthly["month"].map(MONTHS_TR)
+            fig2 = px.bar(monthly, x="ay", y="total_transaction_count",
+                color="total_transaction_count",
+                color_continuous_scale=["#10b981","#00d4ff","#7c3aed"],
+                title="Aylık GİP İşlem Adedi",
+                labels={"total_transaction_count": "Adet", "ay": ""})
+            dark(fig2, height=380, coloraxis_showscale=False)
+            st.plotly_chart(fig2, use_container_width=True, key="gip_monthly")
 
     # Weather section
     if not dfy_wx.empty:
