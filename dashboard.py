@@ -321,43 +321,47 @@ if page == "🏠 Executive Summary":
     _ex_dfy = df[df["year"] == sel_year].copy() if "year" in df.columns else df.copy()
     if _ex_dfy.empty:
         _ex_dfy = df.copy()   # safety: sel_year has no data yet → show all
+    # Plotly 6 requires plain Python lists — pandas Series with non-contiguous index
+    # or nullable Int64 dtype cause traces to silently not render in Plotly 6.x.
+    _ex_dfy = _ex_dfy.reset_index(drop=True)
+    _xm = _ex_dfy["year_month"].tolist()
 
     # PTF band (min/avg/max)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=_ex_dfy["year_month"], y=_ex_dfy["max_ptf"],
+    fig.add_trace(go.Scatter(x=_xm, y=_ex_dfy["max_ptf"].tolist(),
         name="Maks PTF", line=dict(color="#ef4444", width=1.5, dash="dot")))
-    fig.add_trace(go.Scatter(x=_ex_dfy["year_month"], y=_ex_dfy["avg_ptf"],
+    fig.add_trace(go.Scatter(x=_xm, y=_ex_dfy["avg_ptf"].tolist(),
         name="Ort PTF", line=dict(color="#00d4ff", width=2.5),
         fill="tonexty", fillcolor="rgba(0,212,255,0.06)"))
-    fig.add_trace(go.Scatter(x=_ex_dfy["year_month"], y=_ex_dfy["min_ptf"],
+    fig.add_trace(go.Scatter(x=_xm, y=_ex_dfy["min_ptf"].tolist(),
         name="Min PTF", line=dict(color="#10b981", width=1.5, dash="dot"),
         fill="tonexty", fillcolor="rgba(16,185,129,0.04)"))
     dark(fig, title=f"Aylık PTF Bandı — {sel_year} (Min / Ort / Maks)",
-         xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
+         xaxis=dict(type="category", gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
     st.plotly_chart(fig, use_container_width=True, key="ex_band")
 
     col_l, col_r = st.columns(2)
 
     with col_l:
         fig2 = make_subplots(specs=[[{"secondary_y": True}]])
-        fig2.add_trace(go.Bar(x=_ex_dfy["year_month"], y=_ex_dfy["energy_deficit_hours"],
-            name="Enerji Açığı (saat)", marker_color="rgba(239,68,68,0.6)"))
-        fig2.add_trace(go.Bar(x=_ex_dfy["year_month"], y=_ex_dfy["energy_surplus_hours"],
-            name="Enerji Fazlası (saat)", marker_color="rgba(16,185,129,0.6)"))
+        fig2.add_trace(go.Bar(x=_xm, y=_ex_dfy["energy_deficit_hours"].tolist(),
+            name="Enerji Açığı (saat)", marker_color="rgba(239,68,68,0.6)"), secondary_y=False)
+        fig2.add_trace(go.Bar(x=_xm, y=_ex_dfy["energy_surplus_hours"].tolist(),
+            name="Enerji Fazlası (saat)", marker_color="rgba(16,185,129,0.6)"), secondary_y=False)
         fig2.update_layout(**DARK_LAYOUT, barmode="group", height=380,
             title=f"Aylık Sistem Yönü Dağılımı — {sel_year}",
-            xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
+            xaxis=dict(type="category", gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
         st.plotly_chart(fig2, use_container_width=True, key="ex_dir")
 
     with col_r:
         fig3 = go.Figure(go.Scatter(
-            x=_ex_dfy["year_month"], y=_ex_dfy["avg_price_spread"],
+            x=_xm, y=_ex_dfy["avg_price_spread"].tolist(),
             mode="lines+markers", name="Fiyat Makası",
             line=dict(color="#ff6b35", width=2.5),
             fill="tozeroy", fillcolor="rgba(255,107,53,0.07)"))
         fig3.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.2)")
         dark(fig3, height=380, title=f"Aylık Ortalama Fiyat Makası — {sel_year} (PTF - SMF)",
-             xaxis=dict(gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
+             xaxis=dict(type="category", gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
         st.plotly_chart(fig3, use_container_width=True, key="ex_spread")
 
     # Season heatmap
@@ -370,11 +374,11 @@ if page == "🏠 Executive Summary":
         st.plotly_chart(fig4, use_container_width=True, key="ex_heat")
 
     # ── YoY COMPARISON CHART ──────────────────────────────────────────────────
-    df_curr = df[df["year"] == sel_year]     if "year" in df.columns else pd.DataFrame()
-    df_prev = df[df["year"] == sel_year - 1] if "year" in df.columns else pd.DataFrame()
+    df_curr = df[df["year"] == sel_year].reset_index(drop=True)     if "year" in df.columns else pd.DataFrame()
+    df_prev = df[df["year"] == sel_year - 1].reset_index(drop=True) if "year" in df.columns else pd.DataFrame()
     if sel_month and "month" in df.columns:
-        df_curr = df_curr[df_curr["month"] == sel_month]
-        df_prev = df_prev[df_prev["month"] == sel_month]
+        df_curr = df_curr[df_curr["month"] == sel_month].reset_index(drop=True)
+        df_prev = df_prev[df_prev["month"] == sel_month].reset_index(drop=True)
 
     if not df_curr.empty and df_prev.empty:
         st.info(
@@ -389,11 +393,11 @@ if page == "🏠 Executive Summary":
         with col_yoy_l:
             fig_yoy = go.Figure()
             fig_yoy.add_trace(go.Scatter(
-                x=df_curr["month"], y=df_curr["avg_ptf"],
+                x=df_curr["month"].tolist(), y=df_curr["avg_ptf"].tolist(),
                 name=str(sel_year), mode="lines+markers",
                 line=dict(color="#00d4ff", width=2.5)))
             fig_yoy.add_trace(go.Scatter(
-                x=df_prev["month"], y=df_prev["avg_ptf"],
+                x=df_prev["month"].tolist(), y=df_prev["avg_ptf"].tolist(),
                 name=str(sel_year - 1), mode="lines+markers",
                 line=dict(color="#7c3aed", width=2.5, dash="dash")))
             dark(fig_yoy, height=360,
@@ -406,10 +410,10 @@ if page == "🏠 Executive Summary":
         with col_yoy_r:
             fig_yoy2 = go.Figure()
             fig_yoy2.add_trace(go.Bar(
-                x=df_curr["month"], y=df_curr["energy_deficit_hours"],
+                x=df_curr["month"].tolist(), y=df_curr["energy_deficit_hours"].tolist(),
                 name=str(sel_year), marker_color="rgba(0,212,255,0.7)"))
             fig_yoy2.add_trace(go.Bar(
-                x=df_prev["month"], y=df_prev["energy_deficit_hours"],
+                x=df_prev["month"].tolist(), y=df_prev["energy_deficit_hours"].tolist(),
                 name=str(sel_year - 1), marker_color="rgba(124,58,237,0.5)"))
             dark(fig_yoy2, height=360, barmode="group",
                  title=f"Enerji Açığı (saat): {sel_year} vs {sel_year - 1}",
