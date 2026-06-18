@@ -158,9 +158,12 @@ def query(sql: str) -> pd.DataFrame:
         # ── Numeric type normalisation ────────────────────────────────────────
         # BigQuery returns three flavours of numeric that need fixing:
         #
-        # 1. Pandas nullable extension types (Float64, Int64, boolean):
+        # 1. Pandas nullable numeric extension types (Float64, Int64, boolean):
         #    .sum()/.mean() return pd.NA on all-null columns; f"{pd.NA:,.1f}"
         #    raises TypeError.  → convert to numpy float64.
+        #    pandas 2.x also returns STRING columns as StringDtype extension
+        #    arrays — skip those; converting them via pd.to_numeric would
+        #    coerce every string to NaN.
         #
         # 2. BigQuery NUMERIC / BIGNUMERIC:
         #    pandas represents these as Python decimal.Decimal inside an object
@@ -169,7 +172,7 @@ def query(sql: str) -> pd.DataFrame:
         #    → detect and convert to float64.
         for col in df.columns:
             s = df[col]
-            if pd.api.types.is_extension_array_dtype(s.dtype):
+            if pd.api.types.is_extension_array_dtype(s.dtype) and not pd.api.types.is_string_dtype(s):
                 df[col] = pd.to_numeric(s, errors="coerce")
             elif s.dtype == object:
                 first_valid = s.dropna()
@@ -321,11 +324,12 @@ if page == "🏠 Executive Summary":
     _ex_dfy = df[df["year"] == sel_year].copy() if "year" in df.columns else df.copy()
     if _ex_dfy.empty:
         _ex_dfy = df.copy()   # safety: sel_year has no data yet → show all
-    # Plotly 6 silently drops 'YYYY-MM' partial-date strings. Fix: convert to
-    # proper datetime.date objects so Plotly uses a real date axis. Also drop
-    # any rows where year_month is null (can occur when Silver data has gaps).
-    _ex_dfy = _ex_dfy[_ex_dfy["year_month"].notna()].reset_index(drop=True)
-    _xm = pd.to_datetime(_ex_dfy["year_month"] + "-01").dt.date.tolist()
+    # Plotly 6 silently drops 'YYYY-MM' partial-date strings. Fix: build proper
+    # datetime.date objects from the numeric year/month columns so Plotly uses a
+    # real date axis. Filter rows where year or month is NaN (Silver data gaps).
+    import datetime as _dt
+    _ex_dfy = _ex_dfy[_ex_dfy["year"].notna() & _ex_dfy["month"].notna()].reset_index(drop=True)
+    _xm = [_dt.date(int(r.year), int(r.month), 1) for r in _ex_dfy[["year", "month"]].itertuples()]
     _xaxis_date = dict(tickformat="%b %Y", gridcolor="rgba(255,255,255,0.05)", tickangle=-45)
 
     # PTF band (min/avg/max)
