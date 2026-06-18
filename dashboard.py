@@ -321,13 +321,11 @@ if page == "🏠 Executive Summary":
     _ex_dfy = df[df["year"] == sel_year].copy() if "year" in df.columns else df.copy()
     if _ex_dfy.empty:
         _ex_dfy = df.copy()   # safety: sel_year has no data yet → show all
-    # Plotly 6 silently drops 'YYYY-MM' partial-date strings and also has issues
-    # with pandas Series from non-contiguous indexes. Fix: reset index, convert to
-    # proper ISO dates ('YYYY-MM-01') as Python date objects so Plotly uses a real
-    # date axis, and pass all y-values as plain Python lists.
-    _ex_dfy = _ex_dfy.reset_index(drop=True)
-    import datetime as _dt
-    _xm = [_dt.date(int(s[:4]), int(s[5:7]), 1) for s in _ex_dfy["year_month"].tolist()]
+    # Plotly 6 silently drops 'YYYY-MM' partial-date strings. Fix: convert to
+    # proper datetime.date objects so Plotly uses a real date axis. Also drop
+    # any rows where year_month is null (can occur when Silver data has gaps).
+    _ex_dfy = _ex_dfy[_ex_dfy["year_month"].notna()].reset_index(drop=True)
+    _xm = pd.to_datetime(_ex_dfy["year_month"] + "-01").dt.date.tolist()
     _xaxis_date = dict(tickformat="%b %Y", gridcolor="rgba(255,255,255,0.05)", tickangle=-45)
 
     # PTF band (min/avg/max)
