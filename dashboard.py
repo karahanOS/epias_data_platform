@@ -376,6 +376,12 @@ if page == "🏠 Executive Summary":
         df_curr = df_curr[df_curr["month"] == sel_month]
         df_prev = df_prev[df_prev["month"] == sel_month]
 
+    if not df_curr.empty and df_prev.empty:
+        st.info(
+            f"ℹ️  {sel_year - 1} yılına ait veri bulunamadı — Yıllık Karşılaştırma grafiği "
+            f"gösterilemiyor.  Geçmiş veriyi yüklemek için Airflow'dan "
+            f"`epias_historical_backfill` DAG'ını tetikleyin."
+        )
     if not df_curr.empty and not df_prev.empty:
         st.markdown(f"### 📅 Yıllık Karşılaştırma — {sel_year} vs {sel_year - 1}")
         col_yoy_l, col_yoy_r = st.columns(2)
