@@ -321,10 +321,14 @@ if page == "🏠 Executive Summary":
     _ex_dfy = df[df["year"] == sel_year].copy() if "year" in df.columns else df.copy()
     if _ex_dfy.empty:
         _ex_dfy = df.copy()   # safety: sel_year has no data yet → show all
-    # Plotly 6 requires plain Python lists — pandas Series with non-contiguous index
-    # or nullable Int64 dtype cause traces to silently not render in Plotly 6.x.
+    # Plotly 6 silently drops 'YYYY-MM' partial-date strings and also has issues
+    # with pandas Series from non-contiguous indexes. Fix: reset index, convert to
+    # proper ISO dates ('YYYY-MM-01') as Python date objects so Plotly uses a real
+    # date axis, and pass all y-values as plain Python lists.
     _ex_dfy = _ex_dfy.reset_index(drop=True)
-    _xm = _ex_dfy["year_month"].tolist()
+    import datetime as _dt
+    _xm = [_dt.date(int(s[:4]), int(s[5:7]), 1) for s in _ex_dfy["year_month"].tolist()]
+    _xaxis_date = dict(tickformat="%b %Y", gridcolor="rgba(255,255,255,0.05)", tickangle=-45)
 
     # PTF band (min/avg/max)
     fig = go.Figure()
@@ -336,8 +340,7 @@ if page == "🏠 Executive Summary":
     fig.add_trace(go.Scatter(x=_xm, y=_ex_dfy["min_ptf"].tolist(),
         name="Min PTF", line=dict(color="#10b981", width=1.5, dash="dot"),
         fill="tonexty", fillcolor="rgba(16,185,129,0.04)"))
-    dark(fig, title=f"Aylık PTF Bandı — {sel_year} (Min / Ort / Maks)",
-         xaxis=dict(type="category", gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
+    dark(fig, title=f"Aylık PTF Bandı — {sel_year} (Min / Ort / Maks)", xaxis=_xaxis_date)
     st.plotly_chart(fig, use_container_width=True, key="ex_band")
 
     col_l, col_r = st.columns(2)
@@ -350,7 +353,7 @@ if page == "🏠 Executive Summary":
             name="Enerji Fazlası (saat)", marker_color="rgba(16,185,129,0.6)"), secondary_y=False)
         fig2.update_layout(**DARK_LAYOUT, barmode="group", height=380,
             title=f"Aylık Sistem Yönü Dağılımı — {sel_year}",
-            xaxis=dict(type="category", gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
+            xaxis=dict(tickformat="%b %Y", gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
         st.plotly_chart(fig2, use_container_width=True, key="ex_dir")
 
     with col_r:
@@ -361,7 +364,7 @@ if page == "🏠 Executive Summary":
             fill="tozeroy", fillcolor="rgba(255,107,53,0.07)"))
         fig3.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.2)")
         dark(fig3, height=380, title=f"Aylık Ortalama Fiyat Makası — {sel_year} (PTF - SMF)",
-             xaxis=dict(type="category", gridcolor="rgba(255,255,255,0.05)", tickangle=-45))
+             xaxis=_xaxis_date)
         st.plotly_chart(fig3, use_container_width=True, key="ex_spread")
 
     # Season heatmap
