@@ -18,6 +18,7 @@ import decimal as _decimal
 import os
 import sys
 import logging
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -115,6 +116,22 @@ MONTHS_TR = {1:"Oca",2:"Şub",3:"Mar",4:"Nis",5:"May",6:"Haz",
 # BigQuery EXTRACT(DAYOFWEEK) → 1=Sun … 7=Sat
 DOW_TR = {1:"Paz", 2:"Pzt", 3:"Sal", 4:"Çar", 5:"Per", 6:"Cum", 7:"Cmt"}
 
+# Regulatory / threshold constants — update here when regulations change
+PTF_CAP_TRY         = 4_500  # EPDK cap effective 2026-04-04
+SUPPLY_SHOCK_THRESH = 0.1
+ARBITRAGE_HI_THRESH = 0.05
+HYDRO_STRESS_CRISIS = 0.25
+HYDRO_STRESS_WARN   = 0.50
+
+
+def _v(val, default: float = 0.0) -> float:
+    """NaN/NA-safe float coercion for metric formatting."""
+    try:
+        return float(val) if pd.notna(val) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def dark(fig, height=420, **extra):
     """Apply dark theme.  Caller xaxis/yaxis dicts are merged with dark defaults."""
     xaxis = {**_DARK_AXIS, **extra.pop("xaxis", {})}
@@ -171,11 +188,12 @@ def query(sql: str) -> pd.DataFrame:
 def tbl(mart: str) -> str:
     return f"`{PROJECT}.{DATASET}.{mart}`"
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def _query_noerr(sql: str) -> pd.DataFrame:
     """Run a BQ query silently — no st.error() on failure.
 
-    Use this only as a schema-probe before a graceful fallback.
-    Not cached (call sparingly).
+    Used as a schema-probe before a graceful fallback; cached at the same
+    TTL as query() so one BQ call per hour rather than one per render.
     """
     try:
         df = get_client().query(sql).to_dataframe()
@@ -237,9 +255,8 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("🔄 Veriyi Yenile", use_container_width=True):
-        # query.clear() invalidates only BQ cache — @st.cache_resource (BQ client)
-        # is intentionally preserved so the connection is not re-created on refresh.
         query.clear()
+        _query_noerr.clear()
         st.rerun()
 
     # Data freshness indicator
@@ -288,13 +305,13 @@ if page == "🏠 Executive Summary":
     prev = df.iloc[-2] if len(df) > 1 else last
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Ort. PTF (TL/MWh)", f"{last['avg_ptf']:,.2f}",
-              f"{last['avg_ptf']-prev['avg_ptf']:+.2f}")
-    c2.metric("Maks PTF", f"{last['max_ptf']:,.2f}")
-    c3.metric("Min PTF",  f"{last['min_ptf']:,.2f}")
-    c4.metric("Ort Fiyat Makası", f"{last['avg_price_spread']:,.2f}")
-    c5.metric("Enerji Açığı (saat)", f"{int(last['energy_deficit_hours']):,}",
-              f"{int(last['energy_deficit_hours']-prev['energy_deficit_hours']):+d}")
+    c1.metric("Ort. PTF (TL/MWh)", f"{_v(last['avg_ptf']):,.2f}",
+              f"{_v(last['avg_ptf'])-_v(prev['avg_ptf']):+.2f}")
+    c2.metric("Maks PTF", f"{_v(last['max_ptf']):,.2f}")
+    c3.metric("Min PTF",  f"{_v(last['min_ptf']):,.2f}")
+    c4.metric("Ort Fiyat Makası", f"{_v(last['avg_price_spread']):,.2f}")
+    c5.metric("Enerji Açığı (saat)", f"{int(_v(last['energy_deficit_hours'])):,}",
+              f"{int(_v(last['energy_deficit_hours'])-_v(prev['energy_deficit_hours'])):+d}")
 
     st.markdown("---")
 
@@ -481,14 +498,14 @@ elif page == "⚖️ Fiyat Analizi":
         cb3.metric("⚡ Puant (17–21)", f"{_puant:,.0f} TL")
         cb4.metric("⚠️ Sıfır Fiyat Saati", f"{_zero_cnt:,}")
         cb5.metric("🔴 Maks Tavan Yakınlık", f"%{_cap_max:.1f}",
-                   help="4.500 TL/MWh tavan (EPDK 04.04.2026)")
+                   help=f"{PTF_CAP_TRY:,} TL/MWh tavan (EPDK 04.04.2026)")
 
     st.markdown("---")
 
     # PTF vs SMF scatter
     col_l, col_r = st.columns([2, 1])
     with col_l:
-        fig = px.scatter(dfy.sample(min(4000, len(dfy))),
+        fig = px.scatter(dfy.sample(min(4000, len(dfy)), random_state=42),
             x="ptf_try", y="smf_try", color="season",
             opacity=0.5, trendline="ols",
             title="PTF vs SMF Saçılım",
@@ -582,8 +599,8 @@ elif page == "⚖️ Fiyat Analizi":
             fig_settle.add_trace(go.Scatter(
                 x=daily_settle["date"], y=daily_settle["surplus"],
                 name="Fazla Takas (×0.97)", line=dict(color="#10b981", width=1.5, dash="dot")))
-            fig_settle.add_hline(y=4500, line_dash="dash", line_color="#f59e0b",
-                annotation_text="Tavan 4.500 TL", annotation_font_color="#f59e0b")
+            fig_settle.add_hline(y=PTF_CAP_TRY, line_dash="dash", line_color="#f59e0b",
+                annotation_text=f"Tavan {PTF_CAP_TRY:,} TL", annotation_font_color="#f59e0b")
             dark(fig_settle, height=380,
                  title="Günlük Ort. DUY Takas Fiyatları vs PTF",
                  yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
@@ -625,7 +642,7 @@ elif page == "⚖️ Fiyat Analizi":
 
         with col_b2:
             # Sıfır fiyat saati dağılımı
-            zero_df = dfy[dfy["is_zero_price"] == True] if "is_zero_price" in dfy.columns else pd.DataFrame()
+            zero_df = dfy[dfy["is_zero_price"].fillna(False)] if "is_zero_price" in dfy.columns else pd.DataFrame()
             if not zero_df.empty:
                 zero_hour = zero_df.groupby("hour").size().reset_index(name="count")
                 fig_zero = go.Figure(go.Bar(
@@ -697,8 +714,8 @@ elif page == "🌱 Üretim & Yenilenebilir":
         st.stop()
 
     dfy      = df_mix
-    dfy_ren  = df_ren  if not df_ren.empty  else pd.DataFrame()
-    dfy_deep = df_deep if not df_deep.empty else pd.DataFrame()
+    dfy_ren  = df_ren
+    dfy_deep = df_deep
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ort. Yenilenebilir %", f"%{dfy['renewable_ratio'].mean()*100:.1f}")
@@ -716,7 +733,7 @@ elif page == "🌱 Üretim & Yenilenebilir":
     with col_l:
         # Renewable ratio vs PTF
         if not dfy_ren.empty and "ptf_try" in dfy_ren.columns:
-            fig = px.scatter(dfy_ren.sample(min(3000, len(dfy_ren))),
+            fig = px.scatter(dfy_ren.sample(min(3000, len(dfy_ren)), random_state=42),
                 x="renewable_ratio", y="ptf_try",
                 color="ptf_try", color_continuous_scale=["#10b981","#00d4ff","#ef4444"],
                 opacity=0.5, trendline="lowess",
@@ -871,6 +888,7 @@ elif page == "📊 GÖP Piyasa Hacimleri":
                 st.plotly_chart(fig4, use_container_width=True, key="gop_pie")
 
     # ── Fiyat Bağımsız Teklifler (Price-Independent Bids) ────────────────────
+    # stg_price_ind_bid: no Gold mart wraps this source yet; query Silver directly.
     df_pib = query(f"""
         SELECT date, hour, price_independent_bid_mwh
         FROM {tbl('stg_price_ind_bid')}
@@ -1036,8 +1054,8 @@ elif page == "🚨 Arz Şoku & Risk":
     c1.metric("Ort Arıza Kapasite", f"{dfy['total_outage_mwh'].mean():,.0f} MWh")
     c2.metric("Ort Emre Amade", f"{dfy['total_available_capacity_mwh'].mean():,.0f} MWh")
     c3.metric("Ort Arz Şok Endeksi", f"{dfy['supply_shock_index'].mean():.4f}")
-    risk_days = (dfy["supply_shock_index"] > 0.1).sum()
-    c4.metric("Yüksek Risk Günü (>0.1)", f"{risk_days}", delta="⚠️" if risk_days > 10 else "✅",
+    risk_days = (dfy["supply_shock_index"] > SUPPLY_SHOCK_THRESH).sum()
+    c4.metric(f"Yüksek Risk Günü (>{SUPPLY_SHOCK_THRESH})", f"{risk_days}", delta="⚠️" if risk_days > 10 else "✅",
               delta_color="off")
 
     st.markdown("---")
@@ -1064,12 +1082,12 @@ elif page == "🚨 Arz Şoku & Risk":
             line=dict(color="#ff6b35", width=2)))
         shock_max = dfy["supply_shock_index"].max(skipna=True)
         shock_max = shock_max if pd.notna(shock_max) else 0.5
-        fig2.add_hrect(y0=0.1, y1=shock_max + 0.01,
+        fig2.add_hrect(y0=SUPPLY_SHOCK_THRESH, y1=shock_max + 0.01,
                        fillcolor="rgba(239,68,68,0.07)",
                        line_width=0, annotation_text="Yüksek Risk Bölgesi",
                        annotation_font_color="#ef4444", annotation_position="top left")
-        fig2.add_hline(y=0.1, line_dash="dot", line_color="#ef4444",
-                       annotation_text="Eşik: 0.10", annotation_font_color="#ef4444")
+        fig2.add_hline(y=SUPPLY_SHOCK_THRESH, line_dash="dot", line_color="#ef4444",
+                       annotation_text=f"Eşik: {SUPPLY_SHOCK_THRESH:.2f}", annotation_font_color="#ef4444")
         dark(fig2, title="Günlük Arz Şoku Endeksi",
              yaxis=dict(title="Endeks", gridcolor="rgba(255,255,255,0.05)"))
         st.plotly_chart(fig2, use_container_width=True, key="risk_idx")
@@ -1111,12 +1129,16 @@ elif page == "🤖 PTF Tahmin & ML":
         ORDER BY date, hour
     """)
 
-    # Fetch ALL predictions (no year filter) — includes future dates for forward panel
-    # and historical dates for backtesting.  query() returns empty silently on BQNotFound.
+    # Fetch predictions for the last 90 days + future dates.  query() returns empty
+    # silently on BQNotFound (table absent before first inference run).
     df_pred = query(f"""
         SELECT predicted_date, hour, predicted_ptf FROM {tbl('gold_ptf_predictions')}
+        WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
         ORDER BY predicted_date, hour
     """)
+    if not df_pred.empty:
+        df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
+        df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").astype(int)
 
     if df_lag.empty:
         st.warning("Veri bulunamadı.")
@@ -1136,7 +1158,7 @@ elif page == "🤖 PTF Tahmin & ML":
 
     with col_l:
         # Lag correlation scatter T-24
-        fig = px.scatter(dfy.sample(min(3000, len(dfy))),
+        fig = px.scatter(dfy.sample(min(3000, len(dfy)), random_state=42),
             x="ptf_lag_24h", y="ptf_try", opacity=0.4, trendline="ols",
             color_discrete_sequence=["#00d4ff"],
             title="PTF(t) vs PTF(t-24h) — Günlük Kalıcılık",
@@ -1146,7 +1168,7 @@ elif page == "🤖 PTF Tahmin & ML":
 
     with col_r:
         # Lag correlation scatter T-168
-        fig2 = px.scatter(dfy.sample(min(3000, len(dfy))),
+        fig2 = px.scatter(dfy.sample(min(3000, len(dfy)), random_state=42),
             x="ptf_lag_168h", y="ptf_try", opacity=0.4, trendline="ols",
             color_discrete_sequence=["#7c3aed"],
             title="PTF(t) vs PTF(t-168h) — Haftalık Kalıcılık",
@@ -1158,13 +1180,11 @@ elif page == "🤖 PTF Tahmin & ML":
     # Shows future predictions (predicted_date >= today).  Appears only when
     # the gold_ptf_predictions table exists and has upcoming rows.
     if not df_pred.empty:
-        df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
         _today = pd.Timestamp.now().normalize()
         df_forward = df_pred[df_pred["predicted_date"] >= _today].copy()
 
         if not df_forward.empty:
             st.markdown("### 🔮 İleriye Yönelik 24h Tahmin")
-            df_forward["hour"] = pd.to_numeric(df_forward["hour"], errors="coerce").astype(int)
             df_forward["ts"] = df_forward["predicted_date"] + pd.to_timedelta(df_forward["hour"], unit="h")
             df_forward = df_forward.sort_values("ts")
 
@@ -1200,9 +1220,6 @@ elif page == "🤖 PTF Tahmin & ML":
     else:
         st.markdown("### 🎯 Model Backtesting — Gerçekleşen vs Tahmin")
 
-        df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
-        df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").astype(int)
-
         # ── Deduplicate predictions ───────────────────────────────────────────────
         # Airflow task retries cause duplicate streaming inserts.  Keep the first
         # occurrence of each (predicted_date, hour) pair.
@@ -1230,6 +1247,8 @@ elif page == "🤖 PTF Tahmin & ML":
         # +1 day buffer: UTC hours 22–23 on date D are fetched by the ds=D+1
         # Bronze pipeline run (Turkish hours 01–02 of D+1 = UTC 22–23 of D).
         _bt_max = (df_pred["predicted_date"].max() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        # stg_pricing used here (not a Gold mart) — see the hour-alignment comment
+        # above explaining why LEP-based Gold tables cannot be joined for backtesting.
         df_actual = query(f"""
             SELECT date, hour, ptf_try
             FROM {tbl('stg_pricing')}
@@ -1589,8 +1608,7 @@ elif page == "⚡ GİP & Hava Durumu":
             # Net position: buyer-heavy vs seller-heavy companies
             net = (df_co.groupby("organization_name")["net_mwh"]
                    .sum().sort_values().reset_index())
-            colors = ["rgba(239,68,68,0.75)" if v < 0 else "rgba(16,185,129,0.75)"
-                      for v in net["net_mwh"]]
+            colors = np.where(net["net_mwh"] < 0, "rgba(239,68,68,0.75)", "rgba(16,185,129,0.75)")
             fig_net = go.Figure(go.Bar(
                 y=net["organization_name"], x=net["net_mwh"],
                 orientation="h", marker_color=colors))
@@ -1675,8 +1693,7 @@ elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
             name="KGÜP (Kesinleşmiş)", line=dict(color="#10b981", width=1.5)))
         fig.add_trace(go.Bar(x=daily["date"], y=daily["rev"],
             name="Revizyon (KGÜP-BGÜP)",
-            marker_color=daily["rev"].apply(
-                lambda v: "rgba(16,185,129,0.5)" if v >= 0 else "rgba(239,68,68,0.5)")),
+            marker_color=np.where(daily["rev"] >= 0, "rgba(16,185,129,0.5)", "rgba(239,68,68,0.5)")),
             secondary_y=True)
         fig.update_layout(**DARK_LAYOUT, height=400,
             title="Günlük BGÜP / KGÜP & Revizyon",
@@ -1910,8 +1927,8 @@ elif page == "📈 Çapraz Piyasa Arbitraj":
               f"{dfy['gip_gop_spread_try'].mean():+.2f}")
     c3.metric("Ort. DGP (SMF)", f"{dfy['dgp_smf_try'].mean():,.2f} TL",
               f"{dfy['smf_gop_spread_try'].mean():+.2f}")
-    hi_arb = (dfy["arbitrage_opportunity_score"] > 0.05).sum()
-    c4.metric("Yüksek Arbitraj Saati (>%5)", f"{hi_arb:,}")
+    hi_arb = (dfy["arbitrage_opportunity_score"] > ARBITRAGE_HI_THRESH).sum()
+    c4.metric(f"Yüksek Arbitraj Saati (>%{ARBITRAGE_HI_THRESH*100:.0f})", f"{hi_arb:,}")
     avg_score = dfy["arbitrage_opportunity_score"].mean()
     c5.metric("Ort. Arbitraj Skoru", f"{avg_score:.4f}")
 
@@ -2004,8 +2021,8 @@ elif page == "📈 Çapraz Piyasa Arbitraj":
             x=daily_arb["date"], y=daily_arb["arbitrage_opportunity_score"],
             mode="lines", line=dict(color="#f59e0b", width=1.8),
             fill="tozeroy", fillcolor="rgba(245,158,11,0.08)"))
-        fig5.add_hline(y=0.05, line_dash="dot", line_color="rgba(239,68,68,0.6)",
-                       annotation_text="Yüksek Fırsat Eşiği (%5)",
+        fig5.add_hline(y=ARBITRAGE_HI_THRESH, line_dash="dot", line_color="rgba(239,68,68,0.6)",
+                       annotation_text=f"Yüksek Fırsat Eşiği (%{ARBITRAGE_HI_THRESH*100:.0f})",
                        annotation_font_color="#ef4444")
         dark(fig5, height=360, title="Günlük Ort. Arbitraj Fırsatı Skoru",
              yaxis=dict(title="Skor", gridcolor="rgba(255,255,255,0.05)"))
@@ -2195,8 +2212,8 @@ elif page == "💧 Hidrolik & Baraj":
     # ── KPI'lar (basin düzeyinde en son gün) ─────────────────────────────────
     latest = df_hr[df_hr["date"] == df_hr["date"].max()]
     avg_stress = latest["hydro_stress_index"].mean()   # NaN until 90-day window fills
-    n_critical = int((latest["hydro_stress_index"].fillna(-1) < 0.25).sum())
-    n_warning  = int(((latest["hydro_stress_index"] >= 0.25) & (latest["hydro_stress_index"] < 0.5)).sum())
+    n_critical = int((latest["hydro_stress_index"].fillna(-1) < HYDRO_STRESS_CRISIS).sum())
+    n_warning  = int(((latest["hydro_stress_index"] >= HYDRO_STRESS_CRISIS) & (latest["hydro_stress_index"] < HYDRO_STRESS_WARN)).sum())
     total_vol  = latest["active_volume"].sum()
 
     # Show info banner when stress index isn't usable yet (< 90 days of dam history)
@@ -2213,8 +2230,8 @@ elif page == "💧 Hidrolik & Baraj":
     c1.metric("Ort. Stres Endeksi",
               f"{avg_stress:.2f}" if pd.notna(avg_stress) else "—",
               help="0=boş, 1=90g max; <0.25 kriz")
-    c2.metric("🔴 Kritik Baraj (<0.25)", f"{n_critical:,}")
-    c3.metric("🟡 Dikkat Barajı (0.25–0.50)", f"{n_warning:,}")
+    c2.metric(f"🔴 Kritik Baraj (<{HYDRO_STRESS_CRISIS})", f"{n_critical:,}")
+    c3.metric(f"🟡 Dikkat Barajı ({HYDRO_STRESS_CRISIS}–{HYDRO_STRESS_WARN})", f"{n_warning:,}")
     c4.metric("Toplam Aktif Hacim", f"{total_vol/1e6:.2f} TWh")
 
     st.markdown("---")
@@ -2245,7 +2262,7 @@ elif page == "💧 Hidrolik & Baraj":
         latest_b = dfb[dfb["date"] == dfb["date"].max()].copy()
         latest_b["stres_kategori"] = pd.cut(
             latest_b["hydro_stress_index"],
-            bins=[-0.01, 0.25, 0.50, 1.01, 99],
+            bins=[-0.01, HYDRO_STRESS_CRISIS, HYDRO_STRESS_WARN, 1.01, 99],
             labels=["Kriz (<0.25)", "Dikkat (0.25–0.50)", "Normal (0.50–1.0)", "Fazla (>1.0)"],
         )
         stress_cnt = latest_b["stres_kategori"].value_counts().reset_index()
@@ -2267,9 +2284,9 @@ elif page == "💧 Hidrolik & Baraj":
         fig_si = go.Figure(go.Scatter(
             x=daily_stress["date"], y=daily_stress["basin_avg_stress_index"],
             mode="lines", line=dict(color="#f59e0b", width=2)))
-        fig_si.add_hrect(y0=0, y1=0.25, fillcolor="rgba(239,68,68,0.12)",
+        fig_si.add_hrect(y0=0, y1=HYDRO_STRESS_CRISIS, fillcolor="rgba(239,68,68,0.12)",
                          line_width=0, annotation_text="Kriz", annotation_position="left")
-        fig_si.add_hrect(y0=0.25, y1=0.5, fillcolor="rgba(245,158,11,0.08)",
+        fig_si.add_hrect(y0=HYDRO_STRESS_CRISIS, y1=HYDRO_STRESS_WARN, fillcolor="rgba(245,158,11,0.08)",
                          line_width=0, annotation_text="Dikkat", annotation_position="left")
         dark(fig_si, height=360, title="Günlük Ort. Havza Stres Endeksi",
              yaxis=dict(title="Stres Endeksi [0–1]", gridcolor="rgba(255,255,255,0.05)",
@@ -2281,7 +2298,7 @@ elif page == "💧 Hidrolik & Baraj":
         wow_df = dfb[dfb["date"] == dfb["date"].max()].dropna(subset=["wow_volume_change_pct"])
         if not wow_df.empty:
             wow_df = wow_df.sort_values("wow_volume_change_pct")
-            colors = ["#ef4444" if v < 0 else "#10b981" for v in wow_df["wow_volume_change_pct"]]
+            colors = np.where(wow_df["wow_volume_change_pct"] < 0, "#ef4444", "#10b981")
             fig_wow = go.Figure(go.Bar(
                 x=wow_df["dam_name"], y=wow_df["wow_volume_change_pct"] * 100,
                 marker_color=colors, name="HaH Değişim %"))
@@ -2301,8 +2318,8 @@ elif page == "💧 Hidrolik & Baraj":
     tbl_display = latest_b[show_cols].copy()
     if "hydro_stress_index" in tbl_display.columns:
         def _stress_color(v):
-            if v < 0.25: return "background-color: rgba(239,68,68,0.3)"
-            if v < 0.50: return "background-color: rgba(245,158,11,0.2)"
+            if v < HYDRO_STRESS_CRISIS: return "background-color: rgba(239,68,68,0.3)"
+            if v < HYDRO_STRESS_WARN:   return "background-color: rgba(245,158,11,0.2)"
             return ""
         tbl_display = tbl_display.sort_values("hydro_stress_index")
         st.dataframe(
