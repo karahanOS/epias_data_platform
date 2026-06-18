@@ -172,7 +172,11 @@ def query(sql: str) -> pd.DataFrame:
         #    → detect and convert to float64.
         for col in df.columns:
             s = df[col]
-            if pd.api.types.is_extension_array_dtype(s.dtype) and not pd.api.types.is_string_dtype(s):
+            if pd.api.types.is_extension_array_dtype(s.dtype) and (
+                pd.api.types.is_integer_dtype(s) or
+                pd.api.types.is_float_dtype(s) or
+                pd.api.types.is_bool_dtype(s)
+            ):
                 df[col] = pd.to_numeric(s, errors="coerce")
             elif s.dtype == object:
                 first_valid = s.dropna()
@@ -1258,10 +1262,14 @@ elif page == "🤖 PTF Tahmin & ML":
         # stg_pricing.hour = EXTRACT(HOUR FROM UTC timestamp) matches
         # predicted_ts.hour (also UTC) exactly — the merge is guaranteed to find
         # rows as long as stg_pricing has settled data for the prediction dates.
-        _bt_min = df_pred["predicted_date"].min().strftime("%Y-%m-%d")
+        _pred_dates = df_pred["predicted_date"].dropna()
+        if _pred_dates.empty:
+            st.warning("Tahmin tarihleri yüklenemedi — `predicted_date` sütunu boş.")
+            st.stop()
+        _bt_min = _pred_dates.min().strftime("%Y-%m-%d")
         # +1 day buffer: UTC hours 22–23 on date D are fetched by the ds=D+1
         # Bronze pipeline run (Turkish hours 01–02 of D+1 = UTC 22–23 of D).
-        _bt_max = (df_pred["predicted_date"].max() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        _bt_max = (_pred_dates.max() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         # stg_pricing used here (not a Gold mart) — see the hour-alignment comment
         # above explaining why LEP-based Gold tables cannot be joined for backtesting.
         df_actual = query(f"""
