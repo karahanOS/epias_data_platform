@@ -106,3 +106,7 @@ sources:
       - name: weather
         description: "Açık Meteo saatlik hava durumu (4 şehir: İstanbul, İzmir, Konya, Ankara)"
         freshness: {warn_after: {count: 30, period: hour}, error_after: {count: 72, period: hour}}
+
+      - name: fx_rates
+        description: "TCMB EVDS günlük USD/TRY alış kuru (TP.DK.USD.A) — hafta sonu forward-fill"
+        freshness: {warn_after: {count: 30, period: hour}, error_after: {count: 96, period: hour}}

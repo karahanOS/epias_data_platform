@@ -175,8 +175,15 @@ FEATURE_COLS = [
     "gop_volume_imbalance_mwh",
     "capacity_utilization_ratio",
     "net_imbalance_mwh",
-    "smf_try",
-    "ptf_smf_spread",
+    # smf_try ve ptf_smf_spread ÇIKARILDI — gün öncesi tahminlerde data leakage.
+    # Aynı saatin SMF'i yalnızca gerçek zamanlı dengeleme sonrası bilinir.
+    # Bunların yerine lag versiyonları kullanılıyor (aşağıda).
+
+    # SMF lag özellikleri (leakage-free)
+    # Weron & Misiorek (2008): "Forecasting spot electricity prices: A comparison..."
+    # → T-24h ve T-168h SMF, yarının dengeleme baskısını öngörür
+    "smf_try_lag_24h",
+    "smf_try_lag_168h",
 
     # Cross-market signals (Maciejowska et al.)
     "gip_gop_price_spread",

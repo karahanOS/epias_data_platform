@@ -15,7 +15,7 @@ SPARK_UTILS_PATH    = "/opt/airflow/spark/spark_utils.py"
 
 EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # key: (method_name, gcs_path, allow_empty, backfill_eligible, daily_eligible)
-    "pricing":          ("get_ptf_smf_sdf",                 "bronze/pricing",          False, True,  True),
+    "pricing":          ("get_ptf",                          "bronze/pricing",          False, True,  True),
     "smf":              ("get_smf",                         "bronze/smf",              False, True,  True),
     "consumption":      ("get_realtime_consumption",        "bronze/consumption",      False, True,  True),
     "supply_demand":    ("get_supply_demand",               "bronze/supply_demand",    False, True,  True),

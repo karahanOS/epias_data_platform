@@ -8,8 +8,8 @@ WITH base_metrics AS (
         ROUND(MAX(p.ptf_try), 2) AS max_ptf,
         ROUND(MIN(p.ptf_try), 2) AS min_ptf,
         ROUND(AVG(p.price_spread), 2) AS avg_price_spread,
-        COUNTIF(sd.system_direction = 'Enerji Açığı') AS energy_deficit_hours,
-        COUNTIF(sd.system_direction = 'Enerji Fazlası') AS energy_surplus_hours
+        COUNTIF(sd.system_direction = 'ENERGY_DEFICIT') AS energy_deficit_hours,
+        COUNTIF(sd.system_direction = 'ENERGY_SURPLUS') AS energy_surplus_hours
     FROM {{ ref('mart_price_analysis') }} p
     LEFT JOIN {{ ref('stg_system_direction') }} sd ON p.date = sd.date AND p.hour = sd.hour
     GROUP BY 1, 2

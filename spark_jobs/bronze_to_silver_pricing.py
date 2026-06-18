@@ -15,14 +15,6 @@ class PricingSilverJob(BaseEpiasSparkJob):
         df = self.read_bronze(ds)
         if df.rdd.isEmpty(): return
 
-        # SWAGGER ALIAS FIX: 'mcp' kolonu varsa dbt uyumluluğu için 'marketTradePrice' yap
-        if "mcp" in df.columns:
-            df = df.withColumnRenamed("mcp", "marketTradePrice")
-        if "mcpEur" in df.columns:
-            df = df.withColumnRenamed("mcpEur", "priceEur")
-        if "mcpUsd" in df.columns:
-            df = df.withColumnRenamed("mcpUsd", "priceUsd")
-
         # Zaman dönüşümü
         if "date" in df.columns:
             df = df.withColumn("date", self.parse_epias_timestamp())

@@ -56,7 +56,15 @@ try:
 except Exception:
     BACKFILL_START_DATE = "2025-01-01"   # safe parse-time fallback
 
-BACKFILL_END_DATE   = datetime.utcnow().strftime("%Y-%m-%d")
+# BACKFILL_END_DATE must be set to ONE DAY BEFORE the daily pipeline started running
+# to avoid overlap: backfill uses mode=overwrite and would clobber daily Silver partitions
+# that were already written — or worse, if changed back to append, create duplicates.
+# Set via Airflow Variable: airflow variables set backfill_end_date 2026-06-03
+try:
+    BACKFILL_END_DATE = Variable.get("backfill_end_date")
+except Exception:
+    # Fallback: yesterday — safe default that never reaches today's daily partition
+    BACKFILL_END_DATE = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 WEEK_CHUNK_DAYS     = 7      # Process 1 week at a time per task
 BUCKET_NAME         = "epias-data-lake"
 

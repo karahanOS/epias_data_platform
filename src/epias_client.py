@@ -200,7 +200,7 @@ class EPIASClient:
 
     # ── FİYAT ─────────────────────────────────────────────────────────────────
 
-    def get_ptf_smf_sdf(self, start_date: str, end_date: str) -> list:
+    def get_ptf(self, start_date: str, end_date: str) -> list:
         """
         Piyasa Takas Fiyatı (PTF / MCP).
         NOT: /v1/data/ptf-smf-sdf electricity-service'te 404 (reporting-service altında).
@@ -213,10 +213,10 @@ class EPIASClient:
 
     # get_ptf_smf_sdf alias'ları — geriye dönük uyumluluk
     def get_mcp(self, start_date: str, end_date: str) -> list:
-        return self.get_ptf_smf_sdf(start_date, end_date)
+        return self.get_ptf(start_date, end_date)
 
     def get_pricing_data(self, start_date: str, end_date: str) -> list:
-        return self.get_ptf_smf_sdf(start_date, end_date)
+        return self.get_ptf(start_date, end_date)
 
     def get_smf(self, start_date: str, end_date: str) -> list:
         """Sistem Marjinal Fiyatı. POST /v1/markets/bpm/data/system-marginal-price"""
@@ -668,7 +668,7 @@ class EPIASClient:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     client = EPIASClient()
-    rows = client.get_ptf_smf_sdf("2025-01-01", "2025-01-01")
+    rows = client.get_ptf("2025-01-01", "2025-01-01")
     print(f"PTF kayıt sayısı: {len(rows)}")
     if rows:
         print("İlk kayıt:", rows[0])

@@ -27,10 +27,16 @@ with_lags AS (
             INTERVAL CAST(hour AS INT64) HOUR
         ) AS datetime,
 
-        -- PTF Lag özellikleri
+        -- PTF lag özellikleri
         LAG(ptf_try, 1)   OVER (ORDER BY date, hour) AS ptf_lag_1h,
         LAG(ptf_try, 24)  OVER (ORDER BY date, hour) AS ptf_lag_24h,
         LAG(ptf_try, 168) OVER (ORDER BY date, hour) AS ptf_lag_168h,
+
+        -- SMF lag özellikleri (leakage-free: gelecekteki SMF bilinmiyor)
+        -- T-24h: dünün aynı saatinin dengeleme fiyatı → yarının fiyat baskısı sinyali
+        -- T-168h: geçen haftanın aynı saati → haftalık mevsimsel SMF deseni
+        LAG(smf_try, 24)  OVER (ORDER BY date, hour) AS smf_try_lag_24h,
+        LAG(smf_try, 168) OVER (ORDER BY date, hour) AS smf_try_lag_168h,
 
         -- Son 24 saatlik istatistikler (önceki gün aynı saat profili)
         AVG(ptf_try) OVER (

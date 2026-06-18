@@ -114,7 +114,7 @@ services:
     command:
       - bash
       - -c
-      - "mkdir -p /opt/airflow/logs && chmod -R 775 /opt/airflow/logs && airflow webserver"
+      - "mkdir -p /opt/airflow/logs; chmod -R 775 /opt/airflow/logs 2>/dev/null; airflow webserver"
     restart: unless-stopped
 
   airflow-scheduler:
@@ -128,7 +128,7 @@ services:
     command:
       - bash
       - -c
-      - "mkdir -p /opt/airflow/logs && chmod -R 775 /opt/airflow/logs && airflow scheduler"
+      - "mkdir -p /opt/airflow/logs; chmod -R 775 /opt/airflow/logs 2>/dev/null; airflow scheduler"
     restart: unless-stopped
 
 networks:

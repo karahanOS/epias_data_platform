@@ -118,6 +118,23 @@ gip_daily AS (
     FROM {{ ref('mart_gip_company_activity') }}
     GROUP BY 1
 ),
+-- ── USD/TRY Kur Özellikleri ───────────────────────────────────────────────
+-- Doğal gaz ithalat maliyeti ve genel enflasyon baskısı için proxy.
+-- Günlük tane — pricing'in saatlik granülüne date JOIN ile genişletilir.
+-- Lag penceresi: T-1d (gaz fiyat şoklarının bir günlük gecikmesi),
+--                T-7d (haftalık trend sinyali).
+fx_features AS (
+    SELECT
+        date,
+        usdtry,
+        LAG(usdtry, 1) OVER (ORDER BY date)  AS usdtry_lag_1d,
+        LAG(usdtry, 7) OVER (ORDER BY date)  AS usdtry_lag_7d,
+        SAFE_DIVIDE(
+            usdtry - LAG(usdtry, 1) OVER (ORDER BY date),
+            LAG(usdtry, 1) OVER (ORDER BY date)
+        )                                    AS usdtry_pct_change_1d
+    FROM {{ ref('stg_fx_rates') }}
+),
 -- ── Çapraz Piyasa Lag Sinyalleri (Maciejowska et al. temel bulgu) ────────
 -- "Dünün GİP-GÖP spread'i yarının PTF'ini yönlendirir" → T-24 lag
 -- mart_cross_market_spread'den saatlik spread ve arbitraj skoru çekiyoruz.
@@ -203,7 +220,14 @@ SELECT
     -- ── 11. Zaman Bileşenleri (sin/cos Python'da eklenir) ────────────────
     EXTRACT(DAYOFWEEK FROM p.date)                  AS day_of_week,
     EXTRACT(MONTH FROM p.date)                      AS month,
-    EXTRACT(YEAR FROM p.date)                       AS year
+    EXTRACT(YEAR FROM p.date)                       AS year,
+
+    -- ── 12. Döviz Kuru (USD/TRY) — TCMB EVDS ────────────────────────────
+    -- Doğal gaz maliyeti kanalı: gaz fiyatı $ bazlı → kur PTF'e gecikimli yansır.
+    COALESCE(fx.usdtry, 0)                          AS usdtry,
+    fx.usdtry_lag_1d,
+    fx.usdtry_lag_7d,
+    fx.usdtry_pct_change_1d
 
 FROM pricing p
 LEFT JOIN smf s           ON p.date = s.date AND p.hour = s.hour
@@ -220,3 +244,5 @@ LEFT JOIN weather_nat w   ON p.date = w.date AND p.hour = w.hour
 -- T-24 lag: bugünün saati için dünün aynı saatinin cross-market verisi
 LEFT JOIN cross_lag cl    ON cl.date = DATE_SUB(p.date, INTERVAL 1 DAY)
                          AND cl.hour = p.hour
+-- Günlük kur: aynı gün için tüm saatlere yayılır
+LEFT JOIN fx_features fx  ON p.date = fx.date

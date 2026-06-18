@@ -33,6 +33,7 @@ sys.path.insert(0, "/opt/airflow/src")
 try:
     from epias_client import EPIASClient
     from weather_client import WeatherClient
+    from fx_client import FXClient
 except ImportError as exc:
     logging.error(f"Modül yükleme hatası: {exc}")
 
@@ -114,6 +115,13 @@ def get_weather_data_callable(**context) -> list:
             logger.error("weather/%s hatası: %s", city, exc)
     return rows
 
+def get_fx_data_callable(**context) -> list:
+    client = FXClient()
+    ds = context["ds"]
+    # T-1: TCMB ~15:30 TR'de yayınlar, DAG 08:00 TR'de çalışır — bir önceki günün kuru alınır
+    target = (datetime.strptime(ds, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    return client.get_usdtry(target)
+
 def save_to_gcs_callable(task_id: str, bucket_path: str, allow_empty: bool = False, **context) -> None:
     data = context["ti"].xcom_pull(task_ids=task_id)
 
@@ -182,6 +190,15 @@ with DAG(
     )
     get_weather >> save_weather
 
+    # Döviz Kuru Özel Akışı (TCMB EVDS)
+    get_fx = PythonOperator(task_id="get_fx_rates", python_callable=get_fx_data_callable)
+    save_fx = PythonOperator(
+        task_id="save_fx_to_gcs",
+        python_callable=save_to_gcs_callable,
+        op_kwargs={"task_id": "get_fx_rates", "bucket_path": "bronze/fx_rates", "allow_empty": False},
+    )
+    get_fx >> save_fx
+
     bronze_save_tasks: Dict[str, PythonOperator] = {}
 
     for key, (method, path, allow_empty) in ALL_SOURCES.items():
@@ -215,6 +232,19 @@ with DAG(
         name="epias_silver_weather",
     )
     save_weather >> silver_weather
+
+    # FX silver task
+    silver_fx = SparkSubmitOperator(
+        task_id="silver_fx_rates",
+        application="/opt/airflow/spark/bronze_to_silver_fx_rates.py",
+        py_files="/opt/airflow/spark/spark_utils.py",
+        jars="/opt/spark/jars/gcs-connector.jar",
+        conn_id=SPARK_CONN_ID,
+        application_args=["{{ ds }}"],
+        deploy_mode="client",
+        name="epias_silver_fx_rates",
+    )
+    save_fx >> silver_fx
 
     # API'den gelen veriler için silver task'lar
     for key in ALL_SOURCES:
@@ -254,6 +284,7 @@ with DAG(
 
     # Zinciri Bağlama
     silver_weather >> load_to_bq
+    silver_fx >> load_to_bq
     for silver_t in silver_tasks.values():
         silver_t >> load_to_bq
 

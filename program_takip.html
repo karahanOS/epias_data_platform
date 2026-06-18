@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; }
+.header { background: linear-gradient(135deg,#1a1f2e,#16213e); padding: 20px 24px; border-bottom: 2px solid #e85d04; }
+.header h1 { font-size: 18px; font-weight: 800; color: #fff; }
+.header p { color: #94a3b8; font-size: 12px; margin-top: 4px; }
+.meta-bar { display: flex; gap: 12px; padding: 10px 24px; background: #1a1f2e; border-bottom: 1px solid #1e293b; align-items: center; flex-wrap: wrap; }
+.week-ctrl { display: flex; align-items: center; gap: 8px; }
+.wbtn { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 14px; font-weight: 700; }
+.wbtn:hover { background: #334155; }
+.wdisp { font-size: 15px; font-weight: 800; color: #fff; min-width: 80px; text-align: center; }
+.pbadge { color: #fff; font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 20px; background: #3b82f6; }
+.pbadge.p2 { background: #7c3aed; }
+.pbadge.p3 { background: #059669; }
+.nav { display: flex; background: #1a1f2e; border-bottom: 1px solid #1e293b; overflow-x: auto; }
+.nav button { padding: 11px 15px; background: none; border: none; color: #64748b; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; border-bottom: 3px solid transparent; }
+.nav button.active { color: #e85d04; border-bottom-color: #e85d04; }
+.nav button:hover:not(.active) { color: #cbd5e1; }
+.content { padding: 20px 24px; max-width: 950px; }
+.panel { display: none; }
+.panel.active { display: block; }
+.dhead { background: linear-gradient(135deg,#1a1f2e,#16213e); border-radius: 10px; padding: 14px 18px; margin-bottom: 12px; border: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.dhead h2 { font-size: 15px; font-weight: 800; color: #fff; }
+.dhead p { color: #94a3b8; font-size: 11px; margin-top: 3px; }
+.savebtn { background: #e85d04; color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.savebtn:hover { background: #c2410c; }
+.savebtn.saved { background: #059669; }
+table { width: 100%; border-collapse: collapse; background: #1a1f2e; border-radius: 10px; overflow: hidden; }
+thead { background: #0f1117; }
+th { padding: 8px 10px; text-align: left; font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; border-bottom: 1px solid #1e293b; }
+td { padding: 10px 10px; font-size: 12px; border-bottom: 1px solid #1e293b; vertical-align: middle; }
+tr:hover td { background: #16213e; }
+.en { font-weight: 700; color: #e2e8f0; font-size: 13px; }
+.enote { font-size: 10px; color: #64748b; margin-top: 2px; line-height: 1.4; }
+.enote.ank { color: #fbbf24; }
+.enote.dl { color: #a78bfa; }
+.sr { font-weight: 700; color: #e85d04; font-size: 12px; white-space: nowrap; }
+.rt { color: #64748b; font-size: 11px; white-space: nowrap; }
+.kginp { background: #0f1117; border: 1px solid #334155; color: #e2e8f0; border-radius: 6px; padding: 5px 6px; font-size: 13px; font-weight: 700; width: 68px; text-align: center; }
+.kginp:focus { outline: none; border-color: #e85d04; }
+.kginp::placeholder { color: #374151; font-size: 11px; }
+.prevkg { font-size: 10px; color: #475569; margin-top: 3px; text-align: center; }
+.sets-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.sbox { width: 24px; height: 24px; background: #1e293b; border: 1.5px solid #334155; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 11px; color: transparent; transition: all 0.15s; user-select: none; }
+.sbox.done { background: #e85d04; border-color: #e85d04; color: #fff; }
+.abox { background: #1c1a0a; border: 1px solid #92400e; border-radius: 8px; padding: 9px 14px; margin-bottom: 12px; font-size: 11px; color: #d97706; line-height: 1.5; }
+.abox strong { color: #fbbf24; }
+.pgrid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-bottom: 16px; }
+.pcard { background: #1a1f2e; border-radius: 10px; padding: 14px; border: 1px solid #1e293b; }
+.pcard:nth-child(1){border-top:3px solid #3b82f6}.pcard:nth-child(2){border-top:3px solid #7c3aed}.pcard:nth-child(3){border-top:3px solid #059669}
+.pcard h3 { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #64748b; }
+.pcard h2 { font-size: 13px; font-weight: 800; color: #fff; margin: 5px 0 4px; }
+.pcard p { font-size: 11px; color: #94a3b8; line-height: 1.5; }
+.dagrid { display: grid; grid-template-columns: repeat(7,1fr); gap: 5px; margin-bottom: 16px; }
+.dbox { background: #0f1117; border-radius: 7px; padding: 8px 3px; text-align: center; border: 1px solid #1e293b; }
+.dbox.on { background: #1c2a1a; border-color: #10b981; }
+.dbox.off { opacity: 0.4; }
+.dbox .dn { font-size: 9px; font-weight: 700; color: #64748b; text-transform: uppercase; }
+.dbox .dl { font-size: 10px; font-weight: 700; margin-top: 4px; color: #e2e8f0; }
+.dbox.on .dl { color: #10b981; }
+.dbox .dt { font-size: 9px; color: #64748b; margin-top: 1px; }
+.igrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.icard { background: #1a1f2e; border-radius: 10px; padding: 14px; border: 1px solid #1e293b; }
+.icard h3 { font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+.irow { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid #1e293b; gap: 8px; }
+.irow:last-child { border-bottom: none; }
+.ilbl { font-size: 12px; color: #e2e8f0; font-weight: 600; flex-shrink: 0; }
+.ival { font-size: 12px; font-weight: 800; color: #e85d04; text-align: right; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🏈 5-Month D-Line Program — Strength & Fat Loss</h1>
+  <p>110 kg · 187 cm · Turkey AF · Intermediate · 4 Days/Week · Left Ankle Modified</p>
+</div>
+
+<div class="meta-bar">
+  <div class="week-ctrl">
+    <button class="wbtn" onclick="chgWeek(-1)">◀</button>
+    <div class="wdisp" id="wdisp">Week 1</div>
+    <button class="wbtn" onclick="chgWeek(1)">▶</button>
+  </div>
+  <div id="pbadge" class="pbadge">Phase 1 — Foundation (Month 1–2)</div>
+</div>
+
+<div class="nav">
+  <button class="active" onclick="show('ov',this)">📋 Overview</button>
+  <button onclick="show('dA',this)">Day A · Lower Strength</button>
+  <button onclick="show('dB',this)">Day B · Upper Strength</button>
+  <button onclick="show('dC',this)">Day C · Lower Hypertrophy</button>
+  <button onclick="show('dD',this)">Day D · Upper Hypertrophy</button>
+  <button onclick="show('inf',this)">🥗 Nutrition</button>
+</div>
+
+<div class="content">
+
+<!-- OVERVIEW -->
+<div id="ov" class="panel active">
+  <div class="pgrid">
+    <div class="pcard"><h3>Phase 1</h3><h2>Month 1–2 · Week 1–8<br>Foundation</h2><p>Lock in form and movement patterns. 3–4 sets. Protect the ankle. Get comfortable with the weights.</p></div>
+    <div class="pcard"><h3>Phase 2</h3><h2>Month 3–4 · Week 9–18<br>Overload</h2><p>Add weight every week. Go up to 4–5 sets. Start Hang Clean if ankle is ready. Add HIIT conditioning.</p></div>
+    <div class="pcard"><h3>Phase 3</h3><h2>Month 5 · Week 19–22<br>Peak</h2><p>Intensify strength lifts. Test your maxes on main compounds. Tighten nutrition for the final push.</p></div>
+  </div>
+  <div style="background:#1a1f2e;border-radius:10px;padding:14px 16px;border:1px solid #1e293b;margin-bottom:14px;">
+    <h3 style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Weekly Schedule</h3>
+    <div class="dagrid">
+      <div class="dbox on"><div class="dn">Mon</div><div class="dl">Day A</div><div class="dt">Lower Str.</div></div>
+      <div class="dbox on"><div class="dn">Tue</div><div class="dl">Day B</div><div class="dt">Upper Str.</div></div>
+      <div class="dbox off"><div class="dn">Wed</div><div class="dl">Rest</div><div class="dt">Cardio opt.</div></div>
+      <div class="dbox on"><div class="dn">Thu</div><div class="dl">Day C</div><div class="dt">Lower Hyp.</div></div>
+      <div class="dbox on"><div class="dn">Fri</div><div class="dl">Day D</div><div class="dt">Upper Hyp.</div></div>
+      <div class="dbox off"><div class="dn">Sat</div><div class="dl">Rest</div><div class="dt">Cardio opt.</div></div>
+      <div class="dbox off"><div class="dn">Sun</div><div class="dl">Rest</div><div class="dt">Full rest</div></div>
+    </div>
+  </div>
+  <div class="abox"><strong>⚠️ Left Ankle Protocol:</strong> No plyometrics for weeks 1–8. Use heel plates under heels for squats if range of motion is limited. Single-Leg Leg Press instead of Bulgarian Split Squat. Ankle circles + band work every warm-up (5 min). Stationary bike / swimming preferred for cardio. Ice after lower body sessions if any swelling appears.</div>
+  <div class="igrid">
+    <div class="icard">
+      <h3>Daily Macro Targets — 110 kg</h3>
+      <div class="irow"><span class="ilbl">🥩 Protein</span><span class="ival">220–240g</span></div>
+      <div class="irow"><span class="ilbl">🍚 Carbohydrates</span><span class="ival">330–400g</span></div>
+      <div class="irow"><span class="ilbl">🥑 Fats</span><span class="ival">90–110g</span></div>
+      <div class="irow"><span class="ilbl">📉 Calorie Deficit</span><span class="ival">~350 kcal/day</span></div>
+      <div class="irow"><span class="ilbl">🎯 5-Month Target</span><span class="ival">103–106 kg</span></div>
+    </div>
+    <div class="icard">
+      <h3>D-Line Conditioning</h3>
+      <div class="irow"><span class="ilbl">Stationary Bike</span><span class="ival">25–35 min, moderate pace</span></div>
+      <div class="irow"><span class="ilbl">HIIT (Phase 2+)</span><span class="ival">10s sprint / 50s easy × 12–15</span></div>
+      <div class="irow"><span class="ilbl">Swimming</span><span class="ival">30 min active recovery</span></div>
+      <div class="irow"><span class="ilbl">Incline Walk</span><span class="ival">30–40 min, from week 8+</span></div>
+      <div class="irow"><span class="ilbl">Deload</span><span class="ival">Every 4–5 weeks, 1 week at 60%</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- DAY A -->
+<div id="dA" class="panel">
+  <div class="dhead">
+    <div><h2>Day A — Lower Body · Strength</h2><p>Heavy compound movements · Low-medium reps · Build your squat & deadlift base</p></div>
+    <button class="savebtn" id="svA" onclick="saveDay('A')">💾 Save</button>
+  </div>
+  <div class="abox"><strong>⚠️ Ankle:</strong> Use heel plates if needed · Leg Press is ankle-friendly · Prefer seated calf raise · Ankle circles every warm-up</div>
+  <table><thead><tr><th>#</th><th>Exercise</th><th>Sets × Reps</th><th>Rest</th><th>Weight</th><th>Sets ✓</th></tr></thead><tbody id="tbA"></tbody></table>
+</div>
+
+<!-- DAY B -->
+<div id="dB" class="panel">
+  <div class="dhead">
+    <div><h2>Day B — Upper Body · Strength</h2><p>Press & pull strength · Heavy, controlled, full range of motion</p></div>
+    <button class="savebtn" id="svB" onclick="saveDay('B')">💾 Save</button>
+  </div>
+  <table><thead><tr><th>#</th><th>Exercise</th><th>Sets × Reps</th><th>Rest</th><th>Weight</th><th>Sets ✓</th></tr></thead><tbody id="tbB"></tbody></table>
+</div>
+
+<!-- DAY C -->
+<div id="dC" class="panel">
+  <div class="dhead">
+    <div><h2>Day C — Lower Body · Hypertrophy</h2><p>Moderate weight, higher volume · Feel the muscle · Burn fat</p></div>
+    <button class="savebtn" id="svC" onclick="saveDay('C')">💾 Save</button>
+  </div>
+  <div class="abox"><strong>⚠️ Ankle:</strong> Prefer Hack Squat machine (fixed heel position) · Single-Leg Leg Press replaces Bulgarian Split Squat</div>
+  <table><thead><tr><th>#</th><th>Exercise</th><th>Sets × Reps</th><th>Rest</th><th>Weight</th><th>Sets ✓</th></tr></thead><tbody id="tbC"></tbody></table>
+</div>
+
+<!-- DAY D -->
+<div id="dD" class="panel">
+  <div class="dhead">
+    <div><h2>Day D — Upper Body · Hypertrophy</h2><p>Isolation & volume · Traps, neck, grip — D-Line hand-fighting strength</p></div>
+    <button class="savebtn" id="svD" onclick="saveDay('D')">💾 Save</button>
+  </div>
+  <table><thead><tr><th>#</th><th>Exercise</th><th>Sets × Reps</th><th>Rest</th><th>Weight</th><th>Sets ✓</th></tr></thead><tbody id="tbD"></tbody></table>
+</div>
+
+<!-- NUTRITION -->
+<div id="inf" class="panel">
+  <div class="igrid" style="margin-bottom:12px;">
+    <div class="icard">
+      <h3>Meal Timing</h3>
+      <div class="irow"><span class="ilbl">Pre-Workout (60–90 min)</span><span class="ival">Carbs + Protein</span></div>
+      <div class="irow"><span class="ilbl">Post-Workout (&lt;30 min)</span><span class="ival">Whey + Banana</span></div>
+      <div class="irow"><span class="ilbl">Rest Days</span><span class="ival">Cut carbs, maintain protein</span></div>
+      <div class="irow"><span class="ilbl">Before Bed</span><span class="ival">Greek yogurt / Casein</span></div>
+      <div class="irow"><span class="ilbl">Daily Water</span><span class="ival">3–4 liters</span></div>
+    </div>
+    <div class="icard">
+      <h3>Best Food Sources</h3>
+      <div class="irow"><span class="ilbl">🥩 Protein</span><span class="ival">Chicken, eggs, tuna, cottage cheese</span></div>
+      <div class="irow"><span class="ilbl">🍚 Carbs</span><span class="ival">Rice, oats, sweet potato, bread</span></div>
+      <div class="irow"><span class="ilbl">🥑 Fats</span><span class="ival">Olive oil, avocado, nuts (moderate)</span></div>
+      <div class="irow"><span class="ilbl">❌ Avoid</span><span class="ival">Juice, soda, alcohol, processed snacks</span></div>
+    </div>
+  </div>
+  <div class="icard">
+    <h3>Recovery Rules</h3>
+    <div class="irow"><span class="ilbl">😴 Sleep</span><span class="ival">7–9 hours — growth hormone releases here</span></div>
+    <div class="irow"><span class="ilbl">📈 Progressive Overload</span><span class="ival">Add weight when you hit top of rep range for ALL sets</span></div>
+    <div class="irow"><span class="ilbl">🔄 Deload</span><span class="ival">Every 4–5 weeks, train at 60% load for one week</span></div>
+    <div class="irow"><span class="ilbl">🤸 Stretching</span><span class="ival">10 min static stretching after every session</span></div>
+    <div class="irow"><span class="ilbl">🧊 Ankle</span><span class="ival">Ice if swelling after lower body · See physio if pain persists</span></div>
+  </div>
+</div>
+
+</div>
+
+<script>
+const EX = {
+  A:[
+    {id:'A1',name:'Barbell Back Squat',note:'⚠️ Use heel plates if needed · Keep load conservative until ankle is stable',nc:'ank',sr:'4 × 4–6',rest:'3 min',sets:4},
+    {id:'A2',name:'Trap Bar Deadlift',note:'💜 D-Line critical — snap movement simulation · Focus on hip drive · More ankle-friendly than conventional deadlift',nc:'dl',sr:'4 × 4–5',rest:'3 min',sets:4},
+    {id:'A3',name:'Leg Press',note:'⚠️ Ankle-friendly compound · Aim for full depth',nc:'ank',sr:'3 × 8–10',rest:'2 min',sets:3},
+    {id:'A4',name:'Lying Leg Curl',note:'Hold peak contraction · Lower to full extension',nc:'',sr:'3 × 8–10',rest:'90 sec',sets:3},
+    {id:'A5',name:'Seated Calf Raise',note:'⚠️ Seated preferred — less ankle pressure · Slow descent, full ROM',nc:'ank',sr:'3 × 15–20',rest:'60 sec',sets:3},
+    {id:'A6',name:'Pallof Press',note:'💜 D-Line critical — anti-rotation resistance against blocks · Both directions',nc:'dl',sr:'3 × 12 (each side)',rest:'60 sec',sets:3},
+  ],
+  B:[
+    {id:'B1',name:'Barbell Bench Press',note:'Feet flat · Natural arch · Bar to lower chest',nc:'',sr:'4 × 4–6',rest:'3 min',sets:4},
+    {id:'B2',name:'Weighted Pull-Up / Lat Pulldown',note:'Weighted pull-up if you can do 8+ BW reps · Otherwise lat pulldown',nc:'',sr:'4 × 5–8',rest:'3 min',sets:4},
+    {id:'B3',name:'Barbell Overhead Press (Standing)',note:'Core tight · Slight arc press · Full ROM',nc:'',sr:'3 × 6–8',rest:'2 min',sets:3},
+    {id:'B4',name:'Chest-Supported Row',note:'Isolates back without lower back fatigue · Squeeze shoulder blades fully at peak',nc:'',sr:'3 × 6–8',rest:'2 min',sets:3},
+    {id:'B5',name:'Face Pull',note:'Cable at eye height · Pull to forehead · Essential for rotator cuff health in collision sport',nc:'',sr:'3 × 15',rest:'60 sec',sets:3},
+    {id:'B6',name:'Close-Grip Bench Press',note:'Elbows tucked in · Controlled descent · Don\'t flare elbows',nc:'',sr:'3 × 8–10',rest:'90 sec',sets:3},
+    {id:'B7',name:"Farmer's Carry",note:'💜 D-Line critical — grip & trap strength for hand fighting · Heavy DBs or trap bar · Back straight',nc:'dl',sr:'4 × 20–25 m',rest:'90 sec',sets:4},
+    {id:'B8',name:'DB Shrug',note:'💜 Thick traps for collision sport · Drive all the way up, hold 1s · No swinging',nc:'dl',sr:'3 × 12–15',rest:'60 sec',sets:3},
+  ],
+  C:[
+    {id:'C1',name:'Hack Squat Machine',note:'⚠️ Prefer over free squat — fixed heel position, safe for ankle',nc:'ank',sr:'4 × 10–12',rest:'90 sec',sets:4},
+    {id:'C2',name:'Single-Leg Leg Press',note:'⚠️ Replaces Bulgarian Split Squat · Same unilateral stimulus, zero ankle instability risk',nc:'ank',sr:'3 × 10–12 (each leg)',rest:'90 sec',sets:3},
+    {id:'C3',name:'Barbell Hip Thrust',note:'Drive through both heels · Squeeze glutes at top · Full hip extension',nc:'',sr:'4 × 12–15',rest:'90 sec',sets:4},
+    {id:'C4',name:'Leg Extension',note:'Control the lowering phase · Don\'t lock out aggressively · Slow eccentric',nc:'',sr:'3 × 12–15',rest:'60 sec',sets:3},
+    {id:'C5',name:'Seated Leg Curl',note:'Better hamstring stretch than lying version · 2s peak contraction hold',nc:'',sr:'3 × 12–15',rest:'60 sec',sets:3},
+    {id:'C6',name:'Pallof Press',note:'💜 Do every training day · Anti-rotation core strength · Both directions',nc:'dl',sr:'3 × 12 (each side)',rest:'60 sec',sets:3},
+    {id:'C7',name:'Cable Crunch',note:'Kneel · Pull rope to forehead · Don\'t use hips · Slow eccentric',nc:'',sr:'3 × 15–20',rest:'60 sec',sets:3},
+  ],
+  D:[
+    {id:'D1',name:'Incline Dumbbell Press',note:'30–45° incline · Controlled stretch at bottom · 2s lowering',nc:'',sr:'4 × 10–12',rest:'90 sec',sets:4},
+    {id:'D2',name:'Cable Seated Row',note:'Neutral grip · Squeeze shoulder blades at peak · Don\'t lean back excessively',nc:'',sr:'4 × 10–12',rest:'90 sec',sets:4},
+    {id:'D3',name:'DB Lateral Raise',note:'Slight elbow bend · Lead with elbows · Control the drop, no swinging',nc:'',sr:'4 × 15–20',rest:'60 sec',sets:4},
+    {id:'D4',name:'Straight-Arm Cable Pulldown',note:'Arms straight · Hinge from shoulder · Lat isolation without biceps involvement',nc:'',sr:'3 × 12–15',rest:'60 sec',sets:3},
+    {id:'D5',name:'EZ Bar Bicep Curl',note:'Full extension at bottom · No swinging · Squeeze at top · Elbows fixed',nc:'',sr:'3 × 10–12',rest:'60 sec',sets:3},
+    {id:'D6',name:'Cable Tricep Pushdown',note:'Elbows pinned to sides · Full extension every rep',nc:'',sr:'3 × 12–15',rest:'60 sec',sets:3},
+    {id:'D7',name:'Rear Delt Cable Fly',note:'Cross-cable setup · Maintain shoulder balance — critical for all linemen',nc:'',sr:'3 × 15',rest:'60 sec',sets:3},
+    {id:'D8',name:'Neck Work',note:'💜 Collision sport safety · Machine / towel manual resistance / neck harness · All directions',nc:'dl',sr:'3 × 15 (each direction)',rest:'60 sec',sets:3},
+  ]
+};
+
+let week = 1;
+const SS = {};
+const KG = {};
+
+function phase(w){
+  if(w<=8) return {lbl:'Phase 1 — Foundation (Month 1–2)',cls:'pbadge'};
+  if(w<=18) return {lbl:'Phase 2 — Overload (Month 3–4)',cls:'pbadge p2'};
+  return {lbl:'Phase 3 — Peak (Month 5)',cls:'pbadge p3'};
+}
+function updMeta(){
+  document.getElementById('wdisp').textContent='Week '+week;
+  const p=phase(week);
+  const el=document.getElementById('pbadge');
+  el.textContent=p.lbl; el.className=p.cls;
+}
+async function chgWeek(d){
+  week=Math.max(1,Math.min(22,week+d));
+  updMeta();
+  try{ await window.storage.set('week',String(week)); }catch(e){}
+  await loadAll();
+}
+function render(dk){
+  const tb=document.getElementById('tb'+dk);
+  tb.innerHTML='';
+  EX[dk].forEach((ex,i)=>{
+    const tr=document.createElement('tr');
+    let chks='';
+    for(let s=0;s<ex.sets;s++){
+      const k=ex.id+'_'+s;
+      const done=SS[k]||false;
+      chks+=`<div class="sbox${done?' done':''}" onclick="togSet('${ex.id}',${s},this)">${done?'✓':''}</div>`;
+    }
+    const note=ex.note?`<div class="enote ${ex.nc}">${ex.note}</div>`:'';
+    const kThis=KG[dk+'_'+ex.id+'_w'+week]||'';
+    const kPrev=KG[dk+'_'+ex.id+'_w'+(week-1)]||'';
+    tr.innerHTML=`<td style="color:#64748b;font-size:12px;font-weight:700;">${i+1}</td>
+<td><div class="en">${ex.name}</div>${note}</td>
+<td><span class="sr">${ex.sr}</span></td>
+<td><span class="rt">${ex.rest}</span></td>
+<td>
+  <input class="kginp" type="number" placeholder="kg" value="${kThis}" id="kg_${ex.id}" oninput="onKg('${dk}','${ex.id}',this.value)" min="0" step="2.5">
+  ${kPrev?`<div class="prevkg">Prev: ${kPrev} kg</div>`:''}
+</td>
+<td><div class="sets-row">${chks}</div></td>`;
+    tb.appendChild(tr);
+  });
+}
+function togSet(exId,si,el){
+  const k=exId+'_'+si;
+  SS[k]=!SS[k];
+  el.classList.toggle('done');
+  el.textContent=SS[k]?'✓':'';
+}
+function onKg(dk,exId,val){
+  KG[dk+'_'+exId+'_w'+week]=val;
+}
+async function saveDay(dk){
+  const exs=EX[dk];
+  try{
+    for(const ex of exs){
+      const inp=document.getElementById('kg_'+ex.id);
+      if(inp&&inp.value){
+        const k=dk+'_'+ex.id+'_w'+week;
+        await window.storage.set(k,inp.value);
+        KG[k]=inp.value;
+      }
+    }
+    const btn=document.getElementById('sv'+dk);
+    btn.textContent='✅ Saved!';
+    btn.classList.add('saved');
+    setTimeout(()=>{btn.textContent='💾 Save';btn.classList.remove('saved');},2000);
+    render(dk);
+  }catch(e){ console.error(e); }
+}
+async function loadAll(){
+  for(const dk of ['A','B','C','D']){
+    for(const ex of EX[dk]){
+      for(const w of [week, week-1]){
+        if(w<1) continue;
+        const k=dk+'_'+ex.id+'_w'+w;
+        try{ const r=await window.storage.get(k); if(r) KG[k]=r.value; }catch(e){}
+      }
+    }
+    render(dk);
+  }
+}
+function show(id,btn){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+}
+async function init(){
+  try{ const r=await window.storage.get('week'); if(r) week=parseInt(r.value)||1; }catch(e){}
+  updMeta();
+  await loadAll();
+}
+init();
+</script>
+</body>
+</html>

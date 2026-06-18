@@ -180,7 +180,12 @@ class BaseEpiasSparkJob:
           files (~5-20 MiB each), keeping heap pressure within executor limits.
         """
         output_path = f"gs://epias-data-lake/silver/{self.source_name}/"
-        write_mode  = "append" if self.backfill_mode else "overwrite"
+        # DYNAMIC partition overwrite — replaces only the specific year/month/day
+        # partitions being written, leaving all others untouched.  Safe for both
+        # daily runs (single partition) and backfill (many partitions).
+        # We no longer use "append" for backfill because it creates duplicate Silver
+        # rows when the daily pipeline has already written some of the same dates.
+        write_mode  = "overwrite"
 
         if self.backfill_mode:
             # Repartition to keep each output file small and heap-safe.

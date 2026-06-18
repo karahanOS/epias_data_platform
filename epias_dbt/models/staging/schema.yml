@@ -112,6 +112,16 @@ models:
       - name: active_date
         tests: [not_null]
 
+  - name: stg_fx_rates
+    description: "Günlük USD/TRY alış kuru — TCMB EVDS (hafta sonu forward-fill dahil)"
+    columns:
+      - name: date
+        tests:
+          - unique
+          - not_null
+      - name: usdtry
+        tests: [not_null]
+
   - name: stg_dams
     description: "Baraj aktif hacimleri — günlük (EPIAS)"
     columns:

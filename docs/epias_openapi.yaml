@@ -1,0 +1,1226 @@
+openapi: "3.0.3"
+
+info:
+  title: EPIAS Transparency Electricity API
+  version: "1.0"
+  description: |
+    Türkiye elektrik piyasası şeffaflık verileri API'si.
+    Base URL: `https://seffaflik.epias.com.tr/electricity-service`
+
+    ## Veri Gecikmeleri (Data Delays)
+
+    | Veri Grubu | Gecikme | Açıklama |
+    |-----------|---------|---------|
+    | Fiyat verileri (PTF, SMF, GÖP, GİP, DGP) | T+0 | Gerçek zamanlı |
+    | UEVM (Uzlaştırma Veriş Miktarı) | T+1 | Bir gün sonra |
+    | Üretim / Tüketim | T+2 | İki gün sonra kesinleşir |
+    | YEKDEM Lisanssız Üretim | T+35 | Aylık uzlaştırma döngüsü |
+
+    ## Authentication (CAS)
+
+    Tüm istekler CAS (Central Authentication Service) ile kimlik doğrulaması gerektirir.
+
+    1. `/cas/v1/tickets` endpoint'ine kullanıcı adı ve şifre ile POST yapın → TGT token alın.
+    2. Aldığınız TGT'yi her API isteğinde `TGT` header'ı olarak gönderin.
+    3. TGT yaklaşık 1.5 saat geçerlidir; 401 yanıtı aldığınızda yenileyin.
+
+    ## Tarih Formatı
+
+    Tüm tarih parametreleri ISO 8601 + Türkiye timezone (+03:00) formatındadır:
+    - Gün başlangıcı: `2024-01-15T00:00:00+03:00`
+    - Gün sonu:       `2024-01-15T23:00:00+03:00`
+
+    ## Rate Limiting
+
+    EPIAS maksimum ~80 istek/dakika destekler.
+
+servers:
+  - url: https://seffaflik.epias.com.tr/electricity-service
+    description: Production
+
+  - url: https://giris.epias.com.tr
+    description: CAS Authentication Server
+
+tags:
+  - name: auth
+    description: CAS kimlik doğrulama
+  - name: markets-dam
+    description: Gün Öncesi Piyasa (GÖP)
+  - name: markets-idm
+    description: Gün İçi Piyasa (GİP)
+  - name: markets-bpm
+    description: Dengeleme Güç Piyasası (DGP/YAL/YAT)
+  - name: markets-general
+    description: Genel Piyasa Verileri
+  - name: generation
+    description: Elektrik Üretimi
+  - name: consumption
+    description: Elektrik Tüketimi
+  - name: renewables
+    description: Yenilenebilir Enerji (YEKDEM)
+  - name: dams
+    description: Baraj Verileri
+
+# ─────────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    CasTicket:
+      type: apiKey
+      in: header
+      name: TGT
+      description: |
+        CAS Ticket Granting Token. POST /cas/v1/tickets ile alınır.
+
+  parameters:
+    startDate:
+      name: startDate
+      in: query
+      required: false
+      description: "ISO 8601 başlangıç tarihi (örn: 2024-01-15T00:00:00+03:00)"
+      schema:
+        type: string
+        format: date-time
+        example: "2024-01-15T00:00:00+03:00"
+
+    endDate:
+      name: endDate
+      in: query
+      required: false
+      description: "ISO 8601 bitiş tarihi (örn: 2024-01-15T23:00:00+03:00)"
+      schema:
+        type: string
+        format: date-time
+        example: "2024-01-15T23:00:00+03:00"
+
+  schemas:
+    DateRangeBody:
+      type: object
+      required: [startDate, endDate]
+      properties:
+        startDate:
+          type: string
+          format: date-time
+          example: "2024-01-15T00:00:00+03:00"
+        endDate:
+          type: string
+          format: date-time
+          example: "2024-01-15T23:00:00+03:00"
+
+    SingleDateBody:
+      type: object
+      required: [date]
+      properties:
+        date:
+          type: string
+          format: date-time
+          example: "2024-01-15T00:00:00+03:00"
+
+    ItemsResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+
+    ErrorResponse:
+      type: object
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+
+# ─────────────────────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────────────────────
+paths:
+
+  # ── AUTH ──────────────────────────────────────────────────
+  /cas/v1/tickets:
+    post:
+      tags: [auth]
+      summary: TGT Token Al
+      description: |
+        CAS kimlik doğrulaması. Kullanıcı adı ve şifre ile TGT (Ticket Granting Token) alır.
+        Token yanıt header'ının `Location` alanında veya body'de döner.
+      servers:
+        - url: https://giris.epias.com.tr
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  example: kullanici@epias.com.tr
+                password:
+                  type: string
+                  format: password
+      responses:
+        "201":
+          description: TGT başarıyla oluşturuldu
+          headers:
+            Location:
+              description: TGT token URL
+              schema:
+                type: string
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "TGT-123456789abcdef"
+        "400":
+          description: Geçersiz kimlik bilgileri
+
+  # ── GÖP (DAY-AHEAD MARKET) ────────────────────────────────
+  /v1/markets/dam/data/mcp:
+    post:
+      tags: [markets-dam]
+      summary: PTF / MCP (Piyasa Takas Fiyatı)
+      description: Gün Öncesi Piyasa takas fiyatları (PTF/MCP).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date-time
+                        mcp:
+                          type: number
+                          description: Piyasa Takas Fiyatı (TL/MWh)
+                        smp:
+                          type: number
+                          description: Sistem Marjinal Fiyatı (TL/MWh)
+                        sdf:
+                          type: number
+                          description: Sistem Dengesizlik Fiyatı (TL/MWh)
+        "400":
+          $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Kimlik doğrulama hatası - TGT yenile
+
+  /v1/markets/dam/data/supply-demand:
+    post:
+      tags: [markets-dam]
+      summary: Arz-Talep Eğrisi (GÖP)
+      description: Belirli bir gün için Gün Öncesi Piyasa arz ve talep eğrisi verileri.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SingleDateBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/dam/data/clearing-quantity:
+    post:
+      tags: [markets-dam]
+      summary: Eşleşme Miktarı (GÖP)
+      description: Gün Öncesi Piyasa eşleşme miktarları.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/dam/data/day-ahead-market-trade-volume:
+    post:
+      tags: [markets-dam]
+      summary: GÖP İşlem Hacmi
+      description: Gün Öncesi Piyasa toplam işlem hacmi.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/dam/data/submitted-bid-order-volume:
+    post:
+      tags: [markets-dam]
+      summary: Sunulan Teklif Miktarı (GÖP)
+      description: Gün Öncesi Piyasa'ya sunulan alış teklif miktarları.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/dam/data/submitted-sales-order-volume:
+    post:
+      tags: [markets-dam]
+      summary: Sunulan Satış Miktarı (GÖP)
+      description: Gün Öncesi Piyasa'ya sunulan satış teklif miktarları.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/dam/data/price-independent-bid:
+    post:
+      tags: [markets-dam]
+      summary: Fiyattan Bağımsız Alış Teklifi
+      description: GÖP fiyattan bağımsız alış teklifleri.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/dam/data/price-independent-offer:
+    post:
+      tags: [markets-dam]
+      summary: Fiyattan Bağımsız Satış Teklifi
+      description: GÖP fiyattan bağımsız satış teklifleri.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  # ── GİP (INTRADAY MARKET) ─────────────────────────────────
+  /v1/markets/idm/data/transaction-history:
+    post:
+      tags: [markets-idm]
+      summary: GİP İşlem Geçmişi
+      description: Gün İçi Piyasa işlem geçmişi.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/idm/data/matching-quantity:
+    post:
+      tags: [markets-idm]
+      summary: GİP Eşleşme Miktarı
+      description: Gün İçi Piyasa eşleşme miktarları (MWh).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/idm/data/weighted-average-price:
+    post:
+      tags: [markets-idm]
+      summary: GİP Ağırlıklı Ortalama Fiyat
+      description: Gün İçi Piyasa saatlik ağırlıklı ortalama fiyatları (TL/MWh).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/idm/data/bid-offer-quantities:
+    post:
+      tags: [markets-idm]
+      summary: GİP Alış/Satış Teklifleri
+      description: Gün İçi Piyasa alış ve satış teklif miktarları.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  # ── DGP / BPM (BALANCING POWER MARKET) ───────────────────
+  /v1/markets/bpm/data/system-marginal-price:
+    post:
+      tags: [markets-bpm]
+      summary: Sistem Marjinal Fiyatı (SMF)
+      description: Dengeleme Güç Piyasası sistem marjinal fiyatları.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date-time
+                        systemMarginalPrice:
+                          type: number
+                          description: Sistem Marjinal Fiyatı (TL/MWh)
+
+  /v1/markets/bpm/data/order-summary-up:
+    post:
+      tags: [markets-bpm]
+      summary: YAL Talimat Özeti (Yukarı Yük Alma)
+      description: Dengeleme Güç Piyasası yukarı yük alma talimat özeti.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/bpm/data/order-summary-down:
+    post:
+      tags: [markets-bpm]
+      summary: YAT Talimat Özeti (Aşağı Yük Atma)
+      description: Dengeleme Güç Piyasası aşağı yük atma talimat özeti.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/markets/bpm/data/system-direction:
+    post:
+      tags: [markets-bpm]
+      summary: Sistem Yönü
+      description: Saatlik sistem yönü (Enerji Açığı / Enerji Fazlası).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  # ── GENERAL MARKET ────────────────────────────────────────
+  /v1/markets/general-data/data/market-participants:
+    post:
+      tags: [markets-general]
+      summary: Piyasa Katılımcıları
+      description: Piyasada aktif olan tüm katılımcıların listesi. Parametre gerektirmez.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              example: {}
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        organizationId:
+                          type: integer
+                        organizationName:
+                          type: string
+
+  /v1/markets/data/market-message-system:
+    post:
+      tags: [markets-general]
+      summary: UMM - Acil Durum Mesajları
+      description: |
+        Piyasa Mesaj Sistemi (UMM - Urgent Market Messages). Planlı ve plansız arızalar,
+        bakım bildirimleri.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startDate, endDate]
+              properties:
+                startDate:
+                  type: string
+                  format: date-time
+                  example: "2024-01-15T00:00:00+03:00"
+                endDate:
+                  type: string
+                  format: date-time
+                  example: "2024-01-15T23:00:00+03:00"
+                regionId:
+                  type: integer
+                  default: 1
+                  description: Bölge ID (1 = Türkiye)
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  # ── GENERATION ────────────────────────────────────────────
+  /v1/generation/data/realtime-generation:
+    post:
+      tags: [generation]
+      summary: Gerçek Zamanlı Üretim (GERÇEK ZAMANLı)
+      description: |
+        Saatlik gerçek zamanlı elektrik üretimi. Kaynak bazında ayrıştırılmış veri döner.
+        Yanıt alanları float'a normalize edilir.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date-time
+                        total:
+                          type: number
+                          description: Toplam üretim (MWh)
+                        naturalGas:
+                          type: number
+                        wind:
+                          type: number
+                        sun:
+                          type: number
+                        lignite:
+                          type: number
+                        hardCoal:
+                          type: number
+                        importCoal:
+                          type: number
+                        fuelOil:
+                          type: number
+                        geothermal:
+                          type: number
+                        hydro:
+                          type: number
+                        biomass:
+                          type: number
+                        river:
+                          type: number
+                        international:
+                          type: number
+                        naphtha:
+                          type: number
+                        lng:
+                          type: number
+                        nuclear:
+                          type: number
+                        others:
+                          type: number
+
+  /v1/generation/data/dpp:
+    post:
+      tags: [generation]
+      summary: BGÜP - Birim Bazında Gün Öncesi Üretim Planı
+      description: |
+        Santral/organizasyon bazında gün öncesi üretim planı (BGÜP).
+        `organizationId` ve `uevcbId` ile filtrelenebilir.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startDate, endDate]
+              properties:
+                startDate:
+                  type: string
+                  format: date-time
+                endDate:
+                  type: string
+                  format: date-time
+                region:
+                  type: string
+                  default: TR1
+                  description: Bölge kodu
+                organizationId:
+                  type: integer
+                  description: Organizasyon ID (isteğe bağlı filtre)
+                uevcbId:
+                  type: integer
+                  description: UEVCB (Uzlaştırma Birimi) ID (isteğe bağlı filtre)
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/generation/data/dpp-bulk:
+    post:
+      tags: [generation]
+      summary: BGÜP Toplu Veri
+      description: Tüm organizasyonlar için toplu BGÜP verisi. organizationId filtresiz.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/generation/data/sbfgp:
+    post:
+      tags: [generation]
+      summary: KGÜP - Kesinleşmiş Gün Öncesi Üretim Planı
+      description: Kesinleşmiş Gün Öncesi Üretim Planı (KGÜP) saatlik verileri.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startDate, endDate]
+              properties:
+                startDate:
+                  type: string
+                  format: date-time
+                endDate:
+                  type: string
+                  format: date-time
+                region:
+                  type: string
+                  default: TR1
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/generation/data/injection-quantity:
+    post:
+      tags: [generation]
+      summary: UEVM - Uzlaştırmaya Esas Veriş-Çekiş Miktarı
+      description: |
+        Uzlaştırmaya Esas Veriş-Çekiş Miktarları (UEVM).
+        Veri gecikmesi: T+1 (bir gün sonra kullanılabilir).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/generation/data/aic:
+    post:
+      tags: [generation]
+      summary: AIC - Anlık İşleme Kapasitesi
+      description: Anlık işleme kapasitesi verileri.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startDate, endDate]
+              properties:
+                startDate:
+                  type: string
+                  format: date-time
+                endDate:
+                  type: string
+                  format: date-time
+                region:
+                  type: string
+                  default: TR1
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/generation/data/organization-list:
+    post:
+      tags: [generation]
+      summary: Organizasyon Listesi
+      description: Üretim organizasyonlarının tam listesi. Parametre gerektirmez.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              example: {}
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        organizationId:
+                          type: integer
+                        organizationName:
+                          type: string
+
+  /v1/generation/data/uevcb-list-bulk:
+    post:
+      tags: [generation]
+      summary: UEVCB Listesi (Toplu)
+      description: |
+        Belirtilen organizasyonlar için UEVCB (Uzlaştırma Birimi) listesi.
+        Büyük organizasyon listesi için 100'erli batch'ler halinde çağrılmalıdır.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startDate, organizationIds]
+              properties:
+                startDate:
+                  type: string
+                  format: date-time
+                organizationIds:
+                  type: array
+                  items:
+                    type: integer
+                  maxItems: 100
+                  description: Maksimum 100 organizasyon ID batch başına
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  # ── CONSUMPTION ───────────────────────────────────────────
+  /v1/consumption/data/realtime-consumption:
+    post:
+      tags: [consumption]
+      summary: Gerçek Zamanlı Tüketim
+      description: |
+        Saatlik gerçek zamanlı elektrik tüketimi (MWh).
+        Veri gecikmesi: T+2 (iki gün sonra kesinleşir).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date-time
+                        consumption:
+                          type: number
+                          description: Tüketim (MWh)
+
+  /v1/consumption/data/load-estimation-plan:
+    post:
+      tags: [consumption]
+      summary: LEP - Yük Tahmin Planı
+      description: |
+        Saatlik yük tahmin planı (LEP). Yanıt `lep` alanı float'a normalize edilir.
+        Veri gecikmesi: T+2.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date-time
+                        lep:
+                          type: number
+                          description: Yük Tahmin Planı (MWh)
+
+  # ── RENEWABLES / YEKDEM ───────────────────────────────────
+  /v1/renewables/data/unlicensed-generation-amount:
+    post:
+      tags: [renewables]
+      summary: YEKDEM Lisanssız Üretim Miktarı
+      description: |
+        Yenilenebilir Enerji Kaynaklarını Destekleme Mekanizması (YEKDEM) kapsamındaki
+        lisanssız üretim miktarları.
+        **Veri gecikmesi: T+35** (aylık uzlaştırma döngüsü nedeniyle).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/renewables/data/unlicensed-generation-cost:
+    post:
+      tags: [renewables]
+      summary: YEKDEM Lisanssız Üretim Maliyeti
+      description: YEKDEM kapsamındaki lisanssız üretimin maliyeti (TL).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/renewables/data/licensed-realtime-generation:
+    post:
+      tags: [renewables]
+      summary: Lisanslı YEK Gerçek Zamanlı Üretim
+      description: YEKDEM kapsamındaki lisanslı yenilenebilir enerji santrallerinin gerçek zamanlı üretimi.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/renewables/data/res-generation-and-forecast:
+    post:
+      tags: [renewables]
+      summary: RES Üretim ve Tahmin
+      description: Rüzgar Enerji Santralleri (RES) gerçek üretim ve tahmin karşılaştırması.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/renewables/data/generation-forecast:
+    post:
+      tags: [renewables]
+      summary: YEK Üretim Tahmini
+      description: Yenilenebilir enerji kaynaklarına ait üretim tahmini.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/renewables/data/total-cost:
+    post:
+      tags: [renewables]
+      summary: YEKDEM Toplam Maliyeti
+      description: Aylık YEKDEM toplam destekleme maliyeti (TL).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/renewables/data/unit-cost:
+    post:
+      tags: [renewables]
+      summary: YEKDEM Birim Maliyeti
+      description: YEKDEM birim destekleme maliyeti (kr/kWh veya TL/MWh).
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/renewables/data/new-installed-capacity:
+    post:
+      tags: [renewables]
+      summary: Yeni Kurulu Güç
+      description: |
+        Aylık yenilenebilir enerji yeni kurulu güç verileri (MW).
+        `period` parametresi ayın 1. gününü ISO 8601 formatında alır.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [period]
+              properties:
+                period:
+                  type: string
+                  format: date-time
+                  description: Ayın ilk günü (örn. 2024-01-01T00:00:00+03:00)
+                  example: "2024-01-01T00:00:00+03:00"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  /v1/renewables/data/renewables-participant:
+    post:
+      tags: [renewables]
+      summary: YEKDEM Katılımcıları
+      description: Belirtilen yıl için YEKDEM programına dahil katılımcı listesi.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [year]
+              properties:
+                year:
+                  type: integer
+                  description: 4 haneli yıl
+                  example: 2024
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemsResponse"
+
+  # ── DAMS ─────────────────────────────────────────────────
+  /v1/dams/data/active-volume:
+    post:
+      tags: [dams]
+      summary: Baraj Aktif Hacim
+      description: Hidroelektrik barajlarının günlük aktif hacim (Hm³) ve doluluk oranı verileri.
+      security:
+        - CasTicket: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DateRangeBody"
+      responses:
+        "200":
+          description: Başarılı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date-time
+                        activeVolume:
+                          type: number
+                          description: Aktif hacim (Hm³)
+                        percentage:
+                          type: number
+                          description: Doluluk oranı (%)
