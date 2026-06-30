@@ -151,7 +151,7 @@ def get_client():
     except Exception:
         return bigquery.Client(project=PROJECT)
 
-@st.cache_data(ttl=3600, show_spinner="BigQuery sorgulanıyor...")
+@st.cache_data(ttl=3600, show_spinner="BigQuery sorgulanıyor...", persist="disk")
 def query(sql: str) -> pd.DataFrame:
     try:
         df = get_client().query(sql).to_dataframe()
@@ -195,7 +195,7 @@ def query(sql: str) -> pd.DataFrame:
 def tbl(mart: str) -> str:
     return f"`{PROJECT}.{DATASET}.{mart}`"
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False, persist="disk")
 def _query_noerr(sql: str) -> pd.DataFrame:
     """Run a BQ query silently — no st.error() on failure.
 
@@ -212,7 +212,7 @@ def _query_noerr(sql: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 # ── DATA FRESHNESS ────────────────────────────────────────────────────────────
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800, persist="disk")
 def get_last_updated() -> str:
     """Return the most recent date available in mart_price_analysis."""
     df = query(f"SELECT MAX(date) AS last_date FROM {tbl('mart_price_analysis')}")
