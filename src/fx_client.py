@@ -7,6 +7,7 @@ Endpoint: https://www.tcmb.gov.tr/kurlar/YYYYMM/DDMMYYYY.xml
 API key gerektirmez. Resmi TCMB verileri.
 Hafta sonu / resmi tatil: HTTP 404 doner, bir onceki is gunune gidilir.
 """
+from __future__ import annotations  # PEP 585/604 type hints (list[dict], X | None) need this on Python 3.8
 
 import logging
 import requests

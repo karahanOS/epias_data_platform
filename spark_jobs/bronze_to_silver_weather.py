@@ -4,12 +4,11 @@ from pyspark.sql import functions as F
 from spark_utils import BaseEpiasSparkJob
 
 class WeatherSilverJob(BaseEpiasSparkJob):
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_Weather", 
             source_name="weather", 
-            primary_keys=["date", "city"]
-        )
+            primary_keys=["date", "city"], spark=spark)
 
     def run(self, ds: str):
         # Open-meteo writes timezone-aware DatetimeIndex as TIMESTAMP(NANOS,true).
@@ -53,7 +52,7 @@ class WeatherSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     WeatherSilverJob().run(sys.argv[1] if len(sys.argv) > 1 else "2025-01-01")

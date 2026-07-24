@@ -5,12 +5,12 @@ from spark_utils import BaseEpiasSparkJob
 
 
 class FXRatesSilverJob(BaseEpiasSparkJob):
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_FXRates",
             source_name="fx_rates",
             primary_keys=["date"],
-        )
+            spark=spark)
 
     def run(self, ds: str):
         df = self.read_bronze(ds)
@@ -28,7 +28,7 @@ class FXRatesSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 
 if __name__ == "__main__":

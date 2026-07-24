@@ -375,7 +375,7 @@ def main():
                 print(f"  ❌ {meta['label']}: {df['error'][0][:60]}")
                 continue
             row = df.iloc[0]
-            total = int(row["rows"])
+            total = int(row["total_rows"])
             days  = int(row["days"])
             cov   = round(days / EXPECTED_DAYS * 100, 1)
             ic    = icon(cov >= 95, cov >= 80)
@@ -405,7 +405,7 @@ def main():
             ic = icon(coverage >= 95, coverage >= 80)
             print(f"  {ic} {w['city_name']:<12}  "
                   f"{coverage:>6.1f}%  "
-                  f"{w['rows']:>7,} satır  "
+                  f"{w['total_rows']:>7,} satır  "
                   f"[{w['min_date']} → {w['max_date']}]")
     else:
         print("  ❌ stg_weather erişilemiyor")

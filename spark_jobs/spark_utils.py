@@ -11,7 +11,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 class BaseEpiasSparkJob:
-    def __init__(self, app_name: str, source_name: str, primary_keys: list):
+    def __init__(self, app_name: str, source_name: str, primary_keys: list, spark: SparkSession = None):
         self.app_name = app_name
         self.source_name = source_name
         self.primary_keys = primary_keys
@@ -19,32 +19,47 @@ class BaseEpiasSparkJob:
         # --backfill flag: signals wildcard Bronze read + append Silver write
         self.backfill_mode = "--backfill" in sys.argv
 
-        # DYNAMIC partition overwrite: mode=overwrite only replaces the specific
-        # year/month/day partition being written, leaving all other partitions
-        # untouched. Without DYNAMIC, the default STATIC mode wipes the entire
-        # Silver table on every daily run — destroying all backfill history.
-        builder = SparkSession.builder \
-            .appName(self.app_name) \
-            .config("spark.sql.session.timeZone", "UTC") \
-            .config("spark.sql.legacy.timeParserPolicy", "LEGACY") \
-            .config("spark.sql.sources.partitionOverwriteMode", "DYNAMIC")
+        # ADR-0003: when a SparkSession is passed in (silver_batch_runner.py running
+        # several sources back-to-back in one Dataproc batch, to amortize the ~3-4
+        # min cold-start cost across sources instead of paying it once per source),
+        # reuse it instead of building a new one, and never stop a session we don't
+        # own — the runner controls that session's lifecycle, not this job.
+        self._owns_spark = spark is None
 
-        if self.backfill_mode:
-            # GCS streaming upload: avoids buffering the entire partition in heap.
-            # SYNCABLE_COMPOSITE writes incrementally to GCS instead of one giant chunk.
-            builder = builder \
-                .config("spark.hadoop.fs.gs.outputstream.type", "SYNCABLE_COMPOSITE") \
-                .config("spark.hadoop.fs.gs.outputstream.upload.chunk.size", "8388608")  # 8 MiB chunks
-            # Use more shuffle partitions so each output file is smaller
-            builder = builder \
-                .config("spark.sql.shuffle.partitions", "400")
+        if spark is not None:
+            self.spark = spark
+        else:
+            # DYNAMIC partition overwrite: mode=overwrite only replaces the specific
+            # year/month/day partition being written, leaving all other partitions
+            # untouched. Without DYNAMIC, the default STATIC mode wipes the entire
+            # Silver table on every daily run — destroying all backfill history.
+            builder = SparkSession.builder \
+                .appName(self.app_name) \
+                .config("spark.sql.session.timeZone", "UTC") \
+                .config("spark.sql.legacy.timeParserPolicy", "LEGACY") \
+                .config("spark.sql.sources.partitionOverwriteMode", "DYNAMIC")
 
-        self.spark = builder.getOrCreate()
+            if self.backfill_mode:
+                # GCS streaming upload: avoids buffering the entire partition in heap.
+                # SYNCABLE_COMPOSITE writes incrementally to GCS instead of one giant chunk.
+                builder = builder \
+                    .config("spark.hadoop.fs.gs.outputstream.type", "SYNCABLE_COMPOSITE") \
+                    .config("spark.hadoop.fs.gs.outputstream.upload.chunk.size", "8388608")  # 8 MiB chunks
+                # Use more shuffle partitions so each output file is smaller
+                builder = builder \
+                    .config("spark.sql.shuffle.partitions", "400")
+
+            self.spark = builder.getOrCreate()
 
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(self.app_name)
         if self.backfill_mode:
             self.logger.info(f"🔄 BACKFILL MODE aktif — {self.source_name}")
+
+    def finish(self):
+        """Stop the Spark session only if this job created it itself (see ADR-0003)."""
+        if self._owns_spark:
+            self.spark.stop()
 
     def read_bronze(self, ds: str, schema=None):
         """

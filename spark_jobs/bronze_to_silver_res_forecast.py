@@ -4,8 +4,8 @@ from pyspark.sql import functions as F
 from spark_utils import BaseEpiasSparkJob
 
 class ResForecastSilverJob(BaseEpiasSparkJob):
-    def __init__(self):
-        super().__init__(app_name="BronzeToSilver_ResForecast", source_name="res_forecast", primary_keys=["date"])
+    def __init__(self, spark=None):
+        super().__init__(app_name="BronzeToSilver_ResForecast", source_name="res_forecast", primary_keys=["date"], spark=spark)
 
     def run(self, ds: str):
         # Bronze Parquet may contain TIMESTAMP(NANOS,true) if the date column was
@@ -28,7 +28,7 @@ class ResForecastSilverJob(BaseEpiasSparkJob):
                 df = df.withColumn(col, F.col(col).cast(DoubleType()))
 
         self.write_silver(self.deduplicate(self.add_partition_columns(df, ds)))
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     ResForecastSilverJob().run(sys.argv[1] if len(sys.argv) > 1 else "2025-01-01")

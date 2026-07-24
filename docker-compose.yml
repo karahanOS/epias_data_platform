@@ -12,13 +12,11 @@ x-airflow-common: &airflow-common
     AIRFLOW__SCHEDULER__SCHEDULER_ZOMBIE_TASK_THRESHOLD: '900'
     PYTHONPATH: /opt/airflow/src
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/credentials/gcp-key.json
-    JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/airflow/src
     - ./logs:/opt/airflow/logs
     - ./credentials:/opt/airflow/credentials
-    - ./credentials:/opt/credentials
     - ./epias_dbt:/opt/airflow/epias_dbt
     - ./spark_jobs:/opt/airflow/spark
     - /var/run/docker.sock:/var/run/docker.sock
@@ -27,52 +25,6 @@ x-airflow-common: &airflow-common
     - epias-net
 
 services:
-
-  spark-master:
-    image: apache/spark:3.5.0
-    container_name: spark-master
-    entrypoint: []
-    environment:
-      - SPARK_MODE=master
-      - GOOGLE_APPLICATION_CREDENTIALS=/opt/credentials/gcp-key.json
-    ports:
-      - "7077:7077"
-      - "8081:8080"
-    volumes:
-      - ./spark_jobs:/opt/airflow/spark
-      - ./credentials:/opt/credentials
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --ip 0.0.0.0
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080 || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-    stdin_open: true
-    tty: true
-    networks:
-      - epias-net
-
-  spark-worker:
-    image: apache/spark:3.5.0
-    container_name: spark-worker
-    entrypoint: []
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - GOOGLE_APPLICATION_CREDENTIALS=/opt/credentials/gcp-key.json
-    depends_on:
-      spark-master:
-        condition: service_healthy
-    volumes:
-      - ./spark_jobs:/opt/airflow/spark
-      - ./credentials:/opt/credentials
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
-    restart: unless-stopped
-    stdin_open: true
-    tty: true
-    networks:
-      - epias-net
 
   postgres:
     image: postgres:13
@@ -100,7 +52,7 @@ services:
     command:
       - bash
       - -c
-      - "airflow db migrate && airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin; python3 -c \"from airflow.models import Connection; from airflow import settings; s=settings.Session(); existing=s.query(Connection).filter(Connection.conn_id=='spark_default').first(); c=existing or Connection(conn_id='spark_default',conn_type='spark',host='spark-master',port=7077); s.add(c) if not existing else None; s.commit(); s.close(); print('spark_default OK')\""
+      - "airflow db migrate && airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin"
     restart: "no"
 
   airflow-webserver:
@@ -123,8 +75,6 @@ services:
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-      spark-master:
-        condition: service_healthy
     command:
       - bash
       - -c

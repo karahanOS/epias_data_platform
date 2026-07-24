@@ -2,18 +2,18 @@
 
 Türkiye elektrik piyasası verilerini uçtan uca işleyen, üretim ortamına hazır bir veri mühendisliği projesi.
 
-**[📁 Veri Kaynağı: EPIAŞ Şeffaflık Platformu](https://seffaflik.epias.com.tr/)** | **[📊 Dashboard: Enerji Analitiği]**
+**[📁 Veri Kaynağı: EPIAŞ Şeffaflık Platformu](https://seffaflik.epias.com.tr/)** | **[📊 Dashboard: Enerji Analitiği (Streamlit)]**
 
 ---
 
 ## 🏗️ Mimari
 
-EPIAŞ API & Hava Durumu API
+EPIAŞ API & Hava Durumu (Open-Meteo) API & FX Kurları
     │
     ▼
 ┌─────────────────────────────────────────────────────────┐
 │                    Apache Airflow                        │
-│         Günlük DAG — Her gece 00:00'da çalışır          │
+│   Günlük DAG'lar — ingestion, backfill, PTF inference    │
 └─────────────────────────┬───────────────────────────────┘
                           │
                           ▼
@@ -28,36 +28,39 @@ EPIAŞ API & Hava Durumu API
               │    Apache Spark        │
               │   🥈 Silver Katman     │
               │   Temizlenmiş veri     │
-              └───────────┬───────────┘
-                          │
-                          ▼
-              ┌───────────────────────┐
-              │    Apache Spark        │
-              │   🥇 Gold Katman       │
-              │   Tahminleme (XGBoost) │
+              │  (25+ bronze→silver job)│
               └───────────┬───────────┘
                           │
                           ▼
               ┌───────────────────────┐
               │    Google BigQuery     │
               │    Warehouse & dbt     │
+              │  Staging → Marts       │
               └───────────┬───────────┘
                           │
                           ▼
               ┌───────────────────────┐
-              │    Power BI / Streamlit│
+              │    ML Tahminleme       │
+              │  XGBoost PTF Forecast  │
+              └───────────┬───────────┘
+                          │
+                          ▼
+              ┌───────────────────────┐
+              │      Streamlit         │
               │    Yönetici Özeti      │
+              │  (dashboard.py, çoklu  │
+              │   sayfa)               │
               └───────────────────────┘
 
 ---
 
 ## 🛰️ Veri Akışı (Pipeline)
 
-1. Ingestion: epias_client ve weather_client aracılığıyla veriler çekilir ve GCS üzerine "Bronze" katmanına ham olarak yazılır.
-2. Transformation: Apache Spark cluster üzerinde veriler temizlenir, şemaları normalize edilir ve "Silver" katmanına taşınır.
-3. Analytics: "Gold" katmanında veriler agrege edilir ve ML modelleri (XGBoost) için feature engineering süreçlerinden geçer.
-4. Warehouse: İşlenen veriler BigQuery'e aktarılır ve dbt modelleriyle iş mantığına göre son haline getirilir.
-5. Forecasting: Gelecek dönem PTF fiyatları tahmin edilerek operasyonel maliyet öngörüsü sağlanır.
+1. **Ingestion:** `src/epias_client.py`, `src/weather_client.py` ve `src/fx_client.py` aracılığıyla veriler çekilir, Airflow DAG'ları (`dags/epias_dag.py`, `dags/epias_backfill_dag.py`) üzerinden GCS'e "Bronze" katmanına ham olarak yazılır.
+2. **Transformation:** Apache Spark cluster üzerinde `spark_jobs/bronze_to_silver_*.py` job'ları ile veriler temizlenir, şemaları normalize edilir (numerik kolonlar FLOAT64'e cast edilir) ve "Silver" katmanına taşınır.
+3. **Warehouse:** İşlenen veriler BigQuery'e aktarılır (`src/load_to_bigquery.py`) ve dbt modelleriyle (`epias_dbt/`) staging → marts katmanlarında iş mantığına göre son haline getirilir.
+4. **Forecasting:** `src/ptf_features.py`, `src/ptf_trainer.py` ve `src/ptf_inference.py` ile gelecek dönem PTF fiyatları XGBoost modeli kullanılarak tahmin edilir (`dags/ptf_inference_dag.py`); `src/model_comparison.py` model performansını karşılaştırır.
+5. **Analytics:** `src/data_quality_check.py` veri kalitesi kontrollerini çalıştırır; Streamlit dashboard'u (`dashboard.py`) BigQuery `epias_gold` dataset'ini sorgulayarak çok sayfalı yönetici özeti sunar.
 
 ---
 
@@ -71,8 +74,14 @@ Aşağıdaki adımları takip ederek tüm platformu Docker üzerinde ayağa kald
 2. Kimlik bilgilerini yerleştirin:
    credentials/gcp-key.json dosyasının mevcut olduğundan emin olun.
 
-3. Sistemi inşa edin ve başlatın:
+3. Python bağımlılıklarını yükleyin (yerel geliştirme için):
+   pip install -r requirements.txt
+
+4. Sistemi inşa edin ve başlatın:
    docker-compose up -d --build
+
+5. Dashboard'u yerel olarak çalıştırmak için:
+   streamlit run dashboard.py
 
 ---
 
@@ -80,19 +89,36 @@ Aşağıdaki adımları takip ederek tüm platformu Docker üzerinde ayağa kald
 
 epias_data_platform/
 ├── dags/
-│   └── epias_dag.py              # Airflow DAG (Orkestrasyon)
+│   ├── epias_dag.py                  # Ana Airflow DAG (günlük ingestion)
+│   ├── epias_backfill_dag.py         # Geçmiş veri backfill DAG'ı
+│   ├── epias_sources.py              # Kaynak/tablo tanımları
+│   └── ptf_inference_dag.py          # PTF tahmin DAG'ı
 ├── src/
-│   ├── epias_client.py           # EPIAŞ API Wrapper
-│   └── weather_client.py         # Meteoroloji API Wrapper
+│   ├── epias_client.py               # EPIAŞ API Wrapper
+│   ├── weather_client.py             # Meteoroloji API Wrapper
+│   ├── fx_client.py                  # Döviz kuru API Wrapper
+│   ├── load_to_bigquery.py           # BigQuery yükleme yardımcıları
+│   ├── data_quality_check.py         # Veri kalitesi kontrolleri
+│   ├── ptf_features.py               # ML feature engineering
+│   ├── ptf_trainer.py                # XGBoost model eğitimi
+│   ├── ptf_inference.py              # Tahmin çalıştırma
+│   ├── model_comparison.py           # Model performans karşılaştırma
+│   └── config.py                     # Ortak konfigürasyon
 ├── spark_jobs/
-│   ├── bronze_to_silver_ptf.py   # Spark ETL süreçleri
-│   └── gcs-connector-hadoop3.jar # GCS bağlantı köprüsü
+│   ├── bronze_to_silver_*.py         # 25+ Spark ETL süreci (PTF, SMF, DPP,
+│   │                                  #  SBFGP, hava durumu, FX, tüketim, vb.)
+│   ├── spark_utils.py                # Ortak Spark yardımcıları
+│   └── gcs-connector-hadoop3-*.jar   # GCS bağlantı köprüsü
 ├── credentials/
-│   └── gcp-key.json              # Google Cloud anahtarı
+│   └── gcp-key.json                  # Google Cloud anahtarı
 ├── epias_dbt/
-│   └── models/                   # BigQuery dbt modelleri
-├── Dockerfile                    # Özelleştirilmiş Airflow imajı
-└── docker-compose.yml            # Servis orkestrasyonu
+│   └── models/                       # BigQuery dbt modelleri (staging + marts)
+├── tests/                            # Birim/entegrasyon testleri
+├── scripts/                          # Yardımcı script'ler
+├── docs/                             # Ek dokümantasyon
+├── dashboard.py                      # Streamlit yönetici özeti (çok sayfalı)
+├── Dockerfile                        # Özelleştirilmiş Airflow imajı
+└── docker-compose.yml                # Servis orkestrasyonu
 
 ---
 
@@ -104,13 +130,16 @@ Neden Medallion Mimarisi? Ham veriyi (Bronze) hiç silmeden tutmak, her dönüş
 
 dbt Path ve Kütüphane bağımlılıkları: Python 3.8 uyumluluğu için dbt-core < 1.8.0 sürümü sabitlendi ve ENV PATH ayarı ile dbt'nin Airflow içinden sorunsuz tetiklenmesi sağlandı.
 
+Neden tüm silver Spark job'ları numerik kolonları FLOAT64'e cast ediyor? Bronze API yanıtları bazen tamsayı, bazen ondalık dönebiliyor; bu şema kaymasını (schema drift) önlemek için tüm numerik kolonlar FLOAT64'e sabitlendi.
+
 ---
 
 ## 🔗 Servisler ve Erişim
 
-- Airflow UI: localhost:8080 
+- Airflow UI: localhost:8080
 - Spark Master: localhost:8081
 - Spark Worker: localhost:8082
+- Streamlit Dashboard: localhost:8501
 
 ---
 
@@ -122,3 +151,4 @@ Mehmet Karahan - Veri Analisti
 
 ### 💡 Not
 Bu platform, enerji maliyetlerini optimize etmek ve piyasa risklerini öngörmek için tasarlanmıştır. Veri akışı sırasında "Forbidden 403" hatası alınması durumunda GCP faturalandırma hesabı kontrol edilmelidir.
+</content>

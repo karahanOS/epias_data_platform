@@ -10,21 +10,21 @@ class ParticipantsSilverJob(BaseEpiasSparkJob):
     Piyasa Katılımcıları (Şirketler) boyut tablosunu işler.
     ID'leri şirket isimlerine ve EIC kodlarına çevirmek için dbt'de JOIN'lenecektir.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         # Eski: primary_keys=["organizationId"]
-        super().__init__(app_name="BronzeToSilver_Participants", source_name="participants", primary_keys=["id"])
+        super().__init__(app_name="BronzeToSilver_Participants", source_name="participants", primary_keys=["id"], spark=spark)
 
     def run(self, ds: str):
         try:
             df = self.read_bronze(ds)
         except Exception as e:
             self.logger.error(f"Veri okuma hatası: {e}")
-            self.spark.stop()
+            self.finish()
             return
 
         if df.rdd.isEmpty():
             self.logger.warning(f"Bronze veri boş: {ds}. İşlem atlanıyor.")
-            self.spark.stop()
+            self.finish()
             return
 
         self.logger.info("Katılımcı (Participant) boyut tablosu işleniyor...")
@@ -37,7 +37,7 @@ class ParticipantsSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

@@ -10,24 +10,23 @@ class GenerationSilverJob(BaseEpiasSparkJob):
     Gerçekleşen Genel Lisanslı Üretim (Generation Mix) verilerini işler.
     Yenilenebilir enerjinin şebeke üzerindeki genel ağırlığını hesaplamak için kullanılır.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_Generation",
             source_name="generation", # Veya API endpoint'ine göre "generation"
-            primary_keys=["date"]
-        )
+            primary_keys=["date"], spark=spark)
 
     def run(self, ds: str):
         try:
             df = self.read_bronze(ds)
         except Exception as e:
             self.logger.error(f"Veri okuma hatası: {e}")
-            self.spark.stop()
+            self.finish()
             return
 
         if df.rdd.isEmpty():
             self.logger.warning(f"Bronze veri boş: {ds}. İşlem atlanıyor.")
-            self.spark.stop()
+            self.finish()
             return
 
         self.logger.info("Lisanslı Üretim (Generation) verileri dönüştürülüyor...")
@@ -44,7 +43,7 @@ class GenerationSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

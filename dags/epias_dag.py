@@ -16,17 +16,15 @@ import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
-try:
-    from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-except ImportError as _spark_err:
-    # Graceful degradation: DAG parses cleanly even if the Spark provider package
-    # isn't installed yet.  Any task that instantiates SparkSubmitOperator will
-    # fail at runtime with a clear error rather than breaking all DAG parsing.
-    raise ImportError(
-        "apache-airflow-providers-apache-spark is required. "
-        "Install it with: pip install apache-airflow-providers-apache-spark"
-    ) from _spark_err
-from epias_sources import EPIAS_SOURCES, DBT_EXCLUDE_PENDING_BACKFILL, SPARK_CONN_ID, make_silver_task
+# Silver layer runs on Dataproc Serverless (ADR-0002), consolidated into
+# DATAPROC_POOL_SIZE batches instead of one per source (ADR-0003) — see
+# epias_sources.group_sources / make_silver_batch_task.
+from epias_sources import (
+    EPIAS_SOURCES,
+    DBT_EXCLUDE_PENDING_BACKFILL,
+    group_sources,
+    make_silver_batch_task,
+)
 
 # ── MODÜL YOLU ────────────────────────────────────────────────────────────────
 sys.path.insert(0, "/opt/airflow/src")
@@ -45,11 +43,19 @@ BUCKET_NAME   = "epias-data-lake"
 # ── VERİ GECİKME TABLOSU ─────────────────────────────────────────────────────
 DATA_DELAYS: Dict[str, int] = {
     "get_ptf_smf_sdf":                  0,
-    "get_smf":                          0,
+    # smf/idm_transaction_history/outages: EPIAS API rejects endDate >= today
+    # for these three ("endDate must be in the past"). Under the daily
+    # schedule this never surfaced (ds was effectively yesterday by the time
+    # the DAG ran). Under hourly scheduling ds is always "today" intraday, so
+    # these three failed on every single hourly run once the hourly schedule
+    # went live (2026-07-24) — cascading into silver_batch failures and
+    # blocking load_silver_to_bigquery/run_dbt_gold_models for the whole
+    # pipeline. Fix: delay=1, same pattern as get_injection_quantity.
+    "get_smf":                          1,
     "get_supply_demand":                0,
     "get_dam_clearing_quantity":        0,
     "get_price_independent_bid":        0,
-    "get_idm_transaction_history":      0,
+    "get_idm_transaction_history":      1,
     "get_order_summary_up":             0,
     "get_order_summary_down":           0,
     "get_system_direction":             0,
@@ -62,7 +68,7 @@ DATA_DELAYS: Dict[str, int] = {
     "get_load_estimation_plan":         0,
     "get_unlicensed_generation":        35,
     "get_uevcb_list":                   0,
-    "get_outages":                      0,
+    "get_outages":                      1,
     "get_dams":                         0
 }
 
@@ -168,7 +174,13 @@ with DAG(
     dag_id="epias_medallion_pipeline_v3",
     default_args=default_args,
     start_date=datetime(2025, 1, 1),
-    schedule_interval="0 5 * * *",
+    # Hourly (ADR-0002 action item 9 + ADR-0003): EPIAS publishes most sources
+    # hour-by-hour, so re-fetching "today" (ds stays constant intra-day under
+    # Airflow's hourly data-interval semantics) each hour naturally picks up
+    # newly-published hours as the day progresses — Silver's overwrite mode
+    # reflects the growing day. Made viable by ADR-0003's batch consolidation
+    # (~4 min Silver layer instead of ~40 min) fitting well inside the hour.
+    schedule_interval="0 * * * *",
     catchup=False,
     max_active_runs=1,
     max_active_tasks=5,
@@ -216,41 +228,22 @@ with DAG(
         bronze_save_tasks[key] = save_t
 
     # =========================================================================
-    # SILVER LAYER (Spark)
+    # SILVER LAYER (Dataproc Serverless, consolidated — ADR-0002 + ADR-0003)
     # =========================================================================
-    silver_tasks: Dict[str, SparkSubmitOperator] = {}
-    
-    # Weather için özel silver task
-    silver_weather = SparkSubmitOperator(
-        task_id="silver_weather",
-        application="/opt/airflow/spark/bronze_to_silver_weather.py",
-        py_files="/opt/airflow/spark/spark_utils.py",
-        jars="/opt/spark/jars/gcs-connector.jar",
-        conn_id=SPARK_CONN_ID,
-        application_args=["{{ ds }}"],
-        deploy_mode="client",
-        name="epias_silver_weather",
-    )
-    save_weather >> silver_weather
+    # All daily sources (incl. weather/fx, which have their own bronze flow but
+    # the same bronze_to_silver_<key>.py job pattern) are grouped into
+    # DATAPROC_POOL_SIZE batches — one shared Spark session per group instead
+    # of one Dataproc batch per source — to amortize cold start (~3-4 min)
+    # across many sources rather than paying it ~24 times. See ADR-0003.
+    all_silver_keys = list(ALL_SOURCES.keys()) + ["weather", "fx_rates"]
+    bronze_dep_tasks = {**bronze_save_tasks, "weather": save_weather, "fx_rates": save_fx}
 
-    # FX silver task
-    silver_fx = SparkSubmitOperator(
-        task_id="silver_fx_rates",
-        application="/opt/airflow/spark/bronze_to_silver_fx_rates.py",
-        py_files="/opt/airflow/spark/spark_utils.py",
-        jars="/opt/spark/jars/gcs-connector.jar",
-        conn_id=SPARK_CONN_ID,
-        application_args=["{{ ds }}"],
-        deploy_mode="client",
-        name="epias_silver_fx_rates",
-    )
-    save_fx >> silver_fx
-
-    # API'den gelen veriler için silver task'lar
-    for key in ALL_SOURCES:
-        silver_t = make_silver_task(dag, key)
-        bronze_save_tasks[key] >> silver_t
-        silver_tasks[key] = silver_t
+    silver_batch_tasks = []
+    for i, group in enumerate(group_sources(all_silver_keys)):
+        batch_t = make_silver_batch_task(f"silver_batch_{i}", group, ["{{ ds }}"])
+        for key in group:
+            bronze_dep_tasks[key] >> batch_t
+        silver_batch_tasks.append(batch_t)
 
     # =========================================================================
     # BIGQUERY BRIDGE & DBT (GOLD) & ML
@@ -269,24 +262,17 @@ with DAG(
         ),
     )
     
-    # Training: ağır iş — haftada bir çalışır, dbt sonrası tetiklenir
-    run_ptf_trainer = BashOperator(
-        task_id='train_ptf_model',
-        bash_command='python /opt/airflow/src/ptf_trainer.py',
-    )
-
-    # Inference: hafif iş — sadece son 180 satır çeker, önceden eğitilmiş
-    # modeli GCS'den yükler ve tek tahmin üretir
-    run_ptf_inference = BashOperator(
-        task_id='run_ptf_inference',
-        bash_command='python /opt/airflow/src/ptf_inference.py',
-    )
+    # Training (haftalık) ve inference (saatlik) artık bu DAG'da değil — kendi
+    # cadence'lerine sahip ayrı DAG'lar: epias_ptf_training_weekly.py ve
+    # epias_ptf_inference_hourly.py. Bu DAG artık saatlik çalıştığı için
+    # (yukarıdaki schedule_interval="0 * * * *") ağır XGBoost training'i
+    # (10-30 dk) burada tutmak onu günde 24 kez çalıştırırdı — yorumun kendi
+    # belirttiği "haftada bir" niyetiyle çelişirdi. Inference zaten bağımsız
+    # olarak "son 180 satır + önceden eğitilmiş model" ile çalıştığı için bu
+    # DAG'ın dbt run'ını beklemesine gerek yok, gold tablo her ikisi için de
+    # ortak veri kaynağı.
 
     # Zinciri Bağlama
-    silver_weather >> load_to_bq
-    silver_fx >> load_to_bq
-    for silver_t in silver_tasks.values():
-        silver_t >> load_to_bq
-
-    # dbt → trainer (günlük) → inference (günlük, ama ayrı DAG'da saatlik koşabilir)
-    load_to_bq >> run_dbt >> run_ptf_trainer >> run_ptf_inference
+    for batch_t in silver_batch_tasks:
+        batch_t >> load_to_bq
+    load_to_bq >> run_dbt

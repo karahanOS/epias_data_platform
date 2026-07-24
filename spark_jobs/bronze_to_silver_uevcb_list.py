@@ -9,13 +9,12 @@ class UevcbListSilverJob(BaseEpiasSparkJob):
     dpp ve injection tablolarındaki üretimlerin HANGİ santralden (ve hangi kaynaktan)
     geldiğini çözümlemek (JOIN) için kullanılır.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_UevcbList",
             source_name="uevcb_list",
             # API'den tarih dönmediği için sadece santral ID'si üzerinden tekilleştiriyoruz
-            primary_keys=["id"] 
-        )
+            primary_keys=["id"], spark=spark)
 
     def run(self, ds: str):
         df = self.read_bronze(ds)
@@ -32,7 +31,7 @@ class UevcbListSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

@@ -11,12 +11,11 @@ class DamClearingSilverJob(BaseEpiasSparkJob):
     Gün Öncesi Piyasası (GÖP) Eşleşme (Clearing) verilerini işler.
     Bu veri dbt katmanında GÖP hacim ve piyasa katılım analizlerinde kullanılacaktır.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_DamClearing",
             source_name="dam_clearing",
-            primary_keys=["date"]
-        )
+            primary_keys=["date"], spark=spark)
 
     def run(self, ds: str):
         # 1. Okuma (Extract)
@@ -24,12 +23,12 @@ class DamClearingSilverJob(BaseEpiasSparkJob):
             df = self.read_bronze(ds)
         except Exception as e:
             self.logger.error(f"Veri okuma hatası: {e}")
-            self.spark.stop()
+            self.finish()
             return
 
         if df.rdd.isEmpty():
             self.logger.warning(f"Bronze veri boş: {ds}. İşlem atlanıyor.")
-            self.spark.stop()
+            self.finish()
             return
 
         # 2. Dönüşüm ve Şema Dayatması (Transform)
@@ -56,7 +55,7 @@ class DamClearingSilverJob(BaseEpiasSparkJob):
 
         # 4. Yazma (Load - Dynamic Overwrite)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

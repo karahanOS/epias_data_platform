@@ -8,13 +8,12 @@ class DamsSilverJob(BaseEpiasSparkJob):
     Baraj Aktif Hacim ve Su Seviyeleri verilerini işler.
     Hidroelektrik arz kapasitesini (ve dolayısıyla PTF üzerindeki ucuzluk baskısını) ölçer.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_Dams",
             source_name="dams", # API'deki adına göre 'dams_active_volume' da olabilir
             # Veriler havza/baraj bazında günlük geldiği için PK bu şekildedir
-            primary_keys=["date", "basinName"] 
-        )
+            primary_keys=["date", "basinName"], spark=spark)
 
     def run(self, ds: str):
         df = self.read_bronze(ds)
@@ -32,7 +31,7 @@ class DamsSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

@@ -16,6 +16,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
 
   - name: stg_weather
     description: "Saatlik hava durumu — İstanbul/Ankara/İzmir/Konya (open-meteo)"
@@ -27,6 +28,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
       - name: city_name
         tests: [not_null]
 
@@ -40,6 +42,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
 
   - name: stg_aic
     description: "Uzlaştırma esas üretim — kaynak tipi bazlı saatlik (EPIAS)"
@@ -51,6 +54,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
 
   - name: stg_dpp
     description: "Doğal pozisyon planı — kaynak tipi bazlı saatlik (EPIAS)"
@@ -62,6 +66,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
 
   - name: stg_order_up
     description: "Yukarı yönlü düzenleme emirleri — saatlik (EPIAS DGP)"
@@ -73,6 +78,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
 
   - name: stg_order_down
     description: "Aşağı yönlü düzenleme emirleri — saatlik (EPIAS DGP)"
@@ -84,6 +90,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
 
   - name: stg_res_forecast
     description: "Yenilenebilir kaynak üretim tahmini — saatlik (EPIAS)"
@@ -95,6 +102,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
 
   - name: stg_outages
     description: "Güç santrali arıza/bakım olayları — olay bazlı (span)"
@@ -135,10 +143,14 @@ models:
 # ──────────────────────────────────────────────────────────────
   - name: mart_gop_volume_analysis
     description: "GÖP işlem hacimleri ve blok teklif analizleri"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
     columns:
       - name: date
         tests:
-          - unique
           - not_null
       - name: ptf_try
         tests:
@@ -149,16 +161,21 @@ models:
 
   - name: mart_ptf_drivers
     description: "PTF tavan/taban sürücüleri ve Yenilenebilir penetrasyonu"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
     columns:
       - name: date
         tests:
-          - unique
           - not_null
       - name: renewable_penetration_pct
         tests:
           - dbt_utils.accepted_range:
               min_value: 0
-              max_value: 100
+              # No upper bound: renewable forecast can legitimately exceed load
+              # forecast during low-demand/high-wind or solar hours (>100%).
 
   - name: mart_capacity_utilization
     description: "Kaynak tipi bazında kapasite kullanım oranları (AİÇ / Üretim)"
@@ -170,6 +187,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
 
   - name: mart_regulation_depth
     description: "DGP düzenleme derinliği — kodlu seviye aktivasyon oranları"
@@ -181,6 +199,7 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
 
   - name: mart_hydro_risk
     description: "Hidrolik stres endeksi — baraj hacimleri ve tarihsel yüzdelik"
@@ -198,3 +217,4 @@ models:
           - not_null
           - accepted_values:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false

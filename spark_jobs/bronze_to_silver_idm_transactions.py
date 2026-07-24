@@ -10,21 +10,21 @@ class IdmTransactionsSilverJob(BaseEpiasSparkJob):
     Gün İçi Piyasası (GİP / IDM) ikili işlem (transaction) verilerini işler.
     "Hangi şirket GİP'te aktif rol oynuyor?" analizinin kalbidir.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         # Eski: primary_keys=["date", "buyerOrganizationId", "sellerOrganizationId", "contractName"]
-        super().__init__(app_name="BronzeToSilver_IdmTransactions", source_name="idm_transactions", primary_keys=["date", "contractName", "id"])
+        super().__init__(app_name="BronzeToSilver_IdmTransactions", source_name="idm_transactions", primary_keys=["date", "contractName", "id"], spark=spark)
 
     def run(self, ds: str):
         try:
             df = self.read_bronze(ds)
         except Exception as e:
             self.logger.error(f"Veri okuma hatası: {e}")
-            self.spark.stop()
+            self.finish()
             return
 
         if df.rdd.isEmpty():
             self.logger.warning(f"Bronze veri boş: {ds}. İşlem atlanıyor.")
-            self.spark.stop()
+            self.finish()
             return
 
         self.logger.info("GİP İşlemleri (IDM) için tipler dönüştürülüyor...")
@@ -42,7 +42,7 @@ class IdmTransactionsSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

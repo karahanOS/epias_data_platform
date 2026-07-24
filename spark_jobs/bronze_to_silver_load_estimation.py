@@ -8,12 +8,11 @@ class LoadEstimationSilverJob(BaseEpiasSparkJob):
     Yük Tahmin Planı (LEP) verilerini işler.
     Ertesi günün beklenen enerji talebini (tüketimini) gösterir.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_LoadEstimation",
             source_name="load_estimation",
-            primary_keys=["date"]
-        )
+            primary_keys=["date"], spark=spark)
 
     def run(self, ds: str):
         df = self.read_bronze(ds)
@@ -27,7 +26,7 @@ class LoadEstimationSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

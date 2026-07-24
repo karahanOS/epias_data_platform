@@ -7,11 +7,12 @@ class SystemDirectionSilverJob(BaseEpiasSparkJob):
     Sistem Yönü verilerini işler. (Dengeleme Güç Piyasası)
     Sistemin enerji açığı mı yoksa fazlası mı verdiğini gösterir.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_SystemDirection",
             source_name="system_direction",
-            primary_keys=["date", "hour"] # Saatlik bazda tekilleştirme
+            primary_keys=["date", "hour"],  # Saatlik bazda tekilleştirme
+            spark=spark,
         )
 
     def run(self, ds: str):
@@ -28,7 +29,7 @@ class SystemDirectionSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

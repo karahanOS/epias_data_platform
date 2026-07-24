@@ -27,14 +27,15 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.models import Variable
-try:
-    from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-except ImportError as _spark_err:
-    raise ImportError(
-        "apache-airflow-providers-apache-spark is required. "
-        "Install it with: pip install apache-airflow-providers-apache-spark"
-    ) from _spark_err
-from epias_sources import EPIAS_SOURCES, DBT_EXCLUDE_PENDING_BACKFILL, SPARK_CONN_ID, make_silver_task
+# Silver layer runs on Dataproc Serverless (ADR-0002), consolidated into
+# DATAPROC_POOL_SIZE batches instead of one per source (ADR-0003) — see
+# epias_sources.group_sources / make_silver_batch_task.
+from epias_sources import (
+    EPIAS_SOURCES,
+    DBT_EXCLUDE_PENDING_BACKFILL,
+    group_sources,
+    make_silver_batch_task,
+)
 
 sys.path.insert(0, "/opt/airflow/src")
 try:
@@ -72,7 +73,24 @@ BUCKET_NAME         = "epias-data-lake"
 # Only include sources where historical data is meaningful.
 # Excluded: get_market_participants (static, no date), get_uevcb_list (slow bulk)
 # v[3] = backfill_eligible; v[:3] = (method_name, gcs_path, allow_empty)
-BACKFILL_SOURCES = {k: v[:3] for k, v in EPIAS_SOURCES.items() if v[3]}
+#
+# Optional scoping: set an Airflow Variable to backfill only specific sources
+# instead of the full set (useful for a source added later — e.g. "dams" — or
+# a narrow gap-repair run for one source over a short date range set via
+# backfill_start_date/backfill_end_date).
+#   airflow variables set backfill_sources_filter "dams"
+#   airflow variables set backfill_sources_filter "dams,load_estimation"
+# Leave unset (default "") to backfill every eligible source, as before.
+try:
+    _sources_filter_raw = Variable.get("backfill_sources_filter", default_var="")
+except Exception:
+    _sources_filter_raw = ""
+BACKFILL_SOURCES_FILTER = [s.strip() for s in _sources_filter_raw.split(",") if s.strip()]
+
+BACKFILL_SOURCES = {
+    k: v[:3] for k, v in EPIAS_SOURCES.items()
+    if v[3] and (not BACKFILL_SOURCES_FILTER or k in BACKFILL_SOURCES_FILTER)
+}
 
 # ── CHUNK GENERATOR ───────────────────────────────────────────────────────────
 
@@ -232,56 +250,58 @@ with DAG(
         bronze_last_tasks[source_key] = prev_task   # last chunk task per source
 
     # =========================================================================
-    # PHASE 2 — SILVER: Run Spark job per source once ALL its Bronze chunks land
-    # --backfill flag → BaseEpiasSparkJob reads backfill_*.parquet + appends Silver
-    # =========================================================================
-    silver_tasks: dict[str, SparkSubmitOperator] = {}
-
-    for source_key in BACKFILL_SOURCES:
-        silver_t = make_silver_task(dag, source_key, is_backfill=True)
-        # Bronze last chunk → Silver Spark job (per source, independent of other sources)
-        bronze_last_tasks[source_key] >> silver_t
-        silver_tasks[source_key] = silver_t
-
-    # =========================================================================
-    # PHASE 2b — WEATHER BACKFILL: open-meteo archive (no EPIAS rate limit)
-    # Runs in parallel with EPIAS silver jobs.  Each chunk is independent.
+    # PHASE 2b — WEATHER BACKFILL BRONZE: open-meteo archive (no EPIAS rate limit)
+    # Runs in parallel with EPIAS bronze chunks. Each chunk is independent.
+    # Skipped when backfill_sources_filter is set to something that doesn't
+    # include "weather" — avoids re-running an already-complete weather
+    # backfill just because another source (e.g. dams) is being targeted.
     # =========================================================================
     weather_last_task = None
-    for chunk_start, chunk_end in chunks:
-        wt = PythonOperator(
-            task_id=f"bronze_weather_{chunk_start}",
-            python_callable=backfill_weather_chunk,
-            op_kwargs={"chunk_start": chunk_start, "chunk_end": chunk_end},
-        )
-        if weather_last_task is not None:
-            weather_last_task >> wt
-        weather_last_task = wt
+    _run_weather = not BACKFILL_SOURCES_FILTER or "weather" in BACKFILL_SOURCES_FILTER
+    if _run_weather:
+        for chunk_start, chunk_end in chunks:
+            wt = PythonOperator(
+                task_id=f"bronze_weather_{chunk_start}",
+                python_callable=backfill_weather_chunk,
+                op_kwargs={"chunk_start": chunk_start, "chunk_end": chunk_end},
+            )
+            if weather_last_task is not None:
+                weather_last_task >> wt
+            weather_last_task = wt
 
-    silver_weather_backfill = SparkSubmitOperator(
-        task_id="silver_weather_backfill",
-        application="/opt/airflow/spark/bronze_to_silver_weather.py",
-        py_files="/opt/airflow/spark/spark_utils.py",
-        jars="/opt/spark/jars/gcs-connector.jar",
-        conn_id=SPARK_CONN_ID,
-        application_args=["1970-01-01", "--backfill"],
-        deploy_mode="client",
-        name="epias_silver_weather_backfill",
-    )
-    weather_last_task >> silver_weather_backfill
+    # =========================================================================
+    # PHASE 2 — SILVER (consolidated — ADR-0003): every source (+ weather, if
+    # included) grouped into DATAPROC_POOL_SIZE Dataproc batches, each running
+    # its sources sequentially in one shared Spark session, instead of one
+    # batch (and one ~3-4 min Dataproc cold start) per source. --backfill flag
+    # → BaseEpiasSparkJob reads backfill_*.parquet + overwrites Silver partitions.
+    # =========================================================================
+    bronze_dep_tasks = dict(bronze_last_tasks)
+    all_backfill_keys = list(BACKFILL_SOURCES.keys())
+    if _run_weather:
+        bronze_dep_tasks["weather"] = weather_last_task
+        all_backfill_keys.append("weather")
+
+    silver_batch_tasks = []
+    for i, group in enumerate(group_sources(all_backfill_keys)):
+        batch_t = make_silver_batch_task(
+            f"silver_batch_backfill_{i}", group, ["1970-01-01", "--backfill"]
+        )
+        for key in group:
+            bronze_dep_tasks[key] >> batch_t
+        silver_batch_tasks.append(batch_t)
 
     # =========================================================================
     # PHASE 3 — BQ BRIDGE: Register / refresh Silver external tables in BigQuery
-    # Runs once after ALL Silver jobs (EPIAS + weather) complete
+    # Runs once after ALL Silver batches (EPIAS + weather) complete
     # =========================================================================
     register_bq_tables = BashOperator(
         task_id="register_silver_external_tables",
         bash_command="python /opt/airflow/src/load_to_bigquery.py",
     )
 
-    for silver_t in silver_tasks.values():
-        silver_t >> register_bq_tables
-    silver_weather_backfill >> register_bq_tables
+    for batch_t in silver_batch_tasks:
+        batch_t >> register_bq_tables
 
     # =========================================================================
     # PHASE 4 — GOLD: dbt rebuild

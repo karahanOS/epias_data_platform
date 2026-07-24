@@ -8,12 +8,13 @@ class OutagesSilverJob(BaseEpiasSparkJob):
     Planlı/Plansız Santral Kesintileri (Outages) verilerini işler.
     Sistemdeki ani arz şoklarını ve kapasite düşüşlerini yakalamak için kullanılır.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_Outages",
-            source_name="outages", 
+            source_name="outages",
             # Her bir kesinti kaydının (arızanın) EPİAŞ tarafında benzersiz bir ID'si vardır
-            primary_keys=["id"] 
+            primary_keys=["id"],
+            spark=spark,
         )
 
     def run(self, ds: str):
@@ -45,7 +46,7 @@ class OutagesSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

@@ -10,21 +10,21 @@ class OrderUpSilverJob(BaseEpiasSparkJob):
     DGP Yük Alma (YAL / Order Up) talimatlarını işler.
     "Hangi şirket SMF'yi belirliyor ve DGP'den kazanıyor?" sorusunun yanıtıdır.
     """
-    def __init__(self):
+    def __init__(self, spark=None):
         # Eski: primary_keys=["date", "organizationId"]
-        super().__init__(app_name="BronzeToSilver_OrderUp", source_name="order_up", primary_keys=["date", "hour"])
+        super().__init__(app_name="BronzeToSilver_OrderUp", source_name="order_up", primary_keys=["date", "hour"], spark=spark)
 
     def run(self, ds: str):
         try:
             df = self.read_bronze(ds)
         except Exception as e:
             self.logger.error(f"Veri okuma hatası: {e}")
-            self.spark.stop()
+            self.finish()
             return
 
         if df.rdd.isEmpty():
             self.logger.warning(f"Bronze veri boş: {ds}. İşlem atlanıyor.")
-            self.spark.stop()
+            self.finish()
             return
 
         self.logger.info("Yük Alma (YAL) verileri dönüştürülüyor...")
@@ -48,7 +48,7 @@ class OrderUpSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

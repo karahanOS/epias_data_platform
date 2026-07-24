@@ -5,8 +5,8 @@ from pyspark.sql import functions as F
 from spark_utils import BaseEpiasSparkJob
 
 class AicSilverJob(BaseEpiasSparkJob):
-    def __init__(self):
-        super().__init__(app_name="BronzeToSilver_AIC", source_name="aic", primary_keys=["date"])
+    def __init__(self, spark=None):
+        super().__init__(app_name="BronzeToSilver_AIC", source_name="aic", primary_keys=["date"], spark=spark)
 
     def _read_backfill(self):
         """
@@ -51,7 +51,7 @@ class AicSilverJob(BaseEpiasSparkJob):
             df = self.read_bronze(ds)
 
         if df.rdd.isEmpty():
-            self.spark.stop()
+            self.finish()
             return
 
         df = df.withColumn("date", self.parse_epias_timestamp())
@@ -59,7 +59,7 @@ class AicSilverJob(BaseEpiasSparkJob):
             if col != "date":
                 df = df.withColumn(col, F.col(col).cast(DoubleType()))
         self.write_silver(self.deduplicate(self.add_partition_columns(df, ds)))
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     AicSilverJob().run(sys.argv[1] if len(sys.argv) > 1 else "2025-01-01")

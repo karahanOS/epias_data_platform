@@ -11,20 +11,20 @@ class SbfgpSilverJob(BaseEpiasSparkJob):
     GİP kapanışından sonra DUY 69. madde kapsamında güncellenen nihai plandır.
     BGÜP (stg_dpp) ile karşılaştırılarak intraday revizyon miktarı hesaplanabilir.
     """
-    def __init__(self):
-        super().__init__(app_name="BronzeToSilver_SBFGP", source_name="sbfgp", primary_keys=["date", "time"])
+    def __init__(self, spark=None):
+        super().__init__(app_name="BronzeToSilver_SBFGP", source_name="sbfgp", primary_keys=["date", "time"], spark=spark)
 
     def run(self, ds: str):
         try:
             df = self.read_bronze(ds)
         except Exception as e:
             self.logger.error(f"Veri okuma hatası: {e}")
-            self.spark.stop()
+            self.finish()
             return
 
         if df.rdd.isEmpty():
             self.logger.warning(f"Bronze veri boş: {ds}. İşlem atlanıyor.")
-            self.spark.stop()
+            self.finish()
             return
 
         self.logger.info("SBFGP (KGÜP) verisi için tipler dönüştürülüyor...")
@@ -40,7 +40,7 @@ class SbfgpSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     target_ds = sys.argv[1] if len(sys.argv) > 1 else "2025-01-01"

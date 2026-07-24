@@ -4,12 +4,11 @@ from pyspark.sql import functions as F
 from spark_utils import BaseEpiasSparkJob
 
 class PricingSilverJob(BaseEpiasSparkJob):
-    def __init__(self):
+    def __init__(self, spark=None):
         super().__init__(
             app_name="BronzeToSilver_Pricing", 
             source_name="pricing", 
-            primary_keys=["date", "hour"]
-        )
+            primary_keys=["date", "hour"], spark=spark)
 
     def run(self, ds: str):
         df = self.read_bronze(ds)
@@ -26,7 +25,7 @@ class PricingSilverJob(BaseEpiasSparkJob):
         df = self.add_partition_columns(df, ds)
         df = self.deduplicate(df)
         self.write_silver(df)
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     PricingSilverJob().run(sys.argv[1] if len(sys.argv) > 1 else "2025-01-01")

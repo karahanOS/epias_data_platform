@@ -8,8 +8,8 @@ class SmfSilverJob(BaseEpiasSparkJob):
     Sistem Marjinal Fiyatı (SMF) verilerini işler.
     Dengeleme Güç Piyasasındaki (DGP) fiyatı ifade eder.
     """
-    def __init__(self):
-        super().__init__(app_name="BronzeToSilver_SMF", source_name="smf", primary_keys=["date"])
+    def __init__(self, spark=None):
+        super().__init__(app_name="BronzeToSilver_SMF", source_name="smf", primary_keys=["date"], spark=spark)
 
     def run(self, ds: str):
         df = self.read_bronze(ds)
@@ -21,7 +21,7 @@ class SmfSilverJob(BaseEpiasSparkJob):
             df = df.withColumn("systemMarginalPrice", F.col("systemMarginalPrice").cast(DoubleType()))
             
         self.write_silver(self.deduplicate(self.add_partition_columns(df, ds)))
-        self.spark.stop()
+        self.finish()
 
 if __name__ == "__main__":
     SmfSilverJob().run(sys.argv[1] if len(sys.argv) > 1 else "2025-01-01")
