@@ -53,30 +53,28 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
 # Models excluded from dbt runs while their Silver backfill is incomplete.
 # Remove a model from this list once its backfill is complete and dbt builds cleanly.
 #
-# Status as of 2026-06-09:
+# Status as of 2026-07-25:
 #   stg_dpp          ⚠️  Silver has rows but Hive partition schema mismatch → still excluded
-#   stg_res_forecast ✅ Gold  has 73 803 rows  — UNBLOCKED, removed from list
+#   stg_res_forecast ✅ Gold  has 73 803 rows  — UNBLOCKED, removed from list (earlier)
 #   stg_sbfgp        ❌ Silver table not found  — still excluded
-#   stg_order_down   ⚠️  Silver year=2026/month=05/day=29 has a stale INT64 backfill file
-#                        (old backfill append before downRegulationOneCoded was in dgp_metrics cast list)
-#                        Fix: delete gs://epias-data-lake/silver/order_down/year=2026/month=05/day=29/
-#                             re-run: docker exec airflow-scheduler bash -c
-#                               "cd /opt/airflow/epias_dbt && dbt run --select stg_order_down+"
-#                        Then remove from this list.
-#   mart_production_plan → remove after stg_dpp + stg_sbfgp backfills complete
+#   stg_order_down   ✅ UNBLOCKED — the stale-partition issue documented here turned out
+#                        to be a much broader Silver-wide duplication (all 526 days,
+#                        2-3.6x) plus a nanosecond-timestamp precision bug affecting
+#                        every file, not just the one flagged day. Fixed via a full
+#                        dedup + timestamp-precision rewrite of the whole table.
+#                        `mart_ml_features`/`mart_ptf_lag_features` also needed
+#                        `stg_load_vs_actual` (consumption) deduped the same way, and a
+#                        `CAST(... AS NUMERIC)` in stg_imbalance.sql fixed to FLOAT64
+#                        (BigQuery NUMERIC -> pandas Decimal/object breaks XGBoost).
+#                        Verified: dbt full-refresh of the whole chain succeeds, and
+#                        ptf_hourly_inference runs and predicts successfully. Removed
+#                        stg_order_down + its 7 downstream models from this list.
+#   mart_production_plan → still excluded; needs stg_dpp + stg_sbfgp backfills, unrelated
+#                        to the stg_order_down fix above
 DBT_EXCLUDE_PENDING_BACKFILL: list[str] = [
     "stg_dpp",
     "stg_sbfgp",
-    "stg_order_down",
     "mart_production_plan",
-    # stg_order_down downstream — skipped until Silver partition is repaired:
-    "mart_dgp_company_analysis",
-    "mart_dgp_system_analysis",
-    "mart_regulation_depth",
-    "mart_cross_market_spread",
-    "mart_system_direction",
-    "mart_ml_features",
-    "mart_ptf_lag_features",
 ]
 
 

@@ -5,9 +5,9 @@
 SELECT
     DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul')                          AS date,
     EXTRACT(HOUR FROM CAST(date AS TIMESTAMP) AT TIME ZONE 'Asia/Istanbul') AS hour,
-    CAST(generationTotal  AS NUMERIC) AS total_generation_mwh,
-    CAST(consumption      AS NUMERIC) AS total_consumption_mwh,
-    CAST(imbalanceQuantity AS NUMERIC) AS net_imbalance_mwh
+    CAST(generationTotal  AS FLOAT64) AS total_generation_mwh,
+    CAST(consumption      AS FLOAT64) AS total_consumption_mwh,
+    CAST(imbalanceQuantity AS FLOAT64) AS net_imbalance_mwh
 FROM {{ source('silver', 'imbalance') }}
 
 {% if is_incremental() %}

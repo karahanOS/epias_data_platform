@@ -19,8 +19,8 @@ SELECT
     CAST(date AS DATE) AS date,
     CAST(SUBSTR(CAST(hour AS STRING), 1, 2) AS INT64) AS hour,
     CAST(contractName AS STRING) AS contract_name,
-    CAST(price    AS NUMERIC) AS price_try,
-    CAST(quantity AS NUMERIC) AS quantity_mwh,
+    CAST(price    AS FLOAT64) AS price_try,
+    CAST(quantity AS FLOAT64) AS quantity_mwh,
 
     {% if 'buyerOrganizationId' in silver_cols %}
     CAST(buyerOrganizationId  AS INT64) AS buyer_organization_id,
