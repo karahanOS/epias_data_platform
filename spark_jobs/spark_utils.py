@@ -37,7 +37,12 @@ class BaseEpiasSparkJob:
                 .appName(self.app_name) \
                 .config("spark.sql.session.timeZone", "UTC") \
                 .config("spark.sql.legacy.timeParserPolicy", "LEGACY") \
-                .config("spark.sql.sources.partitionOverwriteMode", "DYNAMIC")
+                .config("spark.sql.sources.partitionOverwriteMode", "DYNAMIC") \
+                .config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS")
+                # Spark's default (INT96) reads back as nanosecond precision in
+                # pyarrow/BigQuery, which BigQuery external tables reject outright
+                # ("Invalid timestamp nanoseconds value ... TIMESTAMP_NANOS").
+                # Forcing microseconds here is what BigQuery's Parquet reader expects.
 
             if self.backfill_mode:
                 # GCS streaming upload: avoids buffering the entire partition in heap.

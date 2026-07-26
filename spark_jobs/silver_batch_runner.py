@@ -64,7 +64,11 @@ def main():
         .appName("EpiasSilverBatch") \
         .config("spark.sql.session.timeZone", "UTC") \
         .config("spark.sql.legacy.timeParserPolicy", "LEGACY") \
-        .config("spark.sql.sources.partitionOverwriteMode", "DYNAMIC")
+        .config("spark.sql.sources.partitionOverwriteMode", "DYNAMIC") \
+        .config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS")
+    # Spark's default (INT96) reads back as nanosecond precision in pyarrow/BigQuery,
+    # which BigQuery external tables reject outright ("Invalid timestamp nanoseconds
+    # value ... TIMESTAMP_NANOS"). Forcing microseconds is what BigQuery expects.
 
     if backfill_mode:
         builder = builder \
