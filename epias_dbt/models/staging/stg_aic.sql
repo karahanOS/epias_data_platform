@@ -6,8 +6,8 @@
 ) }}
 
 SELECT
-    DATE(date, 'Asia/Istanbul')                              AS date,
-    EXTRACT(HOUR FROM date AT TIME ZONE 'Asia/Istanbul')     AS hour,
+    DATE(s.date, 'Asia/Istanbul')                              AS date,
+    EXTRACT(HOUR FROM s.date AT TIME ZONE 'Asia/Istanbul')     AS hour,
     CAST(toplam AS FLOAT64) AS total_aic_mwh,
     CAST(dogalgaz AS FLOAT64) AS gas_aic_mwh,
     CAST(ruzgar AS FLOAT64) AS wind_aic_mwh,
@@ -21,8 +21,14 @@ SELECT
     CAST(biokutle AS FLOAT64) AS biomass_aic_mwh,
     CAST(akarsu AS FLOAT64) AS river_aic_mwh,
     CAST(gunes AS FLOAT64) AS solar_aic_mwh
-FROM {{ source('silver', 'aic') }}
+FROM {{ source('silver', 'aic') }} AS s
 
 {% if is_incremental() %}
-  WHERE DATE(date, 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }})
+  WHERE DATE(s.date, 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }})
 {% endif %}
+-- See stg_pricing.sql: adjacent Hive day-partitions can both carry the same
+-- UTC 21:00-23:59 slice, duplicating a (date,hour) row. Self-heal here.
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY DATE(s.date, 'Asia/Istanbul'), EXTRACT(HOUR FROM s.date AT TIME ZONE 'Asia/Istanbul')
+  ORDER BY s.date DESC
+) = 1

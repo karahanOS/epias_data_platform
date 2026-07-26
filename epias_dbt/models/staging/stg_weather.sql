@@ -12,7 +12,11 @@ SELECT
     CAST(shortwave_radiation AS FLOAT64) AS shortwave_radiation,
     CAST(relative_humidity_2m AS FLOAT64) AS relative_humidity
 FROM {{ source('silver', 'weather') }}
+-- A handful of rows come back with a NULL raw `date` (likely a stray GCS
+-- marker object swept up by the external table's wildcard match) — filter
+-- them out rather than let them through as phantom NULL (date,hour) rows.
+WHERE date IS NOT NULL
 
 {% if is_incremental() %}
-  WHERE DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }})
+  AND DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }})
 {% endif %}

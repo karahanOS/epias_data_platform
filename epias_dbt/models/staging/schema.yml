@@ -4,10 +4,41 @@ version: 2
 # ──────────────────────────────────────────────────────────────
 # STAGING MODEL TESTS
 # hour: accepted_values 0-23 + not_null for all time-series models
+#
+# unique_combination_of_columns tests added 2026-07-26: these test each
+# model's actual grain (matching the Silver source's real primary key —
+# see spark_jobs/bronze_to_silver_*.py). Added after a months-long
+# duplication bug across ~12 Silver tables went undetected because dbt
+# never actually ran `dbt test` in production (only `dbt run`) — see
+# dags/epias_dag.py's run_dbt_tests task. If duplication ever creeps back
+# in (a backfill re-run, a Spark write bug, etc.), these tests fail loudly
+# the next hourly run instead of silently rotting for weeks.
 # ──────────────────────────────────────────────────────────────
 models:
   - name: stg_pricing
     description: "PTF/SMF fiyatları — saatlik (EPIAS GÖP)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_smf
+    description: "Sistem marjinal fiyatı — saatlik (EPIAS BPM)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
     columns:
       - name: date
         tests: [not_null]
@@ -20,6 +51,12 @@ models:
 
   - name: stg_weather
     description: "Saatlik hava durumu — İstanbul/Ankara/İzmir/Konya (open-meteo)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+            - city_name
     columns:
       - name: date
         tests: [not_null]
@@ -34,6 +71,11 @@ models:
 
   - name: stg_generation
     description: "Gerçek zamanlı üretim — kaynak tipi bazlı saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
     columns:
       - name: date
         tests: [not_null]
@@ -46,6 +88,11 @@ models:
 
   - name: stg_aic
     description: "Uzlaştırma esas üretim — kaynak tipi bazlı saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
     columns:
       - name: date
         tests: [not_null]
@@ -58,6 +105,11 @@ models:
 
   - name: stg_dpp
     description: "Doğal pozisyon planı — kaynak tipi bazlı saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
     columns:
       - name: date
         tests: [not_null]
@@ -70,6 +122,11 @@ models:
 
   - name: stg_order_up
     description: "Yukarı yönlü düzenleme emirleri — saatlik (EPIAS DGP)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
     columns:
       - name: date
         tests: [not_null]
@@ -82,6 +139,11 @@ models:
 
   - name: stg_order_down
     description: "Aşağı yönlü düzenleme emirleri — saatlik (EPIAS DGP)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
     columns:
       - name: date
         tests: [not_null]
@@ -94,6 +156,11 @@ models:
 
   - name: stg_res_forecast
     description: "Yenilenebilir kaynak üretim tahmini — saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
     columns:
       - name: date
         tests: [not_null]
@@ -104,8 +171,192 @@ models:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
               quote: false
 
+  - name: stg_dam_clearing
+    description: "GÖP eşleşme miktarı — saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_imbalance
+    description: "Dengesizlik miktarı ve gerçekleşen üretim/tüketim — saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_load_estimation
+    description: "Yük tahmini planı (LEP) — saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_load_vs_actual
+    description: "Gerçekleşen tüketim — saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_system_direction
+    description: "Sistem yönü (enerji dengesizliği tarafı) — saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_price_ind_bid
+    description: "Fiyattan bağımsız teklifler — saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_unlicensed_generation
+    description: "Lisanssız üretim — saatlik (EPIAS). Model zaten kendi içinde ROW_NUMBER ile tekilleştiriyor; bu test o mekanizmanın kırılmadığını doğrular."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_price_spread
+    description: "GİP-GÖP fiyat farkı — saatlik (stg_pricing + stg_smf join)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_supply_demand_curve
+    description: "GÖP arz-talep eğrisi — fiyat kademeli, günlük (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - bid_offer_price_try
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: bid_offer_price_try
+        tests: [not_null]
+
+  - name: stg_sbfgp
+    description: "Kesinleşmiş günlük üretim planı (SBFGP) — saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
+  - name: stg_idm_transactions
+    description: "Gün içi piyasa (GİP) işlemleri — işlem bazlı. `id` EPIAS API'sinde gün-içi bir sıra numarası, günler arası global unique değil — grain (date, id)."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - id
+    columns:
+      - name: id
+        tests: [not_null]
+      - name: date
+        tests: [not_null]
+
   - name: stg_outages
-    description: "Güç santrali arıza/bakım olayları — olay bazlı (span)"
+    description: "Güç santrali arıza/bakım olayları — olay bazlı (span). `id` EPIAS API'sinde gün-içi bir sıra numarası, günler arası global unique değil — grain (date, id)."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - id
     columns:
       - name: id
         tests: [not_null]
@@ -114,6 +365,11 @@ models:
 
   - name: stg_outages_daily
     description: "Arıza/bakım olayları — GENERATE_DATE_ARRAY ile günlük genişletilmiş"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - id
+            - active_date
     columns:
       - name: id
         tests: [not_null]
@@ -132,10 +388,24 @@ models:
 
   - name: stg_dams
     description: "Baraj aktif hacimleri — günlük (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - dam_id
     columns:
       - name: date
         tests: [not_null]
       - name: dam_id
+        tests: [not_null]
+
+  - name: stg_participants
+    description: "Piyasa katılımcıları — statik referans (organizasyon bazlı)"
+    tests:
+      - unique:
+          column_name: organization_id
+    columns:
+      - name: organization_id
         tests: [not_null]
 
 # ──────────────────────────────────────────────────────────────

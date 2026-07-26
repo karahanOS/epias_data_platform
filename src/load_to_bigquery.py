@@ -95,7 +95,8 @@ class BQExternalTableManager:
             "uevcb_list",
             "dams",
             "outages",
-            "weather"
+            "weather",
+            "sbfgp",  # backfill-only source (daily_eligible=False), missing here — stg_sbfgp couldn't build
         ]
         
         logger.info(f"Toplam {len(tables)} tablo BigQuery'ye tanımlanıyor...")

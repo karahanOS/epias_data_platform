@@ -261,7 +261,23 @@ with DAG(
             '--exclude ' + ' '.join(DBT_EXCLUDE_PENDING_BACKFILL)
         ),
     )
-    
+
+    # dbt run never ran dbt test in production — the 2026-07-25/26 Silver dedup
+    # investigation found ~12 tables silently duplicated for months because the
+    # unique_combination_of_columns tests added to schema.yml were never actually
+    # executed. This task closes that gap: if duplication (or any other test)
+    # reappears, this task fails and shows up in the Airflow UI within the hour,
+    # instead of rotting silently. Failure here does not block the next hour's
+    # DagRun (catchup=False, separate DagRuns).
+    run_dbt_tests = BashOperator(
+        task_id='run_dbt_tests',
+        bash_command=(
+            'cd /opt/airflow/epias_dbt && dbt test --profiles-dir . --target prod '
+            '--exclude ' + ' '.join(DBT_EXCLUDE_PENDING_BACKFILL)
+        ),
+    )
+    run_dbt >> run_dbt_tests
+
     # Training (haftalık) ve inference (saatlik) artık bu DAG'da değil — kendi
     # cadence'lerine sahip ayrı DAG'lar: epias_ptf_training_weekly.py ve
     # epias_ptf_inference_hourly.py. Bu DAG artık saatlik çalıştığı için

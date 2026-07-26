@@ -23,15 +23,24 @@
 --   priceEur  → ptf_eur
 --   smp/sdf   → not read here; stg_smf uses the separate BPM endpoint
 SELECT
-    DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul')                          AS date,
-    EXTRACT(HOUR FROM CAST(date AS TIMESTAMP) AT TIME ZONE 'Asia/Istanbul') AS hour,
+    DATE(CAST(s.date AS TIMESTAMP), 'Asia/Istanbul')                          AS date,
+    EXTRACT(HOUR FROM CAST(s.date AS TIMESTAMP) AT TIME ZONE 'Asia/Istanbul') AS hour,
     CAST(price    AS FLOAT64) AS ptf_try,
     CAST(priceUsd AS FLOAT64) AS ptf_usd,
     CAST(priceEur AS FLOAT64) AS ptf_eur
-FROM {{ source('silver', 'pricing') }}
+FROM {{ source('silver', 'pricing') }} AS s
 
 {% if is_incremental() %}
   -- Use Turkish local date for the lookback filter to avoid accidentally skipping
   -- the first 3 hours of each day (UTC 21–23 of the previous calendar day).
-  WHERE DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }})
+  WHERE DATE(CAST(s.date AS TIMESTAMP), 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }})
 {% endif %}
+-- Adjacent Hive day-partitions can both carry the same UTC 21:00-23:59 slice
+-- (Turkish-local day boundary vs. UTC day boundary), producing an exact-value
+-- duplicate row for that (date,hour) when both partitions are scanned. Self-heal
+-- here instead of relying on Silver files never overlapping across partitions.
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY DATE(CAST(s.date AS TIMESTAMP), 'Asia/Istanbul'),
+               EXTRACT(HOUR FROM CAST(s.date AS TIMESTAMP) AT TIME ZONE 'Asia/Istanbul')
+  ORDER BY s.date DESC
+) = 1

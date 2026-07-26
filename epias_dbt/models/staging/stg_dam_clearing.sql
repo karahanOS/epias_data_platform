@@ -6,12 +6,18 @@
 ) }}
 
 SELECT
-    CAST(date AS DATE) AS date,
+    CAST(s.date AS DATE) AS date,
     CAST(SUBSTR(CAST(hour AS STRING), 1, 2) AS INT64) AS hour,
     CAST(matchedBids AS FLOAT64) AS matched_bids_mwh,
     CAST(matchedOffers AS FLOAT64) AS matched_offers_mwh
-FROM {{ source('silver', 'dam_clearing') }}
+FROM {{ source('silver', 'dam_clearing') }} AS s
 
 {% if is_incremental() %}
-  WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }})
+  WHERE CAST(s.date AS DATE) >= (SELECT MAX(date) FROM {{ this }})
 {% endif %}
+-- See stg_pricing.sql: adjacent Hive day-partitions can both carry the same
+-- boundary slice, duplicating a (date,hour) row. Self-heal here.
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY CAST(s.date AS DATE), CAST(SUBSTR(CAST(hour AS STRING), 1, 2) AS INT64)
+  ORDER BY s.date DESC
+) = 1

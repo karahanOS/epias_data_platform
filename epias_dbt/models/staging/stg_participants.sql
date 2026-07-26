@@ -13,4 +13,7 @@ SELECT
     CAST(eicCode AS STRING) AS eic_code,
     CAST(legalStatus AS STRING) AS legal_status
 FROM raw_participants
-QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) = 1
+-- BigQuery rejects PARTITION BY on a FLOAT64 expression directly ("Partitioning
+-- by expressions of type FLOAT64 is not allowed") — id is FLOAT64 in Silver
+-- (project-wide FLOAT64 convention), so cast to INT64 before partitioning.
+QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(id AS INT64) ORDER BY id) = 1
