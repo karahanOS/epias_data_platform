@@ -34,6 +34,15 @@ SELECT
     CAST(NULL AS INT64) AS seller_organization_id  -- column absent in current Silver; rebuild after Bronze backfill
     {% endif %}
 
-FROM {{ source('silver', 'idm_transactions') }}
+FROM {{ source('silver', 'idm_transactions') }} AS s
 
-{% if is_incremental() %} WHERE DATE(date) >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
+{% if is_incremental() %} WHERE DATE(s.date) >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
+-- Confirmed via real data (2026-07-27): the same transaction id can appear in
+-- two adjacent Hive day-partitions with identical content (e.g. a transaction
+-- timestamped 07-23 15:54 UTC showing up in both day=23's and day=24's
+-- partition) — same cross-partition-boundary class as stg_pricing etc.
+-- `id` is the true global grain (config unique_key=['id']); self-heal here.
+-- BigQuery rejects PARTITION BY on a FLOAT64 expression directly (raw `id` is
+-- FLOAT64 per the project's cast convention) -- cast to INT64 first, same fix
+-- as stg_participants.
+QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(s.id AS INT64) ORDER BY s.date DESC) = 1

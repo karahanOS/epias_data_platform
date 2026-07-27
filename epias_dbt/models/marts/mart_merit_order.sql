@@ -12,13 +12,17 @@ pricing AS (
 
 SELECT
     sd.date,
+    sd.hour,
     sd.bid_offer_price_try,
     sd.cumulative_supply_mwh,
     sd.cumulative_demand_mwh,
     p.ptf_try,
-    CASE 
+    CASE
         WHEN sd.bid_offer_price_try <= p.ptf_try THEN 'In Merit (Eşleşti)'
         ELSE 'Out of Merit (Eşleşmedi)'
     END AS supply_status
 FROM supply_demand sd
-LEFT JOIN pricing p ON sd.date = p.date
+-- Was joined on `date` alone, fanning every price point out against all 24
+-- hours of that day's pricing (stg_supply_demand_curve had no `hour` before
+-- 2026-07-27) -- now that both sides carry hour, join on the real grain.
+LEFT JOIN pricing p ON sd.date = p.date AND sd.hour = p.hour

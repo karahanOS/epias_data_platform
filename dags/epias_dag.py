@@ -163,11 +163,17 @@ def save_to_gcs_callable(task_id: str, bucket_path: str, allow_empty: bool = Fal
     df.to_parquet(gcs_path, index=False)
 
 # ── DAG ───────────────────────────────────────────────────────────────────────
+# ADR-0004 (2026-07-27): on_failure_callback only ever logged an error line --
+# nobody was actually notified unless they opened the Airflow UI. email_on_failure
+# uses Airflow's built-in SMTP support (see docker-compose.yml's AIRFLOW__SMTP__*
+# env vars) to send a real email on any task failure, at zero added cost.
 default_args = {
     "owner":               "epias_team",
     "retries":             1,
     "retry_delay":         timedelta(minutes=5),
     "on_failure_callback": notify_failure,
+    "email_on_failure":    True,
+    "email":               ["mehmetkarahanc@gmail.com"],
 }
 
 with DAG(
@@ -254,29 +260,28 @@ with DAG(
         bash_command='python /opt/airflow/src/load_to_bigquery.py',
     )
 
+    # ADR-0004 (2026-07-27): dbt run never ran dbt test in production -- the
+    # 2026-07-25/26 Silver dedup investigation found ~12 tables silently
+    # duplicated for months because schema.yml's tests were never actually
+    # executed. A separate run_dbt_tests task closed the *detection* gap
+    # (failures become visible within the hour) but not the *prevention* gap
+    # -- dbt run had already written the (possibly bad) data before dbt test
+    # got a chance to catch it. `dbt build` interleaves each model with its
+    # own tests in dependency order; `--fail-fast` aborts the rest of the run
+    # on the first real failure, so a bad stg_pricing row (say) now stops
+    # mart_ml_features/mart_ptf_lag_features from building on top of it that
+    # hour, instead of the bad data quietly propagating downstream. The 2
+    # known pre-existing, non-duplication test failures (assert_no_hourly_gaps,
+    # mart_gop_volume_analysis's ptf_try not_null -- both reflect the old
+    # Faz-0 laptop-uptime gap) are set to severity=warn in schema.yml /
+    # assert_no_hourly_gaps.sql specifically so they don't trip --fail-fast.
     run_dbt = BashOperator(
         task_id='run_dbt_gold_models',
         bash_command=(
-            'cd /opt/airflow/epias_dbt && dbt run --profiles-dir . --target prod '
+            'cd /opt/airflow/epias_dbt && dbt build --fail-fast --profiles-dir . --target prod '
             '--exclude ' + ' '.join(DBT_EXCLUDE_PENDING_BACKFILL)
         ),
     )
-
-    # dbt run never ran dbt test in production — the 2026-07-25/26 Silver dedup
-    # investigation found ~12 tables silently duplicated for months because the
-    # unique_combination_of_columns tests added to schema.yml were never actually
-    # executed. This task closes that gap: if duplication (or any other test)
-    # reappears, this task fails and shows up in the Airflow UI within the hour,
-    # instead of rotting silently. Failure here does not block the next hour's
-    # DagRun (catchup=False, separate DagRuns).
-    run_dbt_tests = BashOperator(
-        task_id='run_dbt_tests',
-        bash_command=(
-            'cd /opt/airflow/epias_dbt && dbt test --profiles-dir . --target prod '
-            '--exclude ' + ' '.join(DBT_EXCLUDE_PENDING_BACKFILL)
-        ),
-    )
-    run_dbt >> run_dbt_tests
 
     # Training (haftalık) ve inference (saatlik) artık bu DAG'da değil — kendi
     # cadence'lerine sahip ayrı DAG'lar: epias_ptf_training_weekly.py ve

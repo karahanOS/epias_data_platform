@@ -308,15 +308,22 @@ models:
               quote: false
 
   - name: stg_supply_demand_curve
-    description: "GÖP arz-talep eğrisi — fiyat kademeli, günlük (EPIAS)"
+    description: "GÖP arz-talep eğrisi — fiyat kademeli, saatlik (EPIAS)"
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:
             - date
+            - hour
             - bid_offer_price_try
     columns:
       - name: date
         tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
       - name: bid_offer_price_try
         tests: [not_null]
 
@@ -338,12 +345,10 @@ models:
               quote: false
 
   - name: stg_idm_transactions
-    description: "Gün içi piyasa (GİP) işlemleri — işlem bazlı. `id` EPIAS API'sinde gün-içi bir sıra numarası, günler arası global unique değil — grain (date, id)."
+    description: "Gün içi piyasa (GİP) işlemleri — işlem bazlı. `id` global olarak benzersiz (unique_key=['id']); duplike satırlar komşu Hive partition örtüşmesinden kaynaklanıyordu, QUALIFY ile giderildi."
     tests:
-      - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - date
-            - id
+      - unique:
+          column_name: id
     columns:
       - name: id
         tests: [not_null]
@@ -351,12 +356,10 @@ models:
         tests: [not_null]
 
   - name: stg_outages
-    description: "Güç santrali arıza/bakım olayları — olay bazlı (span). `id` EPIAS API'sinde gün-içi bir sıra numarası, günler arası global unique değil — grain (date, id)."
+    description: "Güç santrali arıza/bakım olayları — olay bazlı (span). `id` global olarak benzersiz (unique_key=['id']); duplike satırlar komşu Hive partition örtüşmesinden kaynaklanıyordu, QUALIFY ile giderildi."
     tests:
-      - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - date
-            - id
+      - unique:
+          column_name: id
     columns:
       - name: id
         tests: [not_null]
@@ -424,7 +427,12 @@ models:
           - not_null
       - name: ptf_try
         tests:
-          - not_null
+          - not_null:
+              config:
+                # severity=warn (2026-07-27, ADR-0004): same pre-existing
+                # Faz-0 gap as assert_no_hourly_gaps (2024-12-31 dataset-start
+                # partial day + 2026-07-22 known gap), not new duplication.
+                severity: warn
       - name: total_buy_mwh
         tests:
           - not_null

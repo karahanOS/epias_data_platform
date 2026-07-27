@@ -12,6 +12,16 @@ x-airflow-common: &airflow-common
     AIRFLOW__SCHEDULER__SCHEDULER_ZOMBIE_TASK_THRESHOLD: '900'
     PYTHONPATH: /opt/airflow/src
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/credentials/gcp-key.json
+    # ADR-0004 (2026-07-27): email_on_failure alerting. GMAIL_APP_PASSWORD comes
+    # from .env (never commit the real value) -- a Gmail App Password, not the
+    # account password, requires 2FA enabled on the Google account.
+    AIRFLOW__SMTP__SMTP_HOST: smtp.gmail.com
+    AIRFLOW__SMTP__SMTP_STARTTLS: 'true'
+    AIRFLOW__SMTP__SMTP_SSL: 'false'
+    AIRFLOW__SMTP__SMTP_PORT: '587'
+    AIRFLOW__SMTP__SMTP_USER: mehmetkarahanc@gmail.com
+    AIRFLOW__SMTP__SMTP_PASSWORD: ${GMAIL_APP_PASSWORD}
+    AIRFLOW__SMTP__SMTP_MAIL_FROM: mehmetkarahanc@gmail.com
   volumes:
     - ./dags:/opt/airflow/dags
     - ./src:/opt/airflow/src

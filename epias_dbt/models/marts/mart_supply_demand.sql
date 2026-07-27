@@ -2,6 +2,7 @@
 
 SELECT
     date,
+    hour,
     bid_offer_price_try,
     cumulative_supply_mwh,
     cumulative_demand_mwh,
