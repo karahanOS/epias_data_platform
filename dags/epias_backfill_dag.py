@@ -69,6 +69,20 @@ except Exception:
 WEEK_CHUNK_DAYS     = 7      # Process 1 week at a time per task
 BUCKET_NAME         = "epias-data-lake"
 
+# Per-source chunk-size override. Most EPIAS endpoints accept a real date
+# range and a 7-day chunk safely returns the whole week. supply_demand is an
+# exception: EPIASClient.get_supply_demand() only sends a single `date` field
+# to the API (the endpoint doesn't support DateRangeRequest despite what the
+# Swagger spec implies — see its docstring) and silently ignores end_date.
+# A 7-day chunk therefore only ever returns chunk_start's data, discarding the
+# other 6 days — this was found 2026-07-28 when a historical backfill left
+# supply_demand's Silver table at ~90 distinct days out of ~575 possible days
+# despite 77 "weekly" Bronze chunks having been fetched. Fetching 1 day at a
+# time (575 tasks instead of 77) is the only way to actually get every day.
+SOURCE_CHUNK_DAYS: dict[str, int] = {
+    "supply_demand": 1,
+}
+
 # ── SOURCES TO BACKFILL ───────────────────────────────────────────────────────
 # Only include sources where historical data is meaningful.
 # Excluded: get_market_participants (static, no date), get_uevcb_list (slow bulk)
@@ -230,8 +244,13 @@ with DAG(
 
     for source_key, (method_name, bucket_path, allow_empty) in BACKFILL_SOURCES.items():
         prev_task = None
+        source_chunk_days = SOURCE_CHUNK_DAYS.get(source_key, WEEK_CHUNK_DAYS)
+        source_chunks = (
+            chunks if source_chunk_days == WEEK_CHUNK_DAYS
+            else _generate_chunks(BACKFILL_START_DATE, BACKFILL_END_DATE, source_chunk_days)
+        )
 
-        for chunk_start, chunk_end in chunks:
+        for chunk_start, chunk_end in source_chunks:
             task = PythonOperator(
                 task_id=f"bronze_{source_key}_{chunk_start}",
                 python_callable=backfill_chunk,
