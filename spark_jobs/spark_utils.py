@@ -9,6 +9,7 @@ import sys
 import logging
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.types import StructType
 
 class BaseEpiasSparkJob:
     def __init__(self, app_name: str, source_name: str, primary_keys: list, spark: SparkSession = None):
@@ -78,8 +79,26 @@ class BaseEpiasSparkJob:
 
         path = f"gs://epias-data-lake/bronze/{self.source_name}/{ds}.parquet"
         self.logger.info(f"💾 Bronze okunuyor (günlük): {path}")
+
+        if not self._path_exists(path):
+            # allow_empty=True sources (e.g. day-ahead-market endpoints that
+            # aren't published yet for "today" — see epias_sources.py's
+            # pricing/dam_clearing/price_ind_bid comment) never write a
+            # Bronze file for this hour at all. Without this check, Spark's
+            # .parquet(path) throws on a missing path, which used to fail
+            # this source in silver_batch_runner.py's try/except and mark
+            # the WHOLE consolidated batch (and therefore the whole hourly
+            # dbt run) failed even though nothing was actually wrong.
+            self.logger.warning(f"⚠️ Bronze dosyası yok, bu kaynak bu saat için atlanıyor: {path}")
+            return self.spark.createDataFrame([], schema or StructType([]))
+
         reader = self.spark.read.schema(schema) if schema else self.spark.read
         return self._normalize(reader.parquet(path))
+
+    def _path_exists(self, path: str) -> bool:
+        hadoop_conf = self.spark.sparkContext._jsc.hadoopConfiguration()
+        jvm_path = self.spark._jvm.org.apache.hadoop.fs.Path(path)
+        return jvm_path.getFileSystem(hadoop_conf).exists(jvm_path)
 
     def _read_bronze_backfill(self, schema=None):
         """Reads all weekly backfill chunks for this source.

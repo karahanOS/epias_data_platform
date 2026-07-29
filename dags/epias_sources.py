@@ -22,12 +22,30 @@ DATAPROC_RUNTIME_VERSION = "2.2"
 
 EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # key: (method_name, gcs_path, allow_empty, backfill_eligible, daily_eligible)
-    "pricing":          ("get_ptf",                          "bronze/pricing",          False, True,  True),
+    #
+    # pricing/dam_clearing/price_ind_bid: allow_empty=True since 2026-07-29.
+    # These are Gün Öncesi Piyasası (day-ahead market) endpoints — EPIAS's own
+    # API returns a business-logic 400 ("... saat 14 öncesinde mevcut değil")
+    # for the current day's data until that day's auction/publish cutoff, and
+    # epias_client.py's _post() already anticipates this exact case (matches
+    # errorCode "BUS*" or "veri bulunmamaktadır") and gracefully returns
+    # {"items": []} instead of raising. With allow_empty=False, that graceful
+    # empty response still hit save_to_gcs_callable's hard ValueError, which
+    # cascaded into silver_batch_0/1 failing and run_dbt_gold_models/
+    # load_silver_to_bigquery getting marked upstream_failed — blocking the
+    # ENTIRE hourly Gold refresh for every run before the publish cutoff (was
+    # 7 consecutive hourly failures every single day, 2026-07-29 03:00-09:00
+    # UTC, self-resolving by 10:00 UTC once EPIAS published). This pattern
+    # existed long before today but was invisible until ADR-0004's
+    # email_on_failure alerting started surfacing it. `smf` uses a different
+    # endpoint (BPM, not day-ahead) and was NOT affected — confirmed via the
+    # same failing runs — so it intentionally keeps allow_empty=False.
+    "pricing":          ("get_ptf",                          "bronze/pricing",          True,  True,  True),
     "smf":              ("get_smf",                         "bronze/smf",              False, True,  True),
     "consumption":      ("get_realtime_consumption",        "bronze/consumption",      False, True,  True),
     "supply_demand":    ("get_supply_demand",               "bronze/supply_demand",    False, True,  True),
-    "dam_clearing":     ("get_dam_clearing_quantity",       "bronze/dam_clearing",     False, True,  True),
-    "price_ind_bid":    ("get_price_independent_bid",       "bronze/price_ind_bid",    False, True,  True),
+    "dam_clearing":     ("get_dam_clearing_quantity",       "bronze/dam_clearing",     True,  True,  True),
+    "price_ind_bid":    ("get_price_independent_bid",       "bronze/price_ind_bid",    True,  True,  True),
     "idm_transactions": ("get_idm_transaction_history",     "bronze/idm_transactions", False, True,  True),
     "order_up":         ("get_order_summary_up",            "bronze/order_up",         False, True,  True),
     "order_down":       ("get_order_summary_down",          "bronze/order_down",       False, True,  True),
