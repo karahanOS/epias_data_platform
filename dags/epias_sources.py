@@ -53,8 +53,16 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
 # Models excluded from dbt runs while their Silver backfill is incomplete.
 # Remove a model from this list once its backfill is complete and dbt builds cleanly.
 #
-# Status as of 2026-07-25:
-#   stg_dpp          ⚠️  Silver has rows but Hive partition schema mismatch → still excluded
+# Status as of 2026-07-29:
+#   stg_dpp          ✅ UNBLOCKED — the "Hive partition schema mismatch" was gone by the
+#                        time this was re-investigated (fixed incidentally by an external
+#                        table re-registration run during an unrelated backfill). The
+#                        model itself was still missing a dedup step every sibling hourly
+#                        model already has — added the same cross-Hive-partition-boundary
+#                        QUALIFY/ROW_NUMBER self-heal (6 duplicate (date,hour) rows found
+#                        at hours 00/01/02, the usual UTC-vs-Turkish-local-day pattern).
+#                        Verified: dbt full-refresh + all 4 schema.yml tests pass clean.
+#                        Removed stg_dpp from this list.
 #   stg_res_forecast ✅ Gold  has 73 803 rows  — UNBLOCKED, removed from list (earlier)
 #   stg_sbfgp        ❌ Silver table not found  — still excluded
 #   stg_order_down   ✅ UNBLOCKED — the stale-partition issue documented here turned out
@@ -72,7 +80,6 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
 #   mart_production_plan → still excluded; needs stg_dpp + stg_sbfgp backfills, unrelated
 #                        to the stg_order_down fix above
 DBT_EXCLUDE_PENDING_BACKFILL: list[str] = [
-    "stg_dpp",
     "stg_sbfgp",
     "mart_production_plan",
 ]

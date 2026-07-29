@@ -8,25 +8,36 @@
 -- DPP = Declaratory Production Plan (Beyan Edilen Günlük Üretim Planı / BGÜP)
 -- Bu tablo gün öncesinde şirketlerin TEIAŞ'a bildirdiği üretim planıdır.
 -- KGÜP (kesinleşmiş) için stg_sbfgp.sql kullanılmalıdır.
-SELECT
-    CAST(date AS DATE)                                    AS date,
-    CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64)    AS hour,
-    CAST(toplam      AS FLOAT64) AS total_planned_mwh,
-    CAST(dogalgaz    AS FLOAT64) AS natural_gas_mwh,
-    CAST(ruzgar      AS FLOAT64) AS wind_mwh,
-    CAST(linyit      AS FLOAT64) AS lignite_mwh,
-    CAST(tasKomur    AS FLOAT64) AS hard_coal_mwh,
-    CAST(ithalKomur  AS FLOAT64) AS imported_coal_mwh,
-    CAST(fuelOil     AS FLOAT64) AS fueloil_mwh,
-    CAST(jeotermal   AS FLOAT64) AS geothermal_mwh,
-    CAST(barajli     AS FLOAT64) AS dam_hydro_mwh,
-    CAST(nafta       AS FLOAT64) AS naphtha_mwh,
-    CAST(biokutle    AS FLOAT64) AS biomass_mwh,
-    CAST(akarsu      AS FLOAT64) AS river_hydro_mwh,
-    CAST(gunes       AS FLOAT64) AS solar_mwh,
-    CAST(diger       AS FLOAT64) AS other_mwh
-FROM {{ source('silver', 'dpp') }}
+WITH deduped AS (
+    SELECT
+        CAST(date AS DATE)                                    AS date,
+        CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64)    AS hour,
+        CAST(toplam      AS FLOAT64) AS total_planned_mwh,
+        CAST(dogalgaz    AS FLOAT64) AS natural_gas_mwh,
+        CAST(ruzgar      AS FLOAT64) AS wind_mwh,
+        CAST(linyit      AS FLOAT64) AS lignite_mwh,
+        CAST(tasKomur    AS FLOAT64) AS hard_coal_mwh,
+        CAST(ithalKomur  AS FLOAT64) AS imported_coal_mwh,
+        CAST(fuelOil     AS FLOAT64) AS fueloil_mwh,
+        CAST(jeotermal   AS FLOAT64) AS geothermal_mwh,
+        CAST(barajli     AS FLOAT64) AS dam_hydro_mwh,
+        CAST(nafta       AS FLOAT64) AS naphtha_mwh,
+        CAST(biokutle    AS FLOAT64) AS biomass_mwh,
+        CAST(akarsu      AS FLOAT64) AS river_hydro_mwh,
+        CAST(gunes       AS FLOAT64) AS solar_mwh,
+        CAST(diger       AS FLOAT64) AS other_mwh,
+        -- Cross-Hive-partition duplication (same class as stg_generation/stg_pricing etc.):
+        -- raw `date` is a full UTC timestamp and `time` is the Turkish-local hour label,
+        -- so the last few UTC hours of a day land in the NEXT day's local-hour partition
+        -- too, duplicating (date,hour) 00/01/02 across two adjacent GCS partitions.
+        ROW_NUMBER() OVER(
+            PARTITION BY CAST(date AS DATE), CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64)
+            ORDER BY _record_hash DESC
+        ) AS rn
+    FROM {{ source('silver', 'dpp') }}
+)
+SELECT * EXCEPT(rn) FROM deduped WHERE rn = 1
 
 {% if is_incremental() %}
-  WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }})
+  AND date >= (SELECT MAX(date) FROM {{ this }})
 {% endif %}
