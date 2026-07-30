@@ -40,10 +40,20 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # email_on_failure alerting started surfacing it. `smf` uses a different
     # endpoint (BPM, not day-ahead) and was NOT affected — confirmed via the
     # same failing runs — so it intentionally keeps allow_empty=False.
+    #
+    # supply_demand: allow_empty=True added 2026-07-30, proactively — same
+    # `/v1/markets/dam/*` (Gün Öncesi Piyasası) endpoint family as pricing/
+    # dam_clearing/price_ind_bid above, same delay=0 same-day fetch pattern,
+    # so it carries the identical "not published before ~14:00 TRT" risk even
+    # though it hadn't actually failed yet as of this fix (found by auditing
+    # every /v1/markets/dam/* method against EPIAS_SOURCES, not from an
+    # observed failure — see the Turkish Electricity Day-Ahead Market: PTF is
+    # officially announced daily at 14:00 TRT, confirmed via EPİAŞ's own
+    # public documentation).
     "pricing":          ("get_ptf",                          "bronze/pricing",          True,  True,  True),
     "smf":              ("get_smf",                         "bronze/smf",              False, True,  True),
     "consumption":      ("get_realtime_consumption",        "bronze/consumption",      False, True,  True),
-    "supply_demand":    ("get_supply_demand",               "bronze/supply_demand",    False, True,  True),
+    "supply_demand":    ("get_supply_demand",               "bronze/supply_demand",    True,  True,  True),
     "dam_clearing":     ("get_dam_clearing_quantity",       "bronze/dam_clearing",     True,  True,  True),
     "price_ind_bid":    ("get_price_independent_bid",       "bronze/price_ind_bid",    True,  True,  True),
     "idm_transactions": ("get_idm_transaction_history",     "bronze/idm_transactions", False, True,  True),
