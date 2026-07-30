@@ -12,10 +12,17 @@
 }}
 
 WITH base AS (
+    -- NOT: LAG(x, 168) ve ROWS BETWEEN 168 PRECEDING pencere fonksiyonları,
+    -- hesaplanan her satırdan önce tam 168 (gerçek) satır bulunmasını gerektirir.
+    -- Incremental çalışmada base'i sadece son birkaç güne kısıtlamak (örn. 7 gün),
+    -- pencerenin kendisini "yetersiz geçmiş" haline getirir — bu da en güncel
+    -- günlerde ptf_lag_168h/ptf_rolling_avg_168h'nin sistematik NULL kalmasına
+    -- neden olur (ptf_inference.py'deki dropna bu NULL satırları elediği için
+    -- inference her seferinde eski/rastgele bir satırı "en güncel" sanıyordu).
+    -- Kaynak tablo (mart_ml_features) büyük değil; pencere hesaplarını her
+    -- incremental çalışmada TAM geçmiş üzerinden yapmak güvenli ve ucuz —
+    -- MERGE hedefi zaten aşağıdaki son WHERE ile tek güne sınırlanıyor.
     SELECT * FROM {{ ref('mart_ml_features') }}
-    {% if is_incremental() %}
-      WHERE date >= DATE_SUB((SELECT MAX(date) FROM {{ this }}), INTERVAL 7 DAY)
-    {% endif %}
 ),
 
 with_lags AS (
