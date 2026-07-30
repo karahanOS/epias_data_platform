@@ -61,7 +61,16 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # daily-only: slow bulk / not historically meaningful
     "injection":        ("get_injection_quantity",          "bronze/injection",        True,  False, True),
     "uevcb_list":       ("get_uevcb_list",                  "bronze/uevcb_list",       True,  False, True),
-    "unlicensed":       ("get_unlicensed_generation",       "bronze/unlicensed",       False, False, True),
+    # unlicensed: backfill_eligible flipped True 2026-07-30. This source is
+    # published monthly (~35-day lag per get_unlicensed_generation()'s own
+    # docstring), and the daily pipeline's single-day T-35 rolling window
+    # structurally misses most days (only catches a date if it happens to
+    # land exactly on/after that month's settlement). A periodic full-range
+    # historical backfill (which derives partitions from the actual date in
+    # the data, not from the requested ds) is the only way to catch up —
+    # re-run `epias_historical_backfill` scoped to "unlicensed" periodically
+    # (e.g. monthly) until this gets a proper recurring catch-up mechanism.
+    "unlicensed":       ("get_unlicensed_generation",       "bronze/unlicensed",       False, True,  True),
     # static reference data: runs daily but not backfilled (no date dimension)
     "participants":     ("get_market_participants",         "bronze/participants",     True,  False, True),
     # backfill-only: not yet promoted to daily pipeline
