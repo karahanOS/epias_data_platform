@@ -1295,16 +1295,43 @@ elif page == "🤖 PTF Tahmin & ML":
             cm2.metric("RMSE", f"{rmse:,.2f} TL/MWh")
             cm3.metric("MAPE", f"%{mape:.2f}")
 
-            sample = merged.sort_values("date").tail(7*24)
+            # Build an hourly timestamp (date+hour) — using `date` alone stacks
+            # all 24 hours of a day onto a single x-position.
+            merged["ts"] = merged["date"] + pd.to_timedelta(merged["hour"], unit="h")
+
+            # `.tail(7*24)` selected the last 168 MATCHED rows, which — during
+            # periods when the hourly inference job wasn't running (e.g. the
+            # scheduler downtime) or actual/predicted hours didn't align —
+            # could stretch back months while looking like a continuous
+            # 7-day line.  Instead, take the real last 7 calendar days and
+            # reindex onto the full expected hourly grid so any missing hour
+            # shows as a break in the line (connectgaps=False) rather than a
+            # straight edge silently bridging the gap.
+            _ts_max = merged["ts"].max()
+            _window_start = _ts_max - pd.Timedelta(days=7)
+            sample = (merged[merged["ts"] >= _window_start]
+                      .set_index("ts")
+                      .reindex(pd.date_range(_window_start.ceil("h"), _ts_max, freq="h")))
+
             fig3 = go.Figure()
-            fig3.add_trace(go.Scatter(x=sample["date"], y=sample["ptf_try"],
-                name="Gerçekleşen", line=dict(color="#00d4ff", width=1.5)))
-            fig3.add_trace(go.Scatter(x=sample["date"], y=sample["predicted_ptf"],
-                name="XGBoost Tahmin", line=dict(color="#ff6b35", width=1.5, dash="dash")))
+            fig3.add_trace(go.Scatter(x=sample.index, y=sample["ptf_try"],
+                name="Gerçekleşen", line=dict(color="#00d4ff", width=1.5),
+                connectgaps=False))
+            fig3.add_trace(go.Scatter(x=sample.index, y=sample["predicted_ptf"],
+                name="XGBoost Tahmin", line=dict(color="#ff6b35", width=1.5, dash="dash"),
+                connectgaps=False))
             dark(fig3, height=420, title="Son 7 Günlük Saatlik Backtesting",
                  yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
                  hovermode="x unified")
             st.plotly_chart(fig3, use_container_width=True, key="ml_bt")
+
+            _n_missing = int(sample["ptf_try"].isna().sum())
+            if _n_missing > 0:
+                st.caption(
+                    f"⚠️ Son 7 günde {_n_missing} saat için tahmin/gerçekleşen veri "
+                    f"eşleşmedi (pipeline kesintisi veya saat hizalama farkı) — "
+                    f"grafikte boşluk olarak gösteriliyor."
+                )
         else:
             st.info("Tahmin ve gerçekleşen veriler eşleştirilemedi.")
 
