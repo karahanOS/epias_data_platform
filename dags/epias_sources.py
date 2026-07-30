@@ -70,7 +70,12 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # the data, not from the requested ds) is the only way to catch up —
     # re-run `epias_historical_backfill` scoped to "unlicensed" periodically
     # (e.g. monthly) until this gets a proper recurring catch-up mechanism.
-    "unlicensed":       ("get_unlicensed_generation",       "bronze/unlicensed",       False, True,  True),
+    # allow_empty flipped True 2026-07-30 too: the most recent 1-2 months are
+    # legitimately not settled/published yet at any given backfill time (same
+    # "not published yet" shape as the day-ahead-market allow_empty fix
+    # earlier today), so a strict raise-on-empty here would permanently fail
+    # the tail end of every historical backfill run.
+    "unlicensed":       ("get_unlicensed_generation",       "bronze/unlicensed",       True,  True,  True),
     # static reference data: runs daily but not backfilled (no date dimension)
     "participants":     ("get_market_participants",         "bronze/participants",     True,  False, True),
     # backfill-only: not yet promoted to daily pipeline
