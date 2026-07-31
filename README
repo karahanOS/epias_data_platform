@@ -1,6 +1,6 @@
 # ⚡ EPIAŞ Veri Entegrasyon ve Analiz Platformu
 
-Türkiye elektrik piyasası verilerini uçtan uca işleyen, üretim ortamına hazır bir veri mühendisliği projesi.
+Türkiye elektrik piyasası verilerini uçtan uca işleyen, üretim ortamına hazır (GCE üzerinde canlı çalışan) bir veri mühendisliği projesi.
 
 **[📁 Veri Kaynağı: EPIAŞ Şeffaflık Platformu](https://seffaflik.epias.com.tr/)** | **[📊 Dashboard: Enerji Analitiği (Streamlit)]**
 
@@ -8,13 +8,13 @@ Türkiye elektrik piyasası verilerini uçtan uca işleyen, üretim ortamına ha
 
 ## 🏗️ Mimari
 
-EPIAŞ API & Hava Durumu (Open-Meteo) API & FX Kurları
+EPIAŞ API & Open-Meteo (Hava Durumu) API & TCMB EVDS (Döviz Kuru)
     │
     ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Apache Airflow                        │
-│   Günlük DAG'lar — ingestion, backfill, PTF inference    │
-└─────────────────────────┬───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│         Apache Airflow (GCE VM, Docker Compose ile)          │
+│   Saatlik medallion pipeline + ayrı ML/backfill DAG'ları     │
+└─────────────────────────┬─────────────────────────────────────┘
                           │
                           ▼
               ┌───────────────────────┐
@@ -24,61 +24,63 @@ EPIAŞ API & Hava Durumu (Open-Meteo) API & FX Kurları
               └───────────┬───────────┘
                           │
                           ▼
-              ┌───────────────────────┐
-              │    Apache Spark        │
-              │   🥈 Silver Katman     │
-              │   Temizlenmiş veri     │
-              │  (25+ bronze→silver job)│
-              └───────────┬───────────┘
+              ┌───────────────────────────────┐
+              │   Dataproc Serverless          │
+              │   🥈 Silver Katman              │
+              │   Pool'lanmış Spark batch'leri  │
+              │   (DataprocCreateBatchOperator) │
+              └───────────┬───────────────────┘
                           │
                           ▼
               ┌───────────────────────┐
               │    Google BigQuery     │
-              │    Warehouse & dbt     │
-              │  Staging → Marts       │
+              │  External tablolar +   │
+              │  dbt build (staging/   │
+              │  marts, --fail-fast)   │
+              │   🥇 Gold Katman        │
               └───────────┬───────────┘
                           │
-                          ▼
-              ┌───────────────────────┐
-              │    ML Tahminleme       │
-              │  XGBoost PTF Forecast  │
-              └───────────┬───────────┘
-                          │
-                          ▼
-              ┌───────────────────────┐
-              │      Streamlit         │
-              │    Yönetici Özeti      │
-              │  (dashboard.py, çoklu  │
-              │   sayfa)               │
-              └───────────────────────┘
+              ┌───────────┴────────────┐
+              ▼                        ▼
+    ┌──────────────────┐    ┌──────────────────────┐
+    │  XGBoost PTF      │    │     Streamlit         │
+    │  Training (haftalık)│    │     Dashboard         │
+    │  Inference (saatlik)│    │  (dashboard.py)       │
+    └──────────────────┘    └──────────────────────┘
+
+Hata durumunda: Airflow, Gmail SMTP üzerinden `mehmetkarahanc@gmail.com` adresine e-posta ile uyarı gönderir (ADR-0004).
 
 ---
 
 ## 🛰️ Veri Akışı (Pipeline)
 
-1. **Ingestion:** `src/epias_client.py`, `src/weather_client.py` ve `src/fx_client.py` aracılığıyla veriler çekilir, Airflow DAG'ları (`dags/epias_dag.py`, `dags/epias_backfill_dag.py`) üzerinden GCS'e "Bronze" katmanına ham olarak yazılır.
-2. **Transformation:** Apache Spark cluster üzerinde `spark_jobs/bronze_to_silver_*.py` job'ları ile veriler temizlenir, şemaları normalize edilir (numerik kolonlar FLOAT64'e cast edilir) ve "Silver" katmanına taşınır.
-3. **Warehouse:** İşlenen veriler BigQuery'e aktarılır (`src/load_to_bigquery.py`) ve dbt modelleriyle (`epias_dbt/`) staging → marts katmanlarında iş mantığına göre son haline getirilir.
-4. **Forecasting:** `src/ptf_features.py`, `src/ptf_trainer.py` ve `src/ptf_inference.py` ile gelecek dönem PTF fiyatları XGBoost modeli kullanılarak tahmin edilir (`dags/ptf_inference_dag.py`); `src/model_comparison.py` model performansını karşılaştırır.
-5. **Analytics:** `src/data_quality_check.py` veri kalitesi kontrollerini çalıştırır; Streamlit dashboard'u (`dashboard.py`) BigQuery `epias_gold` dataset'ini sorgulayarak çok sayfalı yönetici özeti sunar.
+1. **Ingestion (Bronze):** `src/epias_client.py`, `src/weather_client.py` ve `src/fx_client.py` ile veriler çekilir; ana DAG (`dags/epias_dag.py`, DAG id: `epias_medallion_pipeline_v3`) **saatlik** (`schedule_interval="0 * * * *"`) çalışarak GCS'e (`gs://epias-data-lake/bronze/...`) ham Parquet olarak yazar. Kaynak tanımlarının tek doğrusu `dags/epias_sources.py`'dir (method, GCS yolu, backfill/daily uygunluğu).
+2. **Transformation (Silver):** Silver katmanı artık container içinde çalışan Spark yerine **Dataproc Serverless** üzerinde çalışıyor (`DataprocCreateBatchOperator`, ADR-0002). Kaynaklar `DATAPROC_POOL_SIZE=2` grup halinde konsolide ediliyor (ADR-0003) — cold-start maliyetini (~3-4 dk) 24 kez yerine 2 kez ödemek için.
+3. **Warehouse (Gold):** Silver veriler BigQuery'e köprülenir (`src/load_to_bigquery.py`) ve `epias_dbt/` altındaki dbt modelleri `dbt build --fail-fast` ile staging → marts katmanlarını üretir; hatalı bir model, üzerine kurulu mart'ların o saat build edilmesini durdurur (ADR-0004).
+4. **Forecasting:** PTF tahmini artık ana pipeline'dan bağımsız iki ayrı DAG'da: `dags/epias_ptf_training_weekly.py` (haftalık XGBoost eğitimi) ve `dags/ptf_inference_dag.py` (`ptf_hourly_inference`, saatlik tahmin — GCS'ten önceden eğitilmiş modeli yükler, `src/ptf_inference.py` ile çalışır ve sonucu `gold_ptf_predictions` tablosuna yazar).
+5. **Backfill & Pilot:** `dags/epias_backfill_dag.py` geçmiş veriyi günlük parçalar halinde doldurur (API bazı kaynaklarda haftalık istekleri sessizce tek güne kırptığı için gün-gün backfill zorunlu); `dags/epias_dataproc_pilot_dag.py` Dataproc Serverless geçişinin pilot/test DAG'ıdır.
+6. **Analytics:** `src/data_quality_check.py` veri kalitesi kontrollerini çalıştırır (artık ayrıca dbt testleri her staging modeli için de var); Streamlit dashboard'u (`dashboard.py`, 2000+ satır, çok sayfalı) BigQuery `epias_gold` dataset'ini sorgulayarak yönetici özeti sunar.
 
 ---
 
 ## 🚀 Kurulum ve Başlatma
 
-Aşağıdaki adımları takip ederek tüm platformu Docker üzerinde ayağa kaldırabilirsiniz:
+Bu platform şu anda bir GCE VM'inde (`epias-airflow-host`) canlı çalışıyor. Yerelde ayağa kaldırmak için:
 
 1. Repo'yu klonlayın ve ana dizine gidin:
    cd epias_data_platform
 
 2. Kimlik bilgilerini yerleştirin:
-   credentials/gcp-key.json dosyasının mevcut olduğundan emin olun.
+   - `credentials/gcp-key.json` (GCP servis hesabı anahtarı — BigQuery, GCS, Dataproc erişimi için)
+   - `.env` dosyasında `GMAIL_APP_PASSWORD` (Airflow email_on_failure alerting için, ADR-0004 — normal hesap şifresi değil, 2FA'lı bir Gmail App Password)
 
-3. Python bağımlılıklarını yükleyin (yerel geliştirme için):
+3. Python bağımlılıklarını yükleyin (yerel geliştirme/dashboard için):
    pip install -r requirements.txt
 
-4. Sistemi inşa edin ve başlatın:
+4. Airflow'u (webserver + scheduler + Postgres) inşa edin ve başlatın:
    docker-compose up -d --build
+
+   Not: Silver katman Dataproc Serverless'te çalıştığı için container içinde artık Java/Spark kurulu değil (Dockerfile, ADR-0002) — bu container yalnızca Dataproc batch submit eder.
 
 5. Dashboard'u yerel olarak çalıştırmak için:
    streamlit run dashboard.py
@@ -89,36 +91,42 @@ Aşağıdaki adımları takip ederek tüm platformu Docker üzerinde ayağa kald
 
 epias_data_platform/
 ├── dags/
-│   ├── epias_dag.py                  # Ana Airflow DAG (günlük ingestion)
-│   ├── epias_backfill_dag.py         # Geçmiş veri backfill DAG'ı
-│   ├── epias_sources.py              # Kaynak/tablo tanımları
-│   └── ptf_inference_dag.py          # PTF tahmin DAG'ı
+│   ├── epias_dag.py                  # Ana Airflow DAG — epias_medallion_pipeline_v3 (saatlik)
+│   ├── epias_sources.py              # Kaynak/tablo tanımları (tek doğru kaynak) + Dataproc config
+│   ├── epias_backfill_dag.py         # Geçmiş veri backfill DAG'ı (gün-gün)
+│   ├── epias_dataproc_pilot_dag.py   # Dataproc Serverless geçiş pilot DAG'ı
+│   ├── epias_ptf_training_weekly.py  # Haftalık XGBoost model eğitimi
+│   └── ptf_inference_dag.py          # Saatlik PTF tahmin DAG'ı (ptf_hourly_inference)
 ├── src/
 │   ├── epias_client.py               # EPIAŞ API Wrapper
-│   ├── weather_client.py             # Meteoroloji API Wrapper
-│   ├── fx_client.py                  # Döviz kuru API Wrapper
-│   ├── load_to_bigquery.py           # BigQuery yükleme yardımcıları
+│   ├── weather_client.py             # Open-Meteo API Wrapper
+│   ├── fx_client.py                  # TCMB EVDS döviz kuru API Wrapper
+│   ├── load_to_bigquery.py           # Silver → BigQuery köprüleme
 │   ├── data_quality_check.py         # Veri kalitesi kontrolleri
 │   ├── ptf_features.py               # ML feature engineering
 │   ├── ptf_trainer.py                # XGBoost model eğitimi
-│   ├── ptf_inference.py              # Tahmin çalıştırma
+│   ├── ptf_inference.py              # Tahmin çalıştırma (GCS model + son satırlar)
 │   ├── model_comparison.py           # Model performans karşılaştırma
 │   └── config.py                     # Ortak konfigürasyon
 ├── spark_jobs/
-│   ├── bronze_to_silver_*.py         # 25+ Spark ETL süreci (PTF, SMF, DPP,
-│   │                                  #  SBFGP, hava durumu, FX, tüketim, vb.)
+│   ├── bronze_to_silver_*.py         # 25+ Spark ETL süreci — artık Dataproc
+│   │                                  #  Serverless'e submit ediliyor (ADR-0002)
 │   ├── spark_utils.py                # Ortak Spark yardımcıları
 │   └── gcs-connector-hadoop3-*.jar   # GCS bağlantı köprüsü
 ├── credentials/
 │   └── gcp-key.json                  # Google Cloud anahtarı
 ├── epias_dbt/
-│   └── models/                       # BigQuery dbt modelleri (staging + marts)
+│   └── models/                       # BigQuery dbt modelleri — staging + marts,
+│                                      #  her staging modeli için dbt test coverage
+├── scripts/                          # backfill_fx_rates.py, cleanup_silver_overlap.py,
+│                                      #  fix_silver_parquet_types.py gibi tek seferlik/yardımcı script'ler
+├── docs/
+│   └── epias_openapi.yaml            # EPIAŞ API OpenAPI şeması
+├── plans/                            # ADR'ler ve mimari geçiş planları (ör. 02-spark-airflow-hosting-migration.md)
 ├── tests/                            # Birim/entegrasyon testleri
-├── scripts/                          # Yardımcı script'ler
-├── docs/                             # Ek dokümantasyon
 ├── dashboard.py                      # Streamlit yönetici özeti (çok sayfalı)
-├── Dockerfile                        # Özelleştirilmiş Airflow imajı
-└── docker-compose.yml                # Servis orkestrasyonu
+├── Dockerfile                        # Airflow imajı (Spark kaldırıldı, sadece Dataproc submit)
+└── docker-compose.yml                # Postgres + Airflow webserver/scheduler (Spark master/worker YOK)
 
 ---
 
@@ -128,27 +136,36 @@ Neden LocalExecutor ve Postgres kullanıldı? Varsayılan SequentialExecutor yer
 
 Neden Medallion Mimarisi? Ham veriyi (Bronze) hiç silmeden tutmak, her dönüşümü ayrı katmanda yapmak hata ayıklamayı ve yeniden işlemeyi kolaylaştırır.
 
-dbt Path ve Kütüphane bağımlılıkları: Python 3.8 uyumluluğu için dbt-core < 1.8.0 sürümü sabitlendi ve ENV PATH ayarı ile dbt'nin Airflow içinden sorunsuz tetiklenmesi sağlandı.
+**ADR-0002 — Neden Dataproc Serverless'e geçildi?** Her zaman açık duran docker-compose spark-master/spark-worker container'ları (GCE `e2-medium` üzerinde) kaynakları sürekli tüketiyordu. Silver katman artık pay-per-batch Dataproc Serverless'te çalışıyor; container artık Java/Spark içermiyor, sadece `DataprocCreateBatchOperator` ile batch submit ediyor.
+
+**ADR-0003 — Neden kaynaklar pool'lanıyor?** Her kaynak için ayrı Dataproc batch'i başlatmak, cold-start maliyetini (~3-4 dk) kaynak sayısı kadar (24 kez) ödetiyordu. `DATAPROC_POOL_SIZE=2` ile kaynaklar gruplanıp paylaşılan Spark session'larında çalıştırılıyor — Silver katman süresi ~40 dk'dan ~4 dk'ya indi, bu da saatlik schedule'ı mümkün kıldı.
+
+**Neden saatlik (hourly) pipeline'a geçildi?** EPIAŞ çoğu kaynağı saat saat yayınlıyor; ADR-0003'ün konsolidasyonu sayesinde tüm pipeline saatin içine rahatça sığdığından, günlük yerine saatlik çekim yapılarak veri gün içinde ilerledikçe yeni saatler otomatik yakalanıyor.
+
+**ADR-0004 — Neden `dbt build --fail-fast` ve email alerting eklendi?** 2026-07-25/26'daki Silver dedup incelemesinde ~12 tablonun aylardır sessizce duplike olduğu, çünkü `schema.yml`'deki testlerin hiç çalıştırılmadığı ortaya çıktı. Ayrı bir `run_dbt_tests` task'ı bu *tespit* açığını kapattı ama *önleme* açığını kapatmadı — `dbt run` zaten (muhtemelen bozuk) veriyi yazmıştı. `dbt build --fail-fast`, her modeli kendi testiyle bağımlılık sırasında çalıştırıp ilk gerçek hatada durur; ayrıca `on_failure_callback` artık sadece log atmak yerine Gmail SMTP üzerinden gerçek bir e-posta gönderiyor (`email_on_failure`).
 
 Neden tüm silver Spark job'ları numerik kolonları FLOAT64'e cast ediyor? Bronze API yanıtları bazen tamsayı, bazen ondalık dönebiliyor; bu şema kaymasını (schema drift) önlemek için tüm numerik kolonlar FLOAT64'e sabitlendi.
+
+dbt Path ve Kütüphane bağımlılıkları: Python 3.8 uyumluluğu için `dbt-core < 1.8.0` sürümü sabitlendi ve ENV PATH ayarı ile dbt'nin Airflow içinden sorunsuz tetiklenmesi sağlandı.
 
 ---
 
 ## 🔗 Servisler ve Erişim
 
-- Airflow UI: localhost:8080
-- Spark Master: localhost:8081
-- Spark Worker: localhost:8082
+- Airflow UI: localhost:8080 (GCE üzerinde: VM'in dinamik IP'si — bkz. firewall notu)
 - Streamlit Dashboard: localhost:8501
+
+Not: GCE VM'in IP'si dinamik olduğundan firewall kurallarını buna göre güncellemek gerekebilir.
 
 ---
 
 ## ✉️ İletişim
 
 Mehmet Karahan - Veri Analisti
+mehmetkarahanc@gmail.com
 
 ---
 
 ### 💡 Not
-Bu platform, enerji maliyetlerini optimize etmek ve piyasa risklerini öngörmek için tasarlanmıştır. Veri akışı sırasında "Forbidden 403" hatası alınması durumunda GCP faturalandırma hesabı kontrol edilmelidir.
+Bu platform, enerji maliyetlerini optimize etmek ve piyasa risklerini öngörmek için tasarlanmıştır. Veri akışı sırasında "Forbidden 403" hatası alınması durumunda GCP faturalandırma hesabı kontrol edilmelidir. Gün öncesi piyasası (pricing/dam_clearing/price_ind_bid) kaynakları, EPIAŞ'ın kendi yayın kesim saatinden önce boş sonuç dönebilir — bu artık hata değil, `allow_empty=True` ile beklenen bir durum olarak ele alınıyor.
 </content>
