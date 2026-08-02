@@ -167,6 +167,13 @@ def _optimise_hyperparams(X_train: pd.DataFrame, y_train: pd.Series,
 
 
 # Default hyperparameters used when Optuna is not installed or skipped.
+# Confirmed 2026-08-02 that `optuna` was silently absent from the production
+# Airflow image (Dockerfile never listed it) — every real training run had
+# been using exactly these defaults, with NO L1/L2/min-split-loss
+# regularization (gamma/reg_alpha/reg_lambda all left at XGBoost's bare
+# defaults: 0, 0, 1). Added modest regularization here as a safety net for
+# whenever this fallback path is hit (Optuna missing/failed/timed out), on
+# top of fixing the Dockerfile so Optuna actually runs going forward.
 _DEFAULT_PARAMS = {
     "n_estimators":     800,
     "learning_rate":    0.03,
@@ -174,6 +181,9 @@ _DEFAULT_PARAMS = {
     "subsample":        0.8,
     "colsample_bytree": 0.8,
     "min_child_weight": 3,
+    "gamma":            0.1,
+    "reg_alpha":        0.1,
+    "reg_lambda":       2.0,
     "random_state":     42,
     "objective":        "reg:squarederror",
     "early_stopping_rounds": 50,
