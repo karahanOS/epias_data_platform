@@ -2,9 +2,19 @@
 ptf_inference.py — XGBoost PTF Hourly Inference Job
 ====================================================
 Cadence : Hourly via Airflow — task_id: run_ptf_inference
-Purpose : Load pre-trained model from GCS, pull only the last 168 rows needed
-          for lag features, predict next hour's PTF, write result to BigQuery.
-Runtime : 3–8 seconds. Scales to any cadence without retraining.
+Purpose : Load pre-trained model from GCS, pull only the last LOOKBACK_HOURS
+          rows needed for lag features, predict every hour that has become
+          newly available since the last write, write results to BigQuery.
+Runtime : A few seconds per predicted hour. Scales to any cadence without retraining.
+
+Note on cadence: mart_ptf_lag_features only gains new *settled* rows once a
+day (EPİAŞ publishes GÖP/PTF for the whole next day in a single batch around
+14:00 TRT — see epias_sources.py's allow_empty comments) even though this job
+runs hourly. Predicting only the single latest row (the old behavior) meant
+23 of every 24 runs re-predicted the same hour the moment a new day's batch
+landed, and the backtesting chart only ever accumulated one point per day.
+This version instead predicts every new row since the last write — so when a
+day's worth of hours lands at once, all of them get written in one run.
 """
 
 import logging
@@ -13,6 +23,7 @@ import tempfile
 import pandas as pd
 from datetime import datetime, timezone
 from google.cloud import storage, bigquery
+from google.api_core.exceptions import NotFound
 from config import GCP_PROJECT_ID as PROJECT_ID, BQ_GOLD_DATASET as DATASET_ID, GCS_BUCKET, get_bq_client
 from ptf_features import build_ptf_features, FEATURE_COLS
 
@@ -21,8 +32,11 @@ logger = logging.getLogger("PTFInference")
 MODEL_GCS_PATH  = "models/ptf_xgb_model.joblib"
 PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_ptf_predictions"
 
-# Minimum lookback for lag-168 + rolling-168 features
-LOOKBACK_HOURS = 180
+# Lookback for lag-168 + rolling-168 features, plus a full day's worth of
+# margin (up to 24 rows can be newly-predicted in one run — see module
+# docstring) so even the oldest row in a full-day batch still has 168 true
+# preceding rows for its rolling-168 features.
+LOOKBACK_HOURS = 204
 
 # Turkey is permanently UTC+3 (DST abolished in 2016).
 # All staging models (stg_pricing, stg_load_estimation, etc.) use Turkish local
@@ -81,8 +95,15 @@ def extract_recent_data() -> pd.DataFrame:
 
 # ── FEATURE ENGINEERING ───────────────────────────────────────────────────────
 
-def build_inference_features(df: pd.DataFrame, required_features: list) -> pd.DataFrame:
-    """Build the same feature set as training, return only the latest row."""
+def build_inference_features(
+    df: pd.DataFrame, required_features: list, since: pd.Timestamp = None
+) -> pd.DataFrame:
+    """Build the same feature set as training.
+
+    Returns every row strictly newer than `since` (all rows if `since` is
+    None) — one row per hour that hasn't been predicted yet, not just the
+    single latest one.  See module docstring for why this matters.
+    """
     df = build_ptf_features(df)
 
     # Mirror ptf_trainer.py engineer_features(): drop ONLY warm-up NaN rows
@@ -103,14 +124,22 @@ def build_inference_features(df: pd.DataFrame, required_features: list) -> pd.Da
             f"with non-null ptf_try. Check upstream data pipeline status."
         )
 
-    # Return only the most recent row as the inference input
+    if since is not None:
+        df = df[df.index > since]
+
     missing = [f for f in required_features if f not in df.columns]
     if missing:
         logger.warning(f"Required features missing from DataFrame (will be NaN): {missing}")
 
-    latest = df.reindex(columns=required_features).iloc[[-1]]
-    logger.info(f"Inference input built for timestamp: {latest.index[0]}")
-    return latest
+    batch = df.reindex(columns=required_features)
+    if batch.empty:
+        logger.info("No new timestamps since the last prediction — nothing to do.")
+    else:
+        logger.info(
+            f"Inference input built for {len(batch)} timestamp(s): "
+            f"{batch.index.min()} → {batch.index.max()}"
+        )
+    return batch
 
 
 # ── PREDICTION WRITER ─────────────────────────────────────────────────────────
@@ -217,6 +246,32 @@ def write_prediction_to_bq(predicted_date: pd.Timestamp, predicted_ptf: float) -
     logger.info(f"✅ Prediction upserted — {date_str} hour={hour} PTF={predicted_ptf:.2f} TRY")
 
 
+def get_last_predicted_ts() -> pd.Timestamp:
+    """Return the most recent (predicted_date, hour) already written to
+    gold_ptf_predictions, converted back to the naive-UTC representation used
+    by mart_ptf_lag_features.datetime — the exact inverse of
+    write_prediction_to_bq's UTC→Turkish-local conversion above.
+
+    Returns None if the table doesn't exist yet or has no rows (first-ever
+    run), in which case the caller should predict every available row.
+    """
+    client = get_bq_client()
+    query = f"""
+        SELECT predicted_date, hour
+        FROM `{PREDICTIONS_TABLE}`
+        ORDER BY predicted_date DESC, hour DESC
+        LIMIT 1
+    """
+    try:
+        rows = list(client.query(query).result())
+    except NotFound:
+        return None
+    if not rows:
+        return None
+    ts_tr  = pd.Timestamp(rows[0].predicted_date) + pd.Timedelta(hours=int(rows[0].hour))
+    return ts_tr - _TR_UTC_OFFSET
+
+
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────
 
 def run():
@@ -224,19 +279,23 @@ def run():
     model             = artifact["model"]
     required_features = artifact["features"]
 
-    df_recent         = extract_recent_data()
-    X_latest          = build_inference_features(df_recent, required_features)
+    df_recent = extract_recent_data()
+    last_ts   = get_last_predicted_ts()
+    X_batch   = build_inference_features(df_recent, required_features, since=last_ts)
 
-    predicted_ptf     = model.predict(X_latest)[0]
-    predicted_ts      = X_latest.index[0]   # UTC TIMESTAMP from mart_forecasted_residual_load
+    if X_batch.empty:
+        logger.info("🏁 Inference job complete — no new hours to predict.")
+        return
 
-    # write_prediction_to_bq converts predicted_ts (UTC) → Turkish local internally
-    # before computing predicted_date / hour stored in gold_ptf_predictions.
-    write_prediction_to_bq(
-        predicted_date=predicted_ts,
-        predicted_ptf=predicted_ptf,
-    )
-    logger.info("🏁 Inference job complete.")
+    predictions = model.predict(X_batch)
+
+    # write_prediction_to_bq converts each UTC timestamp → Turkish local
+    # internally before computing predicted_date / hour stored in
+    # gold_ptf_predictions.
+    for ts, ptf in zip(X_batch.index, predictions):
+        write_prediction_to_bq(predicted_date=ts, predicted_ptf=float(ptf))
+
+    logger.info(f"🏁 Inference job complete — wrote {len(X_batch)} new prediction(s).")
 
 
 if __name__ == "__main__":
