@@ -1314,19 +1314,45 @@ elif page == "🤖 PTF Tahmin & ML":
                 how="inner")
 
         if not merged.empty:
-            mae = (merged["ptf_try"] - merged["predicted_ptf"]).abs().mean()
-            rmse = ((merged["ptf_try"] - merged["predicted_ptf"])**2).mean()**0.5
-            mape = ((merged["ptf_try"] - merged["predicted_ptf"]).abs() /
-                    merged["ptf_try"].replace(0, float("nan"))).mean() * 100
-
-            cm1, cm2, cm3 = st.columns(3)
-            cm1.metric("MAE", f"{mae:,.2f} TL/MWh")
-            cm2.metric("RMSE", f"{rmse:,.2f} TL/MWh")
-            cm3.metric("MAPE", f"%{mape:.2f}")
-
             # Build an hourly timestamp (date+hour) — using `date` alone stacks
             # all 24 hours of a day onto a single x-position.
             merged["ts"] = merged["date"] + pd.to_timedelta(merged["hour"], unit="h")
+
+            err  = merged["ptf_try"] - merged["predicted_ptf"]
+            mae  = err.abs().mean()
+            rmse = (err**2).mean()**0.5
+            bias = -err.mean()   # positive = model over-predicts, negative = under-predicts
+
+            # sMAPE — matches ptf_trainer.py's own evaluation formula. Plain
+            # MAPE divides by the actual price alone, which is undefined /
+            # blows up on the zero-PTF hours EPİAŞ produces during solar
+            # oversupply (mart_price_analysis.is_zero_price). sMAPE's
+            # denominator averages |actual| and |predicted|, so it stays
+            # well-behaved near zero instead of silently dropping those rows.
+            _smape_denom = (merged["ptf_try"].abs() + merged["predicted_ptf"].abs()) / 2
+            smape = err.abs().div(_smape_denom.replace(0, float("nan"))).mean() * 100
+
+            # MASE vs. a naive "same hour, 24h ago" baseline — the standard
+            # bar in electricity price forecasting for whether a model earns
+            # its complexity. <1 = model beats naive persistence; >1 = a
+            # trivial "predict yesterday's price" forecast would do better.
+            _actual_by_ts = df_actual.assign(
+                ts=df_actual["date"] + pd.to_timedelta(df_actual["hour"], unit="h")
+            ).set_index("ts")["ptf_try"]
+            naive_pred = (merged["ts"] - pd.Timedelta(hours=24)).map(_actual_by_ts)
+            _naive_mae = (merged["ptf_try"] - naive_pred).abs().mean()
+            mase = mae / _naive_mae if pd.notna(_naive_mae) and _naive_mae > 0 else float("nan")
+
+            cm1, cm2, cm3, cm4, cm5 = st.columns(5)
+            cm1.metric("MAE", f"{mae:,.2f} TL/MWh")
+            cm2.metric("RMSE", f"{rmse:,.2f} TL/MWh")
+            cm3.metric("sMAPE", f"%{smape:.2f}",
+                       help="Simetrik MAPE — sıfır/düşük PTF saatlerinde düz MAPE gibi bozulmaz")
+            cm4.metric("MASE (T-24h naive'e göre)",
+                       f"{mase:.2f}" if pd.notna(mase) else "—",
+                       help="<1: model, 'dünkü fiyatı tahmin et' naive yöntemini geçiyor. >1: naive daha iyi.")
+            cm5.metric("Bias", f"{bias:+,.2f} TL/MWh",
+                       help="Pozitif = model fazla tahmin ediyor, negatif = az tahmin ediyor")
 
             # `.tail(7*24)` selected the last 168 MATCHED rows, which — during
             # periods when the hourly inference job wasn't running (e.g. the

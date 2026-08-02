@@ -37,6 +37,18 @@ LOCAL_TMP           = tempfile.gettempdir()   # /tmp on Linux/Docker, %TEMP% on 
 # Number of Optuna trials — 20 gives good coverage; reduce to 5 for CI/smoke
 OPTUNA_N_TRIALS = 20
 
+# Recency weighting half-life (days): a training row this many days older
+# than the newest training row gets half the sample weight of that newest
+# row. Confirmed via offline backtest (2026-08-02) that equal-weighted
+# training left a persistent ~300-375 TL/MWh under-prediction bias and a
+# true out-of-sample MASE > 1 (worse than a naive T-24h forecast) after
+# Turkey's PTF went through a sharp Feb-May 2026 collapse (2900→591 TL/MWh)
+# followed by a Jun-Aug rebound (591→2720+ TL/MWh) — equal weighting let the
+# long depressed-price stretch dominate the fit. 90 days balances faster
+# regime adaptation against still learning genuine yearly seasonality from
+# the full history (not just the last few weeks).
+RECENCY_HALFLIFE_DAYS = 90
+
 
 # ── DATA EXTRACTION ───────────────────────────────────────────────────────────
 
@@ -100,7 +112,17 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── HYPERPARAMETER OPTIMISATION ───────────────────────────────────────────────
 
+def compute_recency_weights(index: pd.DatetimeIndex,
+                             halflife_days: float = RECENCY_HALFLIFE_DAYS) -> pd.Series:
+    """Exponential-decay sample weights: 0.5 at `halflife_days` old, ~0.25 at
+    2x that, etc., relative to the newest timestamp in `index`. See
+    RECENCY_HALFLIFE_DAYS docstring for why this exists."""
+    age_days = (index.max() - index).total_seconds() / 86400
+    return pd.Series(0.5 ** (age_days / halflife_days), index=index)
+
+
 def _optimise_hyperparams(X_train: pd.DataFrame, y_train: pd.Series,
+                          sample_weight: pd.Series,
                           n_trials: int = OPTUNA_N_TRIALS) -> dict:
     """Optuna time-series CV to find best XGBoost hyperparameters.
 
@@ -131,7 +153,8 @@ def _optimise_hyperparams(X_train: pd.DataFrame, y_train: pd.Series,
         scores = []
         for tr_idx, val_idx in tscv.split(X_f):
             m = xgb.XGBRegressor(**params)
-            m.fit(X_f.iloc[tr_idx], y_train.iloc[tr_idx], verbose=False)
+            m.fit(X_f.iloc[tr_idx], y_train.iloc[tr_idx],
+                  sample_weight=sample_weight.iloc[tr_idx], verbose=False)
             preds = m.predict(X_f.iloc[val_idx])
             scores.append(mean_absolute_error(y_train.iloc[val_idx], preds))
         return float(np.mean(scores))
@@ -182,13 +205,16 @@ def train(df: pd.DataFrame) -> tuple:
     X_test  = _to_float(df.loc[df.index >= split_date, features])
     y_test  = df.loc[df.index >= split_date, target]
 
+    # Exponential recency weighting — see RECENCY_HALFLIFE_DAYS docstring.
+    sample_weight = compute_recency_weights(X_train.index)
+
     logger.info(f"Train: {len(X_train):,} rows | Test (last 30d): {len(X_test):,} rows | "
-                f"Features: {len(features)}")
+                f"Features: {len(features)} | recency half-life: {RECENCY_HALFLIFE_DAYS}d")
 
     # Hyperparameter optimisation
     if _OPTUNA_AVAILABLE:
         logger.info(f"Running Optuna with {OPTUNA_N_TRIALS} trials...")
-        best_params = _optimise_hyperparams(X_train, y_train)
+        best_params = _optimise_hyperparams(X_train, y_train, sample_weight)
         # These are passed explicitly to XGBRegressor() below — pop them from
         # best_params regardless of what Optuna returns so there is never a
         # "multiple values for keyword argument" crash.
@@ -203,22 +229,35 @@ def train(df: pd.DataFrame) -> tuple:
                               random_state=42)
     model.fit(
         X_train, y_train,
+        sample_weight=sample_weight,
         eval_set=[(X_test, y_test)],
         verbose=100,
     )
 
-    preds = model.predict(X_test)
+    preds = pd.Series(model.predict(X_test), index=y_test.index)
     mae   = mean_absolute_error(y_test, preds)
+    err   = y_test - preds
+    bias  = -err.mean()   # positive = model over-predicts, negative = under-predicts
 
     # sMAPE — handles zero-PTF hours (solar peak collapse) without blowing up
-    denom = (y_test.abs() + pd.Series(preds, index=y_test.index).abs()) / 2
-    smape = (
-        (y_test - pd.Series(preds, index=y_test.index))
-        .abs()
-        .div(denom.replace(0, float("nan")))
-        .mean()
+    denom = (y_test.abs() + preds.abs()) / 2
+    smape = err.abs().div(denom.replace(0, float("nan"))).mean()
+
+    # MASE vs. naive "same hour, 24h ago" — is the model actually earning its
+    # complexity over a trivial persistence forecast? See dashboard.py's
+    # matching backtest metric (PTF Tahmin & ML page) for the same check on
+    # live predictions.
+    if "ptf_lag_24h" in df.columns:
+        naive_pred = df.loc[y_test.index, "ptf_lag_24h"]
+        naive_mae  = mean_absolute_error(y_test, naive_pred)
+        mase = mae / naive_mae if naive_mae > 0 else float("nan")
+    else:
+        mase = float("nan")
+
+    logger.info(
+        f"✅ Training complete — MAE: {mae:.2f} TL/MWh | sMAPE: {smape*100:.2f}% | "
+        f"Bias: {bias:+.2f} TL/MWh | MASE (vs T-24h naive): {mase:.3f}"
     )
-    logger.info(f"✅ Training complete — MAE: {mae:.2f} TL/MWh | sMAPE: {smape*100:.2f}%")
 
     # Feature importance
     imp_df = pd.DataFrame({
