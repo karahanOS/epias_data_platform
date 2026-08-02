@@ -24,7 +24,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
-from google.cloud import bigquery
+from google.cloud import bigquery, storage
 from google.api_core.exceptions import NotFound as BQNotFound
 
 logger = logging.getLogger(__name__)
@@ -34,10 +34,11 @@ logger = logging.getLogger(__name__)
 # Falls back to env-var defaults when running outside the container (local dev).
 try:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
-    from config import GCP_PROJECT_ID as PROJECT, BQ_GOLD_DATASET as DATASET
+    from config import GCP_PROJECT_ID as PROJECT, BQ_GOLD_DATASET as DATASET, GCS_BUCKET
 except ImportError:
     PROJECT = os.getenv("GCP_PROJECT_ID", "epias-data-platform")
     DATASET = os.getenv("BQ_GOLD_DATASET", "epias_gold")
+    GCS_BUCKET = os.getenv("GCS_BUCKET", "epias-data-lake")
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -150,6 +151,26 @@ def get_client():
         return bigquery.Client(project=PROJECT, credentials=creds)
     except Exception:
         return bigquery.Client(project=PROJECT)
+
+@st.cache_resource
+def get_gcs_client():
+    try:
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"]
+        )
+        return storage.Client(project=PROJECT, credentials=creds)
+    except Exception:
+        return storage.Client(project=PROJECT)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_shap_importance() -> pd.DataFrame:
+    """Fetch the SHAP importance CSV straight from GCS (written by ptf_trainer.py's
+    weekly retrain via upload_to_gcs) instead of reading the committed models/
+    directory file, which nothing ever refreshes after the initial commit."""
+    import io
+    blob = get_gcs_client().bucket(GCS_BUCKET).blob("models/ptf_shap_importance.csv")
+    return pd.read_csv(io.BytesIO(blob.download_as_bytes()))
 
 @st.cache_data(ttl=3600, show_spinner="BigQuery sorgulanıyor...", persist="disk")
 def query(sql: str) -> pd.DataFrame:
@@ -1278,11 +1299,18 @@ elif page == "🤖 PTF Tahmin & ML":
             WHERE date BETWEEN '{_bt_min}' AND '{_bt_max}'
             ORDER BY date, hour
         """)
-        df_actual["date"] = pd.to_datetime(df_actual["date"])
 
-        merged = df_actual.merge(
-            df_pred, left_on=["date", "hour"], right_on=["predicted_date", "hour"],
-            how="inner")
+        if df_actual.empty:
+            # query() returns a columnless DataFrame() on any BigQuery failure
+            # (timeout/quota/network blip) — guard here so df_actual["date"]
+            # below can't raise KeyError and take down the SHAP/rolling-average
+            # sections that render further down this page.
+            merged = pd.DataFrame()
+        else:
+            df_actual["date"] = pd.to_datetime(df_actual["date"])
+            merged = df_actual.merge(
+                df_pred, left_on=["date", "hour"], right_on=["predicted_date", "hour"],
+                how="inner")
 
         if not merged.empty:
             mae = (merged["ptf_try"] - merged["predicted_ptf"]).abs().mean()
@@ -1335,10 +1363,10 @@ elif page == "🤖 PTF Tahmin & ML":
         else:
             st.info("Tahmin ve gerçekleşen veriler eşleştirilemedi.")
 
-    # SHAP importance
+    # SHAP importance — fetched fresh from GCS on each weekly retrain, not a
+    # static repo file (see load_shap_importance's docstring).
     try:
-        _shap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "ptf_shap_importance.csv")
-        shap_df = pd.read_csv(_shap_path)
+        shap_df = load_shap_importance()
         fig4 = px.bar(shap_df.head(12),
             x="feature_importance_vals", y="col_name", orientation="h",
             color="feature_importance_vals", color_continuous_scale="Blues",
@@ -1348,7 +1376,7 @@ elif page == "🤖 PTF Tahmin & ML":
             yaxis={"categoryorder": "total ascending"},
             coloraxis_showscale=False)
         st.plotly_chart(fig4, use_container_width=True, key="ml_shap")
-    except FileNotFoundError:
+    except BQNotFound:
         st.info("SHAP verisi henüz mevcut değil. ptf_trainer.py çalıştırıldıktan sonra görünür.")
 
     # Rolling avg trend
@@ -2170,10 +2198,12 @@ elif page == "⚡ RES Öngörü Hatası":
         # Hata yönü dağılımı
         dir_cnt = df_fe["error_direction"].value_counts().reset_index()
         dir_cnt.columns = ["Yön", "Saat"]
-        fig_dir = go.Figure(go.Pie(
-            labels=dir_cnt["Yön"], values=dir_cnt["Saat"],
-            hole=0.55,
-            marker_colors=["#ef4444", "#10b981", "#64748b"]))
+        # color_discrete_map keys by category name (not positional marker_colors) —
+        # value_counts() sorts by frequency, so a positional list would attach the
+        # wrong color whenever the most-frequent category changes across periods.
+        _dir_color_map = {"Aşırı Tahmin": "#ef4444", "Eksik Tahmin": "#10b981", "Eşleşme": "#64748b"}
+        fig_dir = px.pie(dir_cnt, names="Yön", values="Saat", hole=0.55,
+            color="Yön", color_discrete_map=_dir_color_map)
         dark(fig_dir, height=360, title="Öngörü Hatası Yön Dağılımı")
         st.plotly_chart(fig_dir, use_container_width=True, key="fe_dir_pie")
 
@@ -2310,17 +2340,20 @@ elif page == "💧 Hidrolik & Baraj":
     with col_r:
         # Stres endeksi dağılımı (en son gün)
         latest_b = dfb[dfb["date"] == dfb["date"].max()].copy()
+        _stress_labels = ["Kriz (<0.25)", "Dikkat (0.25–0.50)", "Normal (0.50–1.0)", "Fazla (>1.0)"]
         latest_b["stres_kategori"] = pd.cut(
             latest_b["hydro_stress_index"],
             bins=[-0.01, HYDRO_STRESS_CRISIS, HYDRO_STRESS_WARN, 1.01, 99],
-            labels=["Kriz (<0.25)", "Dikkat (0.25–0.50)", "Normal (0.50–1.0)", "Fazla (>1.0)"],
+            labels=_stress_labels,
         )
         stress_cnt = latest_b["stres_kategori"].value_counts().reset_index()
         stress_cnt.columns = ["Kategori", "Baraj"]
-        fig_stress = go.Figure(go.Pie(
-            labels=stress_cnt["Kategori"], values=stress_cnt["Baraj"],
-            hole=0.55,
-            marker_colors=["#ef4444", "#f59e0b", "#10b981", "#00d4ff"]))
+        # color_discrete_map keys by category name — value_counts() sorts by
+        # frequency, so positional marker_colors previously attached the wrong
+        # color whenever the largest bucket wasn't literally "Kriz" first.
+        _stress_color_map = dict(zip(_stress_labels, ["#ef4444", "#f59e0b", "#10b981", "#00d4ff"]))
+        fig_stress = px.pie(stress_cnt, names="Kategori", values="Baraj", hole=0.55,
+            color="Kategori", color_discrete_map=_stress_color_map)
         dark(fig_stress, height=360,
              title=f"Baraj Stres Dağılımı — {dfb['date'].max().strftime('%d.%m.%Y') if hasattr(dfb['date'].max(), 'strftime') else dfb['date'].max()}")
         st.plotly_chart(fig_stress, use_container_width=True, key="hyd_stress_pie")
