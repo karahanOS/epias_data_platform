@@ -6,13 +6,20 @@
 -- time so the key convention matches every other hourly staging model.
 -- (The previous comment claiming UTC hours "align correctly" with stg_load_estimation
 -- was wrong — stg_load_estimation uses Turkish hours 1–24 from the `time` field.)
--- Kaynak veri kategori bazlı (rüzgar/güneş/jeotermal vb.) — saatte ~6 satır.
--- SUM + GROUP BY ile saatlik aggregate alıyoruz (unique_key='date,hour' ile tutarlı).
+--
+-- Source rows are 15-minute readings (4 per hour: :00/:15/:30/:45), NOT
+-- category splits — `forecast`/`generation` are power-like readings (~8-10k,
+-- matching Turkey's national wind fleet output in MW), not per-quarter energy.
+-- Confirmed via raw Silver sample: 4 consecutive quarter-hours average ~8.4k,
+-- consistent with stg_generation's independently-sourced hourly wind_generation_mwh
+-- (~9-11k). AVG (not SUM) is therefore the correct hourly rollup — SUM was
+-- inflating both columns ~4x, which fed mart_renewable_deep.wind_forecast_error
+-- and produced a histogram skewed entirely negative by tens of thousands of MWh.
 SELECT
     DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul')                          AS date,
     EXTRACT(HOUR FROM CAST(date AS TIMESTAMP) AT TIME ZONE 'Asia/Istanbul') AS hour,
-    SUM(CAST(forecast   AS FLOAT64)) AS forecasted_res_mwh,
-    SUM(CAST(generation AS FLOAT64)) AS actual_res_generation_mwh
+    AVG(CAST(forecast   AS FLOAT64)) AS forecasted_res_mwh,
+    AVG(CAST(generation AS FLOAT64)) AS actual_res_generation_mwh
 FROM {{ source('silver', 'res_forecast') }}
 
 {% if is_incremental() %}
