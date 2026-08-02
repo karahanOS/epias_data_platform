@@ -2292,7 +2292,12 @@ elif page == "💧 Hidrolik & Baraj":
     # ── KPI'lar (basin düzeyinde en son gün) ─────────────────────────────────
     latest = df_hr[df_hr["date"] == df_hr["date"].max()]
     avg_stress = latest["hydro_stress_index"].mean()   # NaN until 90-day window fills
-    n_critical = int((latest["hydro_stress_index"].fillna(-1) < HYDRO_STRESS_CRISIS).sum())
+    # fillna(-1) previously made every dam with an unfilled (NaN) stress index
+    # satisfy "< HYDRO_STRESS_CRISIS" and get counted as critical — a false
+    # crisis signal driven by missing data. NaN comparisons are False by
+    # default in pandas, so dropping fillna makes n_critical consistent with
+    # n_warning below, which already excludes NaN rows correctly.
+    n_critical = int((latest["hydro_stress_index"] < HYDRO_STRESS_CRISIS).sum())
     n_warning  = int(((latest["hydro_stress_index"] >= HYDRO_STRESS_CRISIS) & (latest["hydro_stress_index"] < HYDRO_STRESS_WARN)).sum())
     total_vol  = latest["active_volume"].sum()
 
@@ -2401,12 +2406,16 @@ elif page == "💧 Hidrolik & Baraj":
     tbl_display = latest_b[show_cols].copy()
     if "hydro_stress_index" in tbl_display.columns:
         def _stress_color(v):
+            if pd.isna(v): return ""
             if v < HYDRO_STRESS_CRISIS: return "background-color: rgba(239,68,68,0.3)"
             if v < HYDRO_STRESS_WARN:   return "background-color: rgba(245,158,11,0.2)"
             return ""
         tbl_display = tbl_display.sort_values("hydro_stress_index")
         st.dataframe(
-            tbl_display.style.applymap(_stress_color, subset=["hydro_stress_index"]).format(
+            # Styler.applymap was removed in newer pandas (deprecated since
+            # 2.1.0) — .map is the direct replacement, same elementwise
+            # per-cell semantics.
+            tbl_display.style.map(_stress_color, subset=["hydro_stress_index"]).format(
                 {"active_volume": "{:,.0f}", "hydro_stress_index": "{:.3f}",
                  "wow_volume_change": "{:+,.0f}", "wow_volume_change_pct": "{:+.1%}"},
                 na_rep="—"
