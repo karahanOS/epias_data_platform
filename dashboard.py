@@ -266,6 +266,7 @@ with st.sidebar:
         "📈 Çapraz Piyasa Arbitraj",
         "⚡ RES Öngörü Hatası",
         "💧 Hidrolik & Baraj",
+        "⏰ Vardiya Optimizasyonu",
     ], label_visibility="collapsed")
 
     st.markdown("---")
@@ -2423,3 +2424,146 @@ elif page == "💧 Hidrolik & Baraj":
             use_container_width=True,
             height=400,
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 15 — VARDİYA OPTİMİZASYONU
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "⏰ Vardiya Optimizasyonu":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>KDS</span>
+        <h1>Vardiya Optimizasyonu</h1>
+        <p>Enerji yoğun üretim proseslerini en ucuz saatlik PTF penceresine kaydırma analizi — industrial demand response</p>
+    </div>""", unsafe_allow_html=True)
+
+    df_so = query(f"""
+        SELECT date, vardiya_00_08_avg_ptf, vardiya_08_16_avg_ptf, vardiya_16_24_avg_ptf,
+               cheapest_8h_start_hour, cheapest_8h_avg_ptf,
+               priciest_8h_start_hour, priciest_8h_avg_ptf,
+               max_shift_saving_per_mwh,
+               EXTRACT(MONTH FROM date) AS month
+        FROM {tbl('mart_shift_optimizer')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
+        ORDER BY date
+    """)
+
+    if df_so.empty:
+        st.warning(
+            "Veri bulunamadı. `mart_shift_optimizer` tablosu henüz oluşturulmamış.  \n"
+            "Çözüm: `cd epias_dbt && dbt run --select mart_shift_optimizer --profiles-dir . --target prod`"
+        )
+        st.stop()
+
+    # ── Tesis parametreleri ──────────────────────────────────────────────────
+    st.markdown("### ⚙️ Tesis Parametreleri")
+    col_in1, col_in2 = st.columns(2)
+    with col_in1:
+        shift_consumption_mwh = st.number_input(
+            "Enerji yoğun vardiya tüketimi (MWh/vardiya)", min_value=0.0, value=50.0, step=5.0,
+            help="Kaydırılabilir prosesin (ör. ergitme, presleme, soğutma kompresörleri) "
+                 "8 saatlik bir vardiyadaki toplam elektrik tüketimi"
+        )
+    with col_in2:
+        shifts_per_month = st.number_input(
+            "Ayda kaç kez bu vardiya çalışıyor", min_value=1, value=20, step=1
+        )
+
+    # ── KPI'lar ───────────────────────────────────────────────────────────────
+    avg_cheap          = df_so["cheapest_8h_avg_ptf"].mean()
+    avg_pricey         = df_so["priciest_8h_avg_ptf"].mean()
+    avg_saving_per_mwh = df_so["max_shift_saving_per_mwh"].mean()
+    monthly_saving_try = avg_saving_per_mwh * shift_consumption_mwh * shifts_per_month
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort. En Ucuz 8h Pencere", f"{avg_cheap:,.2f} TL/MWh")
+    c2.metric("Ort. En Pahalı 8h Pencere", f"{avg_pricey:,.2f} TL/MWh")
+    c3.metric("Ort. Kaydırma Kazancı", f"{avg_saving_per_mwh:,.2f} TL/MWh")
+    c4.metric("Tahmini Aylık Tasarruf", f"₺{monthly_saving_try:,.0f}")
+
+    st.markdown("---")
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        # Klasik 3 vardiya karşılaştırması
+        monthly_shifts = df_so.groupby("month").agg(
+            v1=("vardiya_00_08_avg_ptf", "mean"),
+            v2=("vardiya_08_16_avg_ptf", "mean"),
+            v3=("vardiya_16_24_avg_ptf", "mean"),
+        ).reset_index()
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=monthly_shifts["month"], y=monthly_shifts["v1"], name="00-08"))
+        fig.add_trace(go.Bar(x=monthly_shifts["month"], y=monthly_shifts["v2"], name="08-16"))
+        fig.add_trace(go.Bar(x=monthly_shifts["month"], y=monthly_shifts["v3"], name="16-24"))
+        dark(fig, height=380, title=f"{sel_year} Klasik Vardiya Ort. PTF Karşılaştırması",
+             barmode="group",
+             xaxis=dict(title="Ay", gridcolor="rgba(255,255,255,0.05)", tickmode="linear"),
+             yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig, use_container_width=True, key="so_shifts")
+
+    with col_r:
+        # En ucuz 8 saatlik pencerenin başlangıç saati dağılımı — vardiya
+        # esnek olsaydı hangi saatte başlaması en sık avantajlı olurdu
+        start_cnt = df_so["cheapest_8h_start_hour"].value_counts().sort_index().reset_index()
+        start_cnt.columns = ["Başlangıç Saati", "Gün Sayısı"]
+        fig2 = px.bar(start_cnt, x="Başlangıç Saati", y="Gün Sayısı",
+            title="En Ucuz 8 Saatlik Pencerenin Başlangıç Saati Dağılımı",
+            color_discrete_sequence=["#10b981"])
+        dark(fig2, height=380,
+             xaxis=dict(title="Başlangıç Saati", gridcolor="rgba(255,255,255,0.05)", dtick=1),
+             yaxis=dict(title="Gün Sayısı", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig2, use_container_width=True, key="so_start_hist")
+
+    # Günlük en ucuz / en pahalı pencere trendi
+    fig3 = go.Figure()
+    fig3.add_trace(go.Scatter(x=df_so["date"], y=df_so["priciest_8h_avg_ptf"],
+        name="En Pahalı 8h", line=dict(color="#ef4444", width=1.5)))
+    fig3.add_trace(go.Scatter(x=df_so["date"], y=df_so["cheapest_8h_avg_ptf"],
+        name="En Ucuz 8h", line=dict(color="#10b981", width=1.5),
+        fill="tonexty", fillcolor="rgba(16,185,129,0.06)"))
+    dark(fig3, height=380, title=f"{sel_year} Günlük En Ucuz / En Pahalı 8 Saatlik Pencere",
+         yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
+    st.plotly_chart(fig3, use_container_width=True, key="so_daily_trend")
+
+    # ── Model tabanlı vardiya önerisi ────────────────────────────────────────
+    st.markdown("### 🤖 Model Tabanlı Vardiya Önerisi")
+    df_pred_so = query(f"""
+        SELECT predicted_date, hour, predicted_ptf
+        FROM {tbl('gold_ptf_predictions')}
+        WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+        ORDER BY predicted_date, hour
+    """)
+    if df_pred_so.empty:
+        st.info(
+            "Henüz tahmin verisi yok. `gold_ptf_predictions`, EPİAŞ'ın GÖP fiyatlarını "
+            "yayınladığı ~14:00 TRT sonrası saatlik olarak güncellenir."
+        )
+    else:
+        df_pred_so["predicted_date"] = pd.to_datetime(df_pred_so["predicted_date"])
+        # Sadece TAM 24 saati olan en güncel günü öner — kısmi bir günün (örn.
+        # sadece saat 23) tek başına önerdiği "pencere" yanıltıcı olur.
+        _day_counts = df_pred_so.groupby("predicted_date")["hour"].nunique()
+        _full_days  = _day_counts[_day_counts == 24]
+        if _full_days.empty:
+            _latest_n = int(_day_counts.max()) if not _day_counts.empty else 0
+            st.info(
+                f"Henüz tam günlük (24 saat) tahmin yok — en güncel günde {_latest_n}/24 saat mevcut. "
+                f"EPİAŞ'ın günlük GÖP yayını (~14:00 TRT) sonrası tüm saatler tek seferde gelecek."
+            )
+        else:
+            _target_date = _full_days.index.max()
+            df_tom = (df_pred_so[df_pred_so["predicted_date"] == _target_date]
+                      .sort_values("hour").reset_index(drop=True))
+            df_tom["window_avg"] = df_tom["predicted_ptf"].rolling(8).mean().shift(-7)
+            valid = df_tom.dropna(subset=["window_avg"])
+            best  = valid.loc[valid["window_avg"].idxmin()]
+            worst = valid.loc[valid["window_avg"].idxmax()]
+            saving = worst["window_avg"] - best["window_avg"]
+            st.success(
+                f"**{_target_date.strftime('%d.%m.%Y')}** için önerilen vardiya başlangıcı: "
+                f"**saat {int(best['hour']):02d}:00** (tahmini ort. {best['window_avg']:,.2f} TL/MWh) — "
+                f"en pahalı pencereye ({int(worst['hour']):02d}:00 başlangıç, "
+                f"{worst['window_avg']:,.2f} TL/MWh) göre MWh başına "
+                f"**{saving:,.2f} TL** tasarruf potansiyeli."
+            )
