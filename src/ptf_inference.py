@@ -32,6 +32,14 @@ logger = logging.getLogger("PTFInference")
 MODEL_GCS_PATH  = "models/ptf_xgb_model.joblib"
 PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_ptf_predictions"
 
+# Separate table for genuinely forward-looking predictions (hours with no
+# settled PTF yet at all — see run_forward_forecast() / mart_ptf_forward_features).
+# Kept apart from PREDICTIONS_TABLE so the backtest-oriented dashboard page
+# never accidentally mixes "predicted a price we already knew" rows (used to
+# measure model accuracy) with genuine before-the-fact forecasts (used for
+# decision support, e.g. the Vardiya Optimizasyonu page).
+FORWARD_PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_ptf_forward_predictions"
+
 # Lookback for lag-168 + rolling-168 features, plus a full day's worth of
 # margin (up to 24 rows can be newly-predicted in one run — see module
 # docstring) so even the oldest row in a full-day batch still has 168 true
@@ -93,6 +101,55 @@ def extract_recent_data() -> pd.DataFrame:
     return df
 
 
+def extract_forward_features() -> pd.DataFrame:
+    """Pull genuinely future (not-yet-settled) rows from
+    mart_ptf_forward_features — hours where stg_pricing has no matching
+    (date, hour) yet, i.e. EPİAŞ hasn't published/cleared GÖP/PTF for them.
+
+    Unlike extract_recent_data() (which requires ptf_try IS NOT NULL, and so
+    can only ever "predict" hours whose true price is already known — see
+    2026-08-03 investigation), this is the actual before-the-fact forecast
+    path: features here come only from day-ahead-available sources (LEP
+    load forecast, lagged settled prices, etc. — see
+    mart_ptf_forward_features.sql's own docstring for the full discipline).
+    """
+    logger.info("Pulling not-yet-settled rows from mart_ptf_forward_features...")
+    client = get_bq_client()
+
+    # date >= CURRENT_DATE('Asia/Istanbul') matters: an anti-join against
+    # stg_pricing alone can't distinguish "genuinely hasn't happened yet"
+    # from "a past date stg_pricing happens to be missing" (a data gap, not
+    # a forecast target) — confirmed 2026-08-03 via a dry run that pulled in
+    # stray historical gap rows (e.g. 2024-12-31, 2026-07-25/26) alongside
+    # the real future day. Restricting to today-or-later excludes those.
+    query = f"""
+        SELECT f.*
+        FROM `{PROJECT_ID}.{DATASET_ID}.mart_ptf_forward_features` f
+        LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.stg_pricing` p
+          ON p.date = f.date AND p.hour = f.hour
+        WHERE p.ptf_try IS NULL
+          AND f.date >= CURRENT_DATE('Asia/Istanbul')
+        ORDER BY f.date, f.hour
+    """
+    df = client.query(query).to_dataframe()
+
+    if df.empty:
+        logger.info("No genuinely future rows available yet.")
+        return df
+
+    if "datetime" in df.columns:
+        df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_localize(None)
+    else:
+        df["datetime"] = (
+            pd.to_datetime(df["date"].astype(str))
+            + pd.to_timedelta(df["hour"], unit="h")
+        )
+    df = df.sort_values("datetime").set_index("datetime")
+    logger.info(f"Fetched {len(df)} genuinely future row(s): "
+                f"{df.index.min()} → {df.index.max()}")
+    return df
+
+
 # ── FEATURE ENGINEERING ───────────────────────────────────────────────────────
 
 def build_inference_features(
@@ -126,32 +183,58 @@ def build_inference_features(
     if since is not None:
         df = df[df.index > since]
 
-    missing = [f for f in required_features if f not in df.columns]
-    if missing:
-        logger.warning(f"Required features missing from DataFrame (will be NaN): {missing}")
-
-    # Cast + fill exactly like ptf_trainer.py's _to_float() does for X_train/
-    # X_test. This is NOT optional: the model was trained on data where every
-    # missing value was pd.to_numeric()'d then filled with 0 (not left as
-    # genuine NaN). XGBoost happily accepts raw NaN as "missing" and picks a
-    # learned default split direction for it — but that split direction was
-    # fit assuming missing == 0, not fit on genuine missingness. Passing raw
-    # NaN at inference silently uses the wrong branch and produces
-    # substantially different (and visibly worse) predictions than passing
-    # the same 0-filled values the model was actually trained on. Confirmed
-    # 2026-08-03 via BigQuery time-travel: skipping this step reproduced
-    # gold_ptf_predictions' actual (badly under-predicting) stored values
-    # almost exactly; restoring it moved predictions ~1,000-1,800 TL/MWh
-    # closer to the realized price.
-    batch = (df.reindex(columns=required_features)
-               .apply(pd.to_numeric, errors="coerce")
-               .fillna(0)
-               .astype("float64"))
+    batch = _cast_to_model_input(df, required_features)
     if batch.empty:
         logger.info("No new timestamps since the last prediction — nothing to do.")
     else:
         logger.info(
             f"Inference input built for {len(batch)} timestamp(s): "
+            f"{batch.index.min()} → {batch.index.max()}"
+        )
+    return batch
+
+
+def _cast_to_model_input(df: pd.DataFrame, required_features: list) -> pd.DataFrame:
+    """Cast + fill exactly like ptf_trainer.py's _to_float() does for X_train/
+    X_test. This is NOT optional: the model was trained on data where every
+    missing value was pd.to_numeric()'d then filled with 0 (not left as
+    genuine NaN). XGBoost happily accepts raw NaN as "missing" and picks a
+    learned default split direction for it — but that split direction was
+    fit assuming missing == 0, not fit on genuine missingness. Passing raw
+    NaN at inference silently uses the wrong branch and produces
+    substantially different (and visibly worse) predictions than passing
+    the same 0-filled values the model was actually trained on. Confirmed
+    2026-08-03 via BigQuery time-travel: skipping this step reproduced
+    gold_ptf_predictions' actual (badly under-predicting) stored values
+    almost exactly; restoring it moved predictions ~1,000-1,800 TL/MWh
+    closer to the realized price. Shared by both the backtest-oriented
+    (build_inference_features) and forward-looking
+    (build_forward_inference_features) paths — same model, same requirement.
+    """
+    missing = [f for f in required_features if f not in df.columns]
+    if missing:
+        logger.warning(f"Required features missing from DataFrame (will be NaN): {missing}")
+    return (df.reindex(columns=required_features)
+              .apply(pd.to_numeric, errors="coerce")
+              .fillna(0)
+              .astype("float64"))
+
+
+def build_forward_inference_features(df: pd.DataFrame, required_features: list) -> pd.DataFrame:
+    """Build model input for genuinely future (not-yet-settled) hours from
+    mart_ptf_forward_features. No dropna/since filtering here — unlike the
+    backtest path, every row extract_forward_features() returns is already
+    guaranteed genuinely future (anti-joined against stg_pricing), and we
+    always want to (re-)predict all of them since day-ahead-available inputs
+    like LEP can get revised between runs.
+    """
+    df = build_ptf_features(df)
+    batch = _cast_to_model_input(df, required_features)
+    if batch.empty:
+        logger.info("No genuinely future rows to predict.")
+    else:
+        logger.info(
+            f"Forward inference input built for {len(batch)} timestamp(s): "
             f"{batch.index.min()} → {batch.index.max()}"
         )
     return batch
@@ -173,15 +256,18 @@ _PREDICTIONS_SCHEMA = [
 ]
 
 
-def _ensure_predictions_table(client: bigquery.Client) -> None:
-    """Create gold_ptf_predictions if it does not yet exist.
+def _ensure_predictions_table(client: bigquery.Client, table_id: str) -> None:
+    """Create the given predictions table if it does not yet exist.
 
     Using exists_ok=True means this is idempotent — safe to call every run.
     The table is partitioned by predicted_date so the dashboard can query a
-    rolling window cheaply without scanning the full history.
+    rolling window cheaply without scanning the full history. Shared by both
+    PREDICTIONS_TABLE and FORWARD_PREDICTIONS_TABLE — same schema, different
+    table names.
     """
     dataset_ref = bigquery.DatasetReference(PROJECT_ID, DATASET_ID)
-    table_ref   = dataset_ref.table("gold_ptf_predictions")
+    table_name  = table_id.rsplit(".", 1)[-1]
+    table_ref   = dataset_ref.table(table_name)
     table       = bigquery.Table(table_ref, schema=_PREDICTIONS_SCHEMA)
 
     # Partition by predicted_date; expire nothing (keep full history).
@@ -194,35 +280,36 @@ def _ensure_predictions_table(client: bigquery.Client) -> None:
     created = client.create_table(table, exists_ok=True)
     if created.created is not None:
         # Newly created — log so the operator knows the table was provisioned
-        logger.info(f"✅ Created BigQuery table: {PREDICTIONS_TABLE}")
+        logger.info(f"✅ Created BigQuery table: {table_id}")
     else:
-        logger.debug(f"Table already exists: {PREDICTIONS_TABLE}")
+        logger.debug(f"Table already exists: {table_id}")
 
 
-def write_prediction_to_bq(predicted_date: pd.Timestamp, predicted_ptf: float) -> None:
+def write_prediction_to_bq(predicted_date: pd.Timestamp, predicted_ptf: float,
+                           table: str = PREDICTIONS_TABLE) -> None:
     """Idempotent upsert of a single prediction row to BigQuery.
 
     Uses a DML MERGE statement so that Airflow task retries cannot create
     duplicate rows.  The natural key is (predicted_date, hour): if a row
     already exists for this period, its predicted_ptf and predicted_at are
-    updated in place rather than a second row being appended.
+    updated in place rather than a second row being appended — for
+    FORWARD_PREDICTIONS_TABLE specifically, this means a forecast naturally
+    refreshes in place as day-ahead-available inputs (e.g. LEP) get revised
+    across multiple runs, rather than accumulating stale duplicates.
 
     DML jobs run on the BigQuery query engine (not the streaming API), so they
     are not subject to the streaming-insert propagation delay that previously
     caused 404 errors immediately after table creation.
 
     Key convention — Turkish local time (UTC+3):
-        mart_forecasted_residual_load.datetime is a *UTC* TIMESTAMP.  All staging
-        models use Turkish local date/hour as their natural key (stg_pricing,
-        stg_load_estimation, etc.).  We therefore add _TR_UTC_OFFSET to convert the
-        UTC index to Turkish local before computing predicted_date / hour, so that
-        gold_ptf_predictions keys can be directly joined with stg_pricing in the
-        backtesting section of the dashboard.
+        The UTC datetime index this is called with gets converted to Turkish
+        local date/hour before writing, so predicted_date/hour align with
+        stg_pricing and every other Turkish-local-keyed staging model.
     """
     client = get_bq_client()
 
     # Auto-create the table on first inference run — no manual DDL required.
-    _ensure_predictions_table(client)
+    _ensure_predictions_table(client, table)
 
     # Convert UTC timestamp to Turkish local for storage
     ts_utc  = predicted_date.tz_localize(None) if predicted_date.tzinfo is None else \
@@ -237,7 +324,7 @@ def write_prediction_to_bq(predicted_date: pd.Timestamp, predicted_ptf: float) -
     # MERGE upsert: INSERT if (predicted_date, hour) is new; UPDATE if it
     # already exists (idempotent — safe on any number of Airflow retries).
     merge_sql = f"""
-        MERGE `{PREDICTIONS_TABLE}` T
+        MERGE `{table}` T
         USING (
             SELECT
                 DATE '{date_str}'                 AS predicted_date,
@@ -258,7 +345,7 @@ def write_prediction_to_bq(predicted_date: pd.Timestamp, predicted_ptf: float) -
     job = client.query(merge_sql)
     job.result()   # blocks until the DML job completes
 
-    logger.info(f"✅ Prediction upserted — {date_str} hour={hour} PTF={predicted_ptf:.2f} TRY")
+    logger.info(f"✅ Prediction upserted [{table.rsplit('.', 1)[-1]}] — {date_str} hour={hour} PTF={predicted_ptf:.2f} TRY")
 
 
 def get_last_predicted_ts() -> pd.Timestamp:
@@ -289,28 +376,58 @@ def get_last_predicted_ts() -> pd.Timestamp:
 
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────
 
-def run():
-    artifact          = load_model_from_gcs()
-    model             = artifact["model"]
-    required_features = artifact["features"]
-
+def run_backtest_inference(model, required_features: list) -> int:
+    """Predict every newly-settled hour since the last write (backtest-
+    oriented path — see module docstring). Returns the number of rows written."""
     df_recent = extract_recent_data()
     last_ts   = get_last_predicted_ts()
     X_batch   = build_inference_features(df_recent, required_features, since=last_ts)
 
     if X_batch.empty:
-        logger.info("🏁 Inference job complete — no new hours to predict.")
-        return
+        logger.info("Backtest inference: no new settled hours to predict.")
+        return 0
 
     predictions = model.predict(X_batch)
-
-    # write_prediction_to_bq converts each UTC timestamp → Turkish local
-    # internally before computing predicted_date / hour stored in
-    # gold_ptf_predictions.
     for ts, ptf in zip(X_batch.index, predictions):
-        write_prediction_to_bq(predicted_date=ts, predicted_ptf=float(ptf))
+        write_prediction_to_bq(predicted_date=ts, predicted_ptf=float(ptf), table=PREDICTIONS_TABLE)
 
-    logger.info(f"🏁 Inference job complete — wrote {len(X_batch)} new prediction(s).")
+    logger.info(f"Backtest inference: wrote {len(X_batch)} prediction(s).")
+    return len(X_batch)
+
+
+def run_forward_forecast(model, required_features: list) -> int:
+    """Predict every genuinely future (not-yet-settled) hour — the actual
+    before-the-fact forecast used for decision support (e.g. Vardiya
+    Optimizasyonu). Always (re-)writes all currently-future rows rather than
+    tracking a "since" cursor, since day-ahead-available inputs can be
+    revised between runs and we want the freshest forecast, not the first
+    one ever computed for that hour. Returns the number of rows written."""
+    df_forward = extract_forward_features()
+    if df_forward.empty:
+        logger.info("Forward forecast: no genuinely future rows available yet.")
+        return 0
+
+    X_batch = build_forward_inference_features(df_forward, required_features)
+    if X_batch.empty:
+        return 0
+
+    predictions = model.predict(X_batch)
+    for ts, ptf in zip(X_batch.index, predictions):
+        write_prediction_to_bq(predicted_date=ts, predicted_ptf=float(ptf), table=FORWARD_PREDICTIONS_TABLE)
+
+    logger.info(f"Forward forecast: wrote {len(X_batch)} prediction(s).")
+    return len(X_batch)
+
+
+def run():
+    artifact          = load_model_from_gcs()
+    model             = artifact["model"]
+    required_features = artifact["features"]
+
+    n_backtest = run_backtest_inference(model, required_features)
+    n_forward  = run_forward_forecast(model, required_features)
+
+    logger.info(f"🏁 Inference job complete — {n_backtest} backtest, {n_forward} forward prediction(s) written.")
 
 
 if __name__ == "__main__":
