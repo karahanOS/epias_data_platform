@@ -112,7 +112,6 @@ def build_inference_features(
     # `forecasted_residual_load_mwh` may be NULL when upstream marts are still
     # being backfilled (e.g. stg_res_forecast pending backfill).  A bare dropna()
     # would wipe the entire DataFrame, causing the downstream iloc[[-1]] crash.
-    # XGBoost handles NaN feature values natively, so sparse columns are safe.
     core_cols = [c for c in ["ptf_lag_24h", "ptf_lag_168h"]
                  if c in df.columns]
     df.dropna(subset=core_cols, inplace=True)
@@ -131,7 +130,23 @@ def build_inference_features(
     if missing:
         logger.warning(f"Required features missing from DataFrame (will be NaN): {missing}")
 
-    batch = df.reindex(columns=required_features)
+    # Cast + fill exactly like ptf_trainer.py's _to_float() does for X_train/
+    # X_test. This is NOT optional: the model was trained on data where every
+    # missing value was pd.to_numeric()'d then filled with 0 (not left as
+    # genuine NaN). XGBoost happily accepts raw NaN as "missing" and picks a
+    # learned default split direction for it — but that split direction was
+    # fit assuming missing == 0, not fit on genuine missingness. Passing raw
+    # NaN at inference silently uses the wrong branch and produces
+    # substantially different (and visibly worse) predictions than passing
+    # the same 0-filled values the model was actually trained on. Confirmed
+    # 2026-08-03 via BigQuery time-travel: skipping this step reproduced
+    # gold_ptf_predictions' actual (badly under-predicting) stored values
+    # almost exactly; restoring it moved predictions ~1,000-1,800 TL/MWh
+    # closer to the realized price.
+    batch = (df.reindex(columns=required_features)
+               .apply(pd.to_numeric, errors="coerce")
+               .fillna(0)
+               .astype("float64"))
     if batch.empty:
         logger.info("No new timestamps since the last prediction — nothing to do.")
     else:
