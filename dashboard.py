@@ -1170,8 +1170,14 @@ elif page == "🤖 PTF Tahmin & ML":
         ORDER BY date, hour
     """)
 
-    # Fetch predictions for the last 90 days + future dates.  query() returns empty
-    # silently on BQNotFound (table absent before first inference run).
+    # Fetch predictions for the last 90 days.  query() returns empty silently on
+    # BQNotFound (table absent before first inference run).
+    #
+    # NOTE: gold_ptf_predictions is a BACKTEST table — run_backtest_inference()
+    # only ever predicts hours where stg_pricing.ptf_try IS NOT NULL (i.e.
+    # already-settled hours), purely to measure accuracy against ground truth.
+    # It can never contain a genuinely future prediction, so it is NOT used for
+    # the forward-forecast panel below — see gold_ptf_forward_predictions instead.
     df_pred = query(f"""
         SELECT predicted_date, hour, predicted_ptf FROM {tbl('gold_ptf_predictions')}
         WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
@@ -1180,6 +1186,18 @@ elif page == "🤖 PTF Tahmin & ML":
     if not df_pred.empty:
         df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
         df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").astype(int)
+
+    # Genuinely future predictions — built from day-ahead-available features
+    # only (LEP, RES forecast, AIC, lagged price/SMF, etc; see
+    # mart_ptf_forward_features.sql), written by run_forward_forecast().
+    df_fwd_pred = query(f"""
+        SELECT predicted_date, hour, predicted_ptf FROM {tbl('gold_ptf_forward_predictions')}
+        WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+        ORDER BY predicted_date, hour
+    """)
+    if not df_fwd_pred.empty:
+        df_fwd_pred["predicted_date"] = pd.to_datetime(df_fwd_pred["predicted_date"])
+        df_fwd_pred["hour"] = pd.to_numeric(df_fwd_pred["hour"], errors="coerce").astype(int)
 
     if df_lag.empty:
         st.warning("Veri bulunamadı.")
@@ -1218,37 +1236,44 @@ elif page == "🤖 PTF Tahmin & ML":
         st.plotly_chart(fig2, use_container_width=True, key="ml_lag168")
 
     # ── FORWARD FORECAST PANEL ────────────────────────────────────────────────
-    # Shows future predictions (predicted_date >= today).  Appears only when
-    # the gold_ptf_predictions table exists and has upcoming rows.
-    if not df_pred.empty:
-        _today = pd.Timestamp.now().normalize()
-        df_forward = df_pred[df_pred["predicted_date"] >= _today].copy()
+    # Genuinely future predictions from gold_ptf_forward_predictions — built
+    # from day-ahead-available data only (LEP, RES forecast, AIC, lagged
+    # price/SMF), so these hours have NOT settled yet in stg_pricing. This is
+    # what answers "does the dashboard predict tomorrow before it happens?".
+    st.markdown("### 🔮 İleriye Yönelik Tahmin (Gerçek Forward-Looking)")
+    if df_fwd_pred.empty:
+        st.info(
+            "**Henüz ileriye dönük tahmin yok.**  \n"
+            "`gold_ptf_forward_predictions`, EPİAŞ'ın GÖP PTF'ini yayınladığı "
+            "~14:00 TRT sonrası, LEP (yük tahmin planı) verisi geldikçe saatlik "
+            "inference çalışmasıyla otomatik üretilir.  \n"
+            "Airflow DAG: `ptf_hourly_inference → run_forward_forecast`"
+        )
+    else:
+        df_forward = df_fwd_pred.copy()
+        df_forward["ts"] = df_forward["predicted_date"] + pd.to_timedelta(df_forward["hour"], unit="h")
+        df_forward = df_forward.sort_values("ts")
 
-        if not df_forward.empty:
-            st.markdown("### 🔮 İleriye Yönelik 24h Tahmin")
-            df_forward["ts"] = df_forward["predicted_date"] + pd.to_timedelta(df_forward["hour"], unit="h")
-            df_forward = df_forward.sort_values("ts")
+        fig_fwd = go.Figure()
+        fig_fwd.add_trace(go.Scatter(
+            x=df_forward["ts"], y=df_forward["predicted_ptf"],
+            mode="lines+markers",
+            name="XGBoost Tahmin",
+            line=dict(color="#ff6b35", width=2.5),
+            fill="tozeroy", fillcolor="rgba(255,107,53,0.07)",
+            hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
+        ))
+        dark(fig_fwd, height=360,
+             title="Önümüzdeki Saatlik PTF Tahminleri (XGBoost, henüz gerçekleşmedi)",
+             yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
+             hovermode="x unified")
+        st.plotly_chart(fig_fwd, use_container_width=True, key="ml_forward")
 
-            fig_fwd = go.Figure()
-            fig_fwd.add_trace(go.Scatter(
-                x=df_forward["ts"], y=df_forward["predicted_ptf"],
-                mode="lines+markers",
-                name="XGBoost Tahmin",
-                line=dict(color="#ff6b35", width=2.5),
-                fill="tozeroy", fillcolor="rgba(255,107,53,0.07)",
-                hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
-            ))
-            dark(fig_fwd, height=360,
-                 title=f"Önümüzdeki Saatlik PTF Tahminleri (XGBoost)",
-                 yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
-                 hovermode="x unified")
-            st.plotly_chart(fig_fwd, use_container_width=True, key="ml_forward")
-
-            # Summary metrics for forward window
-            fw1, fw2, fw3 = st.columns(3)
-            fw1.metric("Tahmin Ort. PTF", f"{df_forward['predicted_ptf'].mean():,.2f} TL/MWh")
-            fw2.metric("Tahmin Maks PTF", f"{df_forward['predicted_ptf'].max():,.2f} TL/MWh")
-            fw3.metric("Tahmin Min PTF",  f"{df_forward['predicted_ptf'].min():,.2f} TL/MWh")
+        # Summary metrics for forward window
+        fw1, fw2, fw3 = st.columns(3)
+        fw1.metric("Tahmin Ort. PTF", f"{df_forward['predicted_ptf'].mean():,.2f} TL/MWh")
+        fw2.metric("Tahmin Maks PTF", f"{df_forward['predicted_ptf'].max():,.2f} TL/MWh")
+        fw3.metric("Tahmin Min PTF",  f"{df_forward['predicted_ptf'].min():,.2f} TL/MWh")
 
     # ── BACKTESTING ───────────────────────────────────────────────────────────
     if df_pred.empty:
@@ -2554,16 +2579,22 @@ elif page == "⏰ Vardiya Optimizasyonu":
 
     # ── Model tabanlı vardiya önerisi ────────────────────────────────────────
     st.markdown("### 🤖 Model Tabanlı Vardiya Önerisi")
+    st.caption(
+        "Bu öneri, EPİAŞ'ın henüz PTF'ini yayınlamadığı — yani gerçekten "
+        "gelecekteki — saatler için üretilen `gold_ptf_forward_predictions` "
+        "tablosunu kullanır (backtest amaçlı `gold_ptf_predictions` değil)."
+    )
     df_pred_so = query(f"""
         SELECT predicted_date, hour, predicted_ptf
-        FROM {tbl('gold_ptf_predictions')}
+        FROM {tbl('gold_ptf_forward_predictions')}
         WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
         ORDER BY predicted_date, hour
     """)
     if df_pred_so.empty:
         st.info(
-            "Henüz tahmin verisi yok. `gold_ptf_predictions`, EPİAŞ'ın GÖP fiyatlarını "
-            "yayınladığı ~14:00 TRT sonrası saatlik olarak güncellenir."
+            "Henüz ileriye dönük tahmin verisi yok. `gold_ptf_forward_predictions`, "
+            "EPİAŞ'ın GÖP fiyatlarını yayınladığı ~14:00 TRT sonrası, saatlik "
+            "inference çalışmasıyla bir sonraki gün için üretilir."
         )
     else:
         df_pred_so["predicted_date"] = pd.to_datetime(df_pred_so["predicted_date"])
@@ -2574,8 +2605,9 @@ elif page == "⏰ Vardiya Optimizasyonu":
         if _full_days.empty:
             _latest_n = int(_day_counts.max()) if not _day_counts.empty else 0
             st.info(
-                f"Henüz tam günlük (24 saat) tahmin yok — en güncel günde {_latest_n}/24 saat mevcut. "
-                f"EPİAŞ'ın günlük GÖP yayını (~14:00 TRT) sonrası tüm saatler tek seferde gelecek."
+                f"Henüz tam günlük (24 saat) ileriye dönük tahmin yok — en güncel günde "
+                f"{_latest_n}/24 saat mevcut. EPİAŞ'ın günlük GÖP yayını (~14:00 TRT) "
+                f"sonrası, LEP verisi geldikçe saatler kademeli olarak tamamlanır."
             )
         else:
             _target_date = _full_days.index.max()
