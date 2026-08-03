@@ -130,6 +130,29 @@ def build_ptf_features(df: pd.DataFrame) -> pd.DataFrame:
 # Order is fixed so joblib-serialised models stay compatible across retrains.
 # Columns prefixed with (*) are optional — set to 0/NaN when absent so the
 # model degrades gracefully rather than crashing during inference.
+#
+# 2026-08-03: removed 16 same-hour "actual"/real-time columns that are only
+# knowable AFTER the target hour occurs — genuinely unavailable at the
+# ~14:00 TRT moment GÖP/PTF is actually cleared for that hour, the same
+# leakage class the smf_try/ptf_smf_spread removal below already guarded
+# against (that fix just never got extended to these). Empirically verified
+# via a 5-window walk-forward backtest: removing them raised mean MAE by
+# ~22.7% (274→350 TL/MWh) — real signal, but the leaky set was overstating
+# accuracy — while the leak-free model still beat a naive T-24h baseline in
+# 5/5 windows (mean MASE 0.666), confirming genuine skill survives the cut.
+# Also matters for genuinely-forward predictions specifically (not just
+# backtest honesty): gold_ptf_predictions rows for hours that haven't
+# happened yet always have these columns NaN→0 at inference (confirmed via
+# BigQuery time-travel on 2026-08-03), so a model trained expecting mostly
+# real values for them would have suffered train/serve skew on live use.
+# Removed: actual_consumption_mwh, consumption_error, wind_generation_mwh,
+# solar_generation_mwh, hydro_generation_mwh, gas_generation_mwh,
+# total_generation_mwh, actual_renewable_ratio, renewable_ratio,
+# net_imbalance_mwh, gop_volume_imbalance_mwh, gip_gop_price_spread,
+# temperature_celsius, wind_speed_kmh, shortwave_radiation, relative_humidity
+# (weather specifically: weather_client.py calls Open-Meteo's
+# archive-api.open-meteo.com/v1/archive — observed/reanalysis history, not
+# a forecast — confirming it's same-hour-actual, not day-ahead-available).
 
 FEATURE_COLS = [
     # Calendar
@@ -149,32 +172,14 @@ FEATURE_COLS = [
     "ptf_rolling_min_24h",
     "ptf_rolling_avg_168h",
 
-    # Demand / load
+    # Demand / load — forecasts only (LEP/RES are published day-ahead)
     "forecasted_load_mwh",        # LEP load forecast
     "forecasted_res_mwh",         # RES forecast
     "forecasted_residual_load_mwh",
-    "actual_consumption_mwh",     # (*) RT actual demand
-    "consumption_error",          # (*) actual − forecast
 
-    # Generation mix
-    "wind_generation_mwh",        # (*)
-    "solar_generation_mwh",       # (*)
-    "hydro_generation_mwh",       # (*)
-    "gas_generation_mwh",         # (*)
-    "total_generation_mwh",       # (*)
-    "actual_renewable_ratio",
-    "renewable_ratio",
-
-    # Weather
-    "temperature_celsius",        # (*)
-    "wind_speed_kmh",             # (*)
-    "shortwave_radiation",        # (*)
-    "relative_humidity",          # (*)
-
-    # Market structure
-    "gop_volume_imbalance_mwh",
+    # Market structure — capacity_utilization_ratio uses forecasted load/RES
+    # over self-declared AIC (available capacity), both day-ahead-known.
     "capacity_utilization_ratio",
-    "net_imbalance_mwh",
     # smf_try ve ptf_smf_spread ÇIKARILDI — gün öncesi tahminlerde data leakage.
     # Aynı saatin SMF'i yalnızca gerçek zamanlı dengeleme sonrası bilinir.
     # Bunların yerine lag versiyonları kullanılıyor (aşağıda).
@@ -185,14 +190,15 @@ FEATURE_COLS = [
     "smf_try_lag_24h",
     "smf_try_lag_168h",
 
-    # Cross-market signals (Maciejowska et al.)
-    "gip_gop_price_spread",
+    # Cross-market signals (Maciejowska et al.) — lagged 1 full day, so these
+    # use yesterday's already-settled values, not today's in-progress ones.
     "arb_score_lag24",
     "yal_lag24",
     "yat_lag24",
     "net_dgp_lag24",
 
-    # Supply shock
+    # Supply shock — AIC is self-declared day-ahead; outages carry some
+    # same-day-reported risk but are dominated by planned/notified cases.
     "supply_shock_index",
     "total_outage_mwh",
     "supply_shock_trend_7d",
