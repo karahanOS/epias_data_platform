@@ -1199,6 +1199,21 @@ elif page == "🤖 PTF Tahmin & ML":
         df_fwd_pred["predicted_date"] = pd.to_datetime(df_fwd_pred["predicted_date"])
         df_fwd_pred["hour"] = pd.to_numeric(df_fwd_pred["hour"], errors="coerce").astype(int)
 
+    # Real (not modeled) future price — K.PTF becomes available ~1 day before
+    # the delivery day even starts, as soon as the day-ahead auction clears
+    # (~14:00 TRT the day before), while the final PTF withholds the same
+    # hour until delivery day's own ~14:00. mart_ptf_realized coalesces both
+    # (price_status='final'|'interim'); wherever it has a row, that's the
+    # real cleared price, not a prediction — see mart_ptf_realized.sql.
+    df_real_fwd = query(f"""
+        SELECT date, hour, ptf_try, price_status FROM {tbl('mart_ptf_realized')}
+        WHERE date >= CURRENT_DATE('Asia/Istanbul')
+        ORDER BY date, hour
+    """)
+    if not df_real_fwd.empty:
+        df_real_fwd["date"] = pd.to_datetime(df_real_fwd["date"])
+        df_real_fwd["hour"] = pd.to_numeric(df_real_fwd["hour"], errors="coerce").astype(int)
+
     if df_lag.empty:
         st.warning("Veri bulunamadı.")
         st.stop()
@@ -1236,44 +1251,76 @@ elif page == "🤖 PTF Tahmin & ML":
         st.plotly_chart(fig2, use_container_width=True, key="ml_lag168")
 
     # ── FORWARD FORECAST PANEL ────────────────────────────────────────────────
-    # Genuinely future predictions from gold_ptf_forward_predictions — built
-    # from day-ahead-available data only (LEP, RES forecast, AIC, lagged
-    # price/SMF), so these hours have NOT settled yet in stg_pricing. This is
-    # what answers "does the dashboard predict tomorrow before it happens?".
+    # Two distinct series, never blended into one line:
+    #   - df_real_fwd (mart_ptf_realized): the REAL cleared price (final PTF
+    #     or pre-appeal K.PTF) for hours where the day-ahead auction already
+    #     happened — not a prediction.
+    #   - df_fwd_pred (gold_ptf_forward_predictions), restricted to hours
+    #     df_real_fwd does NOT cover: genuine XGBoost predictions for D+2 and
+    #     beyond, where no auction has run yet at all.
     st.markdown("### 🔮 İleriye Yönelik Tahmin (Gerçek Forward-Looking)")
-    if df_fwd_pred.empty:
+
+    df_real_line = pd.DataFrame()
+    if not df_real_fwd.empty:
+        df_real_line = df_real_fwd.copy()
+        df_real_line["ts"] = df_real_line["date"] + pd.to_timedelta(df_real_line["hour"], unit="h")
+        df_real_line = df_real_line.sort_values("ts")
+
+    df_model_line = pd.DataFrame()
+    if not df_fwd_pred.empty:
+        df_model_line = df_fwd_pred.copy()
+        df_model_line["ts"] = df_model_line["predicted_date"] + pd.to_timedelta(df_model_line["hour"], unit="h")
+        if not df_real_line.empty:
+            df_model_line = df_model_line[~df_model_line["ts"].isin(df_real_line["ts"])]
+        df_model_line = df_model_line.sort_values("ts")
+
+    if df_real_line.empty and df_model_line.empty:
         st.info(
-            "**Henüz ileriye dönük tahmin yok.**  \n"
-            "`gold_ptf_forward_predictions`, EPİAŞ'ın GÖP PTF'ini yayınladığı "
-            "~14:00 TRT sonrası, LEP (yük tahmin planı) verisi geldikçe saatlik "
-            "inference çalışmasıyla otomatik üretilir.  \n"
+            "**Henüz ileriye dönük veri yok.**  \n"
+            "`mart_ptf_realized` (gerçek K.PTF/PTF), GÖP açık artırması kapandığında "
+            "(~14:00 TRT) otomatik dolar; `gold_ptf_forward_predictions` ise LEP verisi "
+            "geldikçe saatlik inference çalışmasıyla üretilir.  \n"
             "Airflow DAG: `ptf_hourly_inference → run_forward_forecast`"
         )
     else:
-        df_forward = df_fwd_pred.copy()
-        df_forward["ts"] = df_forward["predicted_date"] + pd.to_timedelta(df_forward["hour"], unit="h")
-        df_forward = df_forward.sort_values("ts")
-
         fig_fwd = go.Figure()
-        fig_fwd.add_trace(go.Scatter(
-            x=df_forward["ts"], y=df_forward["predicted_ptf"],
-            mode="lines+markers",
-            name="XGBoost Tahmin",
-            line=dict(color="#ff6b35", width=2.5),
-            fill="tozeroy", fillcolor="rgba(255,107,53,0.07)",
-            hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
-        ))
+        if not df_real_line.empty:
+            fig_fwd.add_trace(go.Scatter(
+                x=df_real_line["ts"], y=df_real_line["ptf_try"],
+                mode="lines+markers",
+                name="Gerçekleşen GÖP (K.PTF/PTF)",
+                line=dict(color="#00d4ff", width=2.5),
+                fill="tozeroy", fillcolor="rgba(0,212,255,0.07)",
+                hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
+            ))
+        if not df_model_line.empty:
+            fig_fwd.add_trace(go.Scatter(
+                x=df_model_line["ts"], y=df_model_line["predicted_ptf"],
+                mode="lines+markers",
+                name="XGBoost Tahmin (D+2 ve sonrası)",
+                line=dict(color="#ff6b35", width=2.5, dash="dash"),
+                hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
+            ))
         dark(fig_fwd, height=360,
-             title="Önümüzdeki Saatlik PTF Tahminleri (XGBoost, henüz gerçekleşmedi)",
+             title="Önümüzdeki Saatlik PTF — Gerçekleşen (K.PTF/PTF) vs Model Tahmini",
              yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
              hovermode="x unified")
         st.plotly_chart(fig_fwd, use_container_width=True, key="ml_forward")
 
-        # Summary metrics for forward window
+        df_forward_all = pd.concat([
+            df_real_line.rename(columns={"ptf_try": "value"})[["ts", "value"]],
+            df_model_line.rename(columns={"predicted_ptf": "value"})[["ts", "value"]],
+        ], ignore_index=True) if not df_model_line.empty or not df_real_line.empty else pd.DataFrame()
+
         fw1, fw2, fw3 = st.columns(3)
-        fw1.metric("Tahmin Ort. PTF", f"{df_forward['predicted_ptf'].mean():,.2f} TL/MWh")
-        fw2.metric("Tahmin Maks PTF", f"{df_forward['predicted_ptf'].max():,.2f} TL/MWh")
-        fw3.metric("Tahmin Min PTF",  f"{df_forward['predicted_ptf'].min():,.2f} TL/MWh")
+        fw1.metric("Ort. PTF", f"{df_forward_all['value'].mean():,.2f} TL/MWh")
+        fw2.metric("Maks PTF", f"{df_forward_all['value'].max():,.2f} TL/MWh")
+        fw3.metric("Min PTF",  f"{df_forward_all['value'].min():,.2f} TL/MWh")
+        if not df_real_line.empty:
+            st.caption(
+                f"🔵 {len(df_real_line)} saat gerçekleşen GÖP fiyatı (K.PTF/PTF) — "
+                f"tahmin değil. 🟠 {len(df_model_line)} saat model tahmini."
+            )
 
     # ── BACKTESTING ───────────────────────────────────────────────────────────
     if df_pred.empty:

@@ -69,7 +69,15 @@ DATA_DELAYS: Dict[str, int] = {
     "get_unlicensed_generation":        35,
     "get_uevcb_list":                   0,
     "get_outages":                      1,
-    "get_dams":                         0
+    "get_dams":                         0,
+    # get_interim_mcp: negative delay = LEAD. K.PTF (itiraz-öncesi PTF)
+    # teslim gününden ~1 gün önce, GÖP açık artırması kapanır kapanmaz
+    # mevcut oluyor — final PTF'nin aksine, teslim gününün kendi 14:00'ini
+    # beklemiyor. -1 ile her saatlik run "ds+1" (yarın) için K.PTF ister;
+    # açık artırma henüz kapanmadıysa allow_empty=True zaten boş dönüşü
+    # sorunsuz karşılıyor (pricing'in "veri saat 14 öncesinde mevcut değil"
+    # davranışıyla aynı mekanizma).
+    "get_interim_mcp":                  -1,
 }
 
 NO_DATE_METHODS: frozenset = frozenset({
@@ -91,10 +99,11 @@ def get_epias_data_callable(method_name: str, **context) -> list:
     ds     = context["ds"]
     delay  = DATA_DELAYS.get(method_name, 0)
 
-    if delay > 0:
-        target = (datetime.strptime(ds, "%Y-%m-%d") - timedelta(days=delay)).strftime("%Y-%m-%d")
-    else:
-        target = ds
+    # delay=0 -> target=ds (unchanged). delay>0 -> look back N days (unchanged).
+    # delay<0 -> look AHEAD |delay| days (lead) — e.g. get_interim_mcp's -1
+    # fetches ds+1 ("tomorrow"), since K.PTF for tomorrow is already
+    # available today once the day-ahead auction clears (~14:00 TRT).
+    target = (datetime.strptime(ds, "%Y-%m-%d") - timedelta(days=delay)).strftime("%Y-%m-%d")
 
     method = getattr(client, method_name)
     result = method() if method_name in NO_DATE_METHODS else method(target, target)

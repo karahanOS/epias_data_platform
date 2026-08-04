@@ -102,9 +102,10 @@ def extract_recent_data() -> pd.DataFrame:
 
 
 def extract_forward_features() -> pd.DataFrame:
-    """Pull genuinely future (not-yet-settled) rows from
-    mart_ptf_forward_features — hours where stg_pricing has no matching
-    (date, hour) yet, i.e. EPİAŞ hasn't published/cleared GÖP/PTF for them.
+    """Pull genuinely future (not-yet-priced) rows from
+    mart_ptf_forward_features — hours where mart_ptf_realized has no
+    matching (date, hour) yet, i.e. neither the final PTF nor the earlier
+    K.PTF (interim, pre-appeal) has been published for them.
 
     Unlike extract_recent_data() (which requires ptf_try IS NOT NULL, and so
     can only ever "predict" hours whose true price is already known — see
@@ -112,22 +113,29 @@ def extract_forward_features() -> pd.DataFrame:
     path: features here come only from day-ahead-available sources (LEP
     load forecast, lagged settled prices, etc. — see
     mart_ptf_forward_features.sql's own docstring for the full discipline).
+
+    Anti-joining against mart_ptf_realized (not stg_pricing alone) matters:
+    once the day-ahead auction clears (~14:00 TRT, a day before delivery),
+    K.PTF already carries the real cleared price for those hours — 6
+    sampled historical dates showed it matches the eventual final PTF
+    exactly. There's no reason to spend a model prediction (or show a
+    "tahmin" label) on an hour whose real price is already known.
     """
-    logger.info("Pulling not-yet-settled rows from mart_ptf_forward_features...")
+    logger.info("Pulling rows with no real price yet from mart_ptf_forward_features...")
     client = get_bq_client()
 
     # date >= CURRENT_DATE('Asia/Istanbul') matters: an anti-join against
-    # stg_pricing alone can't distinguish "genuinely hasn't happened yet"
-    # from "a past date stg_pricing happens to be missing" (a data gap, not
-    # a forecast target) — confirmed 2026-08-03 via a dry run that pulled in
+    # mart_ptf_realized alone can't distinguish "genuinely hasn't happened
+    # yet" from "a past date the source is just missing" (a data gap, not a
+    # forecast target) — confirmed 2026-08-03 via a dry run that pulled in
     # stray historical gap rows (e.g. 2024-12-31, 2026-07-25/26) alongside
     # the real future day. Restricting to today-or-later excludes those.
     query = f"""
         SELECT f.*
         FROM `{PROJECT_ID}.{DATASET_ID}.mart_ptf_forward_features` f
-        LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.stg_pricing` p
-          ON p.date = f.date AND p.hour = f.hour
-        WHERE p.ptf_try IS NULL
+        LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.mart_ptf_realized` r
+          ON r.date = f.date AND r.hour = f.hour
+        WHERE r.ptf_try IS NULL
           AND f.date >= CURRENT_DATE('Asia/Istanbul')
         ORDER BY f.date, f.hour
     """

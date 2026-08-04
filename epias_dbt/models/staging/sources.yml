@@ -16,6 +16,13 @@ sources:
         description: "Saatlik PTF fiyatları (Gün Öncesi Piyasası kapanış)"
         freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
 
+      - name: interim_mcp
+        description: "K.PTF — itiraz süreci tamamlanmamış GÖP fiyatı, teslim gününden ~1 gün önce (açık artırma kapanır kapanmaz) mevcut olur"
+        # Looser than pricing: only populated after ~14:00 TRT each day (day-ahead
+        # auction close), so a fresh row for "today" can legitimately lag by up to
+        # ~14h even in a healthy pipeline — wider margin avoids false-positive alerts.
+        freshness: {warn_after: {count: 38, period: hour}, error_after: {count: 62, period: hour}}
+
       - name: dam_clearing
         description: "GÖP saatlik alış/satış eşleşme hacimleri"
         freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}

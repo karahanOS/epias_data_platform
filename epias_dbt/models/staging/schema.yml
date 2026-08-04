@@ -32,6 +32,23 @@ models:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
               quote: false
 
+  - name: stg_interim_mcp
+    description: "K.PTF — itiraz-öncesi GÖP fiyatı, saatlik (EPIAS)"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+
   - name: stg_smf
     description: "Sistem marjinal fiyatı — saatlik (EPIAS BPM)"
     tests:

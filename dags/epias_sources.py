@@ -51,6 +51,14 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # officially announced daily at 14:00 TRT, confirmed via EPİAŞ's own
     # public documentation).
     "pricing":          ("get_ptf",                          "bronze/pricing",          True,  True,  True),
+    # interim_mcp: K.PTF (itiraz-öncesi PTF) — DATA_DELAYS'te get_interim_mcp
+    # için -1 (lead) tanımlı (epias_dag.py), yani her saatlik run YARININ
+    # K.PTF'ini çekmeye çalışır. GÖP açık artırması kapanmadan (~14:00 TRT
+    # öncesi) boş döner (allow_empty=True zaten bunu karşılıyor). Geçmiş
+    # tarihlerde interim her zaman final ile birebir aynı (canlı test
+    # edildi, 2026-08) — backfill'de stg_pricing'e göre fazladan bilgi
+    # taşımıyor, bu yüzden backfill_eligible=False.
+    "interim_mcp":      ("get_interim_mcp",                  "bronze/interim_mcp",      True,  False, True),
     "smf":              ("get_smf",                         "bronze/smf",              False, True,  True),
     "consumption":      ("get_realtime_consumption",        "bronze/consumption",      False, True,  True),
     "supply_demand":    ("get_supply_demand",               "bronze/supply_demand",    True,  True,  True),

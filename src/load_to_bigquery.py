@@ -73,8 +73,9 @@ class BQExternalTableManager:
         """Tüm Silver tablolarını BigQuery'ye bağlar."""
         # Spark ile oluşturduğumuz tüm silver tabloların listesi
         tables = [
-            "pricing", 
-            "dam_clearing", 
+            "pricing",
+            "interim_mcp",
+            "dam_clearing",
             "idm_transactions", 
             "smf", 
             "system_direction",

@@ -211,6 +211,24 @@ class EPIASClient:
             self._date_body(start_date, end_date),
         ).get("items", [])
 
+    def get_interim_mcp(self, start_date: str, end_date: str) -> list:
+        """
+        Kesinleşmemiş Piyasa Takas Fiyatı (K.PTF) — itiraz süreci tamamlanmamış
+        GÖP fiyatı. POST /v1/markets/dam/data/interim-mcp
+        NOT: InterimMcpRequestDto sadece startDate alıyor (endDate yok) —
+        get_supply_demand() ile aynı desen, tek-günlük sorgu. end_date
+        parametresi EPIAS_SOURCES'ın generic method(target, target) çağrısıyla
+        uyumluluk için var, gövdeye eklenmiyor.
+        Canlı testte (2026-08) 6 farklı tarihte final PTF ile 24/24 saat
+        birebir eşleşti — ama bu değer teslim gününden ~1 gün ÖNCE, GÖP
+        açık artırması kapanır kapanmaz mevcut oluyor (final PTF ise teslim
+        gününün kendi ~14:00'ine kadar yayınlanmıyor).
+        """
+        return self._post(
+            "/v1/markets/dam/data/interim-mcp",
+            {"startDate": self._to_iso(start_date, end_of_day=False)},
+        ).get("items", [])
+
     # get_ptf_smf_sdf alias'ları — geriye dönük uyumluluk
     def get_mcp(self, start_date: str, end_date: str) -> list:
         return self.get_ptf(start_date, end_date)
