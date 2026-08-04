@@ -2627,24 +2627,44 @@ elif page == "⏰ Vardiya Optimizasyonu":
     # ── Model tabanlı vardiya önerisi ────────────────────────────────────────
     st.markdown("### 🤖 Model Tabanlı Vardiya Önerisi")
     st.caption(
-        "Bu öneri, EPİAŞ'ın henüz PTF'ini yayınlamadığı — yani gerçekten "
-        "gelecekteki — saatler için üretilen `gold_ptf_forward_predictions` "
-        "tablosunu kullanır (backtest amaçlı `gold_ptf_predictions` değil)."
+        "Bu öneri önce gerçek fiyatı (K.PTF/PTF, `mart_ptf_realized`) kullanır — "
+        "GÖP açık artırması henüz kapanmamış saatler için `gold_ptf_forward_predictions`'daki "
+        "model tahminine düşer (backtest amaçlı `gold_ptf_predictions` değil)."
     )
-    df_pred_so = query(f"""
+    df_real_so = query(f"""
+        SELECT date AS predicted_date, hour, ptf_try AS predicted_ptf, price_status
+        FROM {tbl('mart_ptf_realized')}
+        WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+        ORDER BY date, hour
+    """)
+    df_model_so = query(f"""
         SELECT predicted_date, hour, predicted_ptf
         FROM {tbl('gold_ptf_forward_predictions')}
         WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
         ORDER BY predicted_date, hour
     """)
+    if not df_real_so.empty:
+        df_real_so["predicted_date"] = pd.to_datetime(df_real_so["predicted_date"])
+    if not df_model_so.empty:
+        df_model_so["predicted_date"] = pd.to_datetime(df_model_so["predicted_date"])
+        df_model_so["price_status"] = "model"
+        if not df_real_so.empty:
+            df_model_so = df_model_so.merge(
+                df_real_so[["predicted_date", "hour"]], on=["predicted_date", "hour"],
+                how="left", indicator=True
+            )
+            df_model_so = df_model_so[df_model_so["_merge"] == "left_only"].drop(columns="_merge")
+    # Gerçek fiyat (final/interim) + kalan boşlukları model tahmini dolduruyor —
+    # "İleriye Yönelik Tahmin" panelindeki aynı mantık (mart_ptf_realized önce).
+    df_pred_so = pd.concat([df_real_so, df_model_so], ignore_index=True) if not df_model_so.empty else df_real_so
+
     if df_pred_so.empty:
         st.info(
-            "Henüz ileriye dönük tahmin verisi yok. `gold_ptf_forward_predictions`, "
-            "EPİAŞ'ın GÖP fiyatlarını yayınladığı ~14:00 TRT sonrası, saatlik "
-            "inference çalışmasıyla bir sonraki gün için üretilir."
+            "Henüz ileriye dönük veri yok. `mart_ptf_realized` (gerçek K.PTF/PTF) GÖP açık "
+            "artırması kapandığında (~14:00 TRT) otomatik dolar; `gold_ptf_forward_predictions` "
+            "ise LEP verisi geldikçe saatlik inference çalışmasıyla üretilir."
         )
     else:
-        df_pred_so["predicted_date"] = pd.to_datetime(df_pred_so["predicted_date"])
         # Sadece TAM 24 saati olan en güncel günü öner — kısmi bir günün (örn.
         # sadece saat 23) tek başına önerdiği "pencere" yanıltıcı olur.
         _day_counts = df_pred_so.groupby("predicted_date")["hour"].nunique()
@@ -2652,7 +2672,7 @@ elif page == "⏰ Vardiya Optimizasyonu":
         if _full_days.empty:
             _latest_n = int(_day_counts.max()) if not _day_counts.empty else 0
             st.info(
-                f"Henüz tam günlük (24 saat) ileriye dönük tahmin yok — en güncel günde "
+                f"Henüz tam günlük (24 saat) ileriye dönük veri yok — en güncel günde "
                 f"{_latest_n}/24 saat mevcut. EPİAŞ'ın günlük GÖP yayını (~14:00 TRT) "
                 f"sonrası, LEP verisi geldikçe saatler kademeli olarak tamamlanır."
             )
@@ -2665,10 +2685,18 @@ elif page == "⏰ Vardiya Optimizasyonu":
             best  = valid.loc[valid["window_avg"].idxmin()]
             worst = valid.loc[valid["window_avg"].idxmax()]
             saving = worst["window_avg"] - best["window_avg"]
+            _n_real  = int((df_tom["price_status"] != "model").sum())
+            _n_model = int((df_tom["price_status"] == "model").sum())
+            _source_note = (
+                "tamamen gerçekleşen GÖP fiyatı (K.PTF/PTF)" if _n_model == 0
+                else "tamamen model tahmini" if _n_real == 0
+                else f"{_n_real} saat gerçek + {_n_model} saat model tahmini"
+            )
             st.success(
                 f"**{_target_date.strftime('%d.%m.%Y')}** için önerilen vardiya başlangıcı: "
-                f"**saat {int(best['hour']):02d}:00** (tahmini ort. {best['window_avg']:,.2f} TL/MWh) — "
+                f"**saat {int(best['hour']):02d}:00** (ort. {best['window_avg']:,.2f} TL/MWh) — "
                 f"en pahalı pencereye ({int(worst['hour']):02d}:00 başlangıç, "
                 f"{worst['window_avg']:,.2f} TL/MWh) göre MWh başına "
                 f"**{saving:,.2f} TL** tasarruf potansiyeli."
             )
+            st.caption(f"Kaynak: {_source_note}.")
