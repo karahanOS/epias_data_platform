@@ -1307,10 +1307,14 @@ elif page == "🤖 PTF Tahmin & ML":
              hovermode="x unified")
         st.plotly_chart(fig_fwd, use_container_width=True, key="ml_forward")
 
-        df_forward_all = pd.concat([
-            df_real_line.rename(columns={"ptf_try": "value"})[["ts", "value"]],
-            df_model_line.rename(columns={"predicted_ptf": "value"})[["ts", "value"]],
-        ], ignore_index=True) if not df_model_line.empty or not df_real_line.empty else pd.DataFrame()
+        # Empty-but-columnless frames (pd.DataFrame() with no rows/columns) can't be
+        # selected/renamed by column name — only concat the ones that actually have data.
+        _forward_frames = []
+        if not df_real_line.empty:
+            _forward_frames.append(df_real_line.rename(columns={"ptf_try": "value"})[["ts", "value"]])
+        if not df_model_line.empty:
+            _forward_frames.append(df_model_line.rename(columns={"predicted_ptf": "value"})[["ts", "value"]])
+        df_forward_all = pd.concat(_forward_frames, ignore_index=True)
 
         fw1, fw2, fw3 = st.columns(3)
         fw1.metric("Ort. PTF", f"{df_forward_all['value'].mean():,.2f} TL/MWh")
