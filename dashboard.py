@@ -241,8 +241,13 @@ def _query_noerr(sql: str) -> pd.DataFrame:
 # indicator. Memory-only + a real ttl keeps it honestly current.
 @st.cache_data(ttl=1800)
 def get_last_updated() -> str:
-    """Return the most recent date available in mart_price_analysis."""
-    df = query(f"SELECT MAX(date) AS last_date FROM {tbl('mart_price_analysis')}")
+    """Return the most recent date the platform genuinely has real PTF data
+    for — mart_ptf_realized (final settled PTF, or K.PTF pre-appeal once the
+    day-ahead auction clears ~1 day earlier) rather than mart_price_analysis
+    (final PTF only), so this reflects the true freshness ceiling instead of
+    conservatively lagging a day behind whenever K.PTF already covers "today"
+    but the appeal window hasn't closed yet."""
+    df = query(f"SELECT MAX(date) AS last_date FROM {tbl('mart_ptf_realized')}")
     if df.empty or pd.isna(df["last_date"].iloc[0]):
         return "Bilinmiyor"
     return pd.to_datetime(df["last_date"].iloc[0]).strftime("%Y-%m-%d")
