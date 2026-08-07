@@ -403,6 +403,37 @@ def run_backtest_inference(model, required_features: list) -> int:
     return len(X_batch)
 
 
+def _cleanup_stale_forward_predictions() -> int:
+    """Delete FORWARD_PREDICTIONS_TABLE rows whose (date, hour) has since
+    acquired a real price in mart_ptf_realized.
+
+    extract_forward_features()'s anti-join only prevents *new* writes for
+    hours mart_ptf_realized already covers — it never retracts old rows once
+    an hour transitions from future to settled, so without this the table
+    accumulates permanently-stale forecasts that outlive their usefulness
+    (any consumer that doesn't independently re-derive the same anti-join,
+    e.g. a future API or a third dashboard page, would show a "prediction"
+    for an hour whose real price directly contradicts it).
+    """
+    client = get_bq_client()
+    delete_sql = f"""
+        DELETE FROM `{FORWARD_PREDICTIONS_TABLE}` p
+        WHERE EXISTS (
+            SELECT 1 FROM `{PROJECT_ID}.{DATASET_ID}.mart_ptf_realized` r
+            WHERE r.date = p.predicted_date AND r.hour = p.hour
+        )
+    """
+    try:
+        job = client.query(delete_sql)
+        job.result()
+    except NotFound:
+        return 0
+    n = job.num_dml_affected_rows or 0
+    if n:
+        logger.info(f"Cleaned up {n} stale forward prediction(s) now covered by mart_ptf_realized.")
+    return n
+
+
 def run_forward_forecast(model, required_features: list) -> int:
     """Predict every genuinely future (not-yet-settled) hour — the actual
     before-the-fact forecast used for decision support (e.g. Vardiya
@@ -410,6 +441,7 @@ def run_forward_forecast(model, required_features: list) -> int:
     tracking a "since" cursor, since day-ahead-available inputs can be
     revised between runs and we want the freshest forecast, not the first
     one ever computed for that hour. Returns the number of rows written."""
+    _cleanup_stale_forward_predictions()
     df_forward = extract_forward_features()
     if df_forward.empty:
         logger.info("Forward forecast: no genuinely future rows available yet.")

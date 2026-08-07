@@ -1197,19 +1197,23 @@ elif page == "🤖 PTF Tahmin & ML":
     """)
     if not df_pred.empty:
         df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
-        df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").astype(int)
+        df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").fillna(-1).astype(int)
 
     # Genuinely future predictions — built from day-ahead-available features
     # only (LEP, RES forecast, AIC, lagged price/SMF, etc; see
     # mart_ptf_forward_features.sql), written by run_forward_forecast().
+    # date >= CURRENT_DATE('Asia/Istanbul') (not a multi-day lookback) matters:
+    # this table is meant to hold only genuinely-future rows, but a lookback
+    # window let stale rows for now-settled dates through, since df_real_fwd
+    # below (restricted to today-or-later) could never anti-join against them.
     df_fwd_pred = query(f"""
         SELECT predicted_date, hour, predicted_ptf FROM {tbl('gold_ptf_forward_predictions')}
-        WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+        WHERE predicted_date >= CURRENT_DATE('Asia/Istanbul')
         ORDER BY predicted_date, hour
     """)
     if not df_fwd_pred.empty:
         df_fwd_pred["predicted_date"] = pd.to_datetime(df_fwd_pred["predicted_date"])
-        df_fwd_pred["hour"] = pd.to_numeric(df_fwd_pred["hour"], errors="coerce").astype(int)
+        df_fwd_pred["hour"] = pd.to_numeric(df_fwd_pred["hour"], errors="coerce").fillna(-1).astype(int)
 
     # Real (not modeled) future price — K.PTF becomes available ~1 day before
     # the delivery day even starts, as soon as the day-ahead auction clears
@@ -1224,7 +1228,7 @@ elif page == "🤖 PTF Tahmin & ML":
     """)
     if not df_real_fwd.empty:
         df_real_fwd["date"] = pd.to_datetime(df_real_fwd["date"])
-        df_real_fwd["hour"] = pd.to_numeric(df_real_fwd["hour"], errors="coerce").astype(int)
+        df_real_fwd["hour"] = pd.to_numeric(df_real_fwd["hour"], errors="coerce").fillna(-1).astype(int)
 
     if df_lag.empty:
         st.warning("Veri bulunamadı.")
@@ -1327,11 +1331,17 @@ elif page == "🤖 PTF Tahmin & ML":
         if not df_model_line.empty:
             _forward_frames.append(df_model_line.rename(columns={"predicted_ptf": "value"})[["ts", "value"]])
         df_forward_all = pd.concat(_forward_frames, ignore_index=True)
+        _forward_values = df_forward_all["value"].dropna()
 
         fw1, fw2, fw3 = st.columns(3)
-        fw1.metric("Ort. PTF", f"{df_forward_all['value'].mean():,.2f} TL/MWh")
-        fw2.metric("Maks PTF", f"{df_forward_all['value'].max():,.2f} TL/MWh")
-        fw3.metric("Min PTF",  f"{df_forward_all['value'].min():,.2f} TL/MWh")
+        if _forward_values.empty:
+            fw1.metric("Ort. PTF", "—")
+            fw2.metric("Maks PTF", "—")
+            fw3.metric("Min PTF",  "—")
+        else:
+            fw1.metric("Ort. PTF", f"{_forward_values.mean():,.2f} TL/MWh")
+            fw2.metric("Maks PTF", f"{_forward_values.max():,.2f} TL/MWh")
+            fw3.metric("Min PTF",  f"{_forward_values.min():,.2f} TL/MWh")
         if not df_real_line.empty:
             st.caption(
                 f"🔵 {len(df_real_line)} saat gerçekleşen GÖP fiyatı (K.PTF/PTF) — "
@@ -2647,16 +2657,23 @@ elif page == "⏰ Vardiya Optimizasyonu":
         "GÖP açık artırması henüz kapanmamış saatler için `gold_ptf_forward_predictions`'daki "
         "model tahminine düşer (backtest amaçlı `gold_ptf_predictions` değil)."
     )
+    # CURRENT_DATE('Asia/Istanbul'), not bare CURRENT_DATE() (UTC) — matches the
+    # convention ptf_inference.py's extract_forward_features() documents as
+    # necessary, and keeps this in sync with the "İleriye Yönelik Tahmin" panel's
+    # own real-price query. The two queries below intentionally share this same
+    # 3-day-lookback window with EACH OTHER (unlike that panel's, which is
+    # today-only) — this page wants the most recent full day even if that day
+    # has just elapsed, so a short lookback is correct here, not a bug.
     df_real_so = query(f"""
         SELECT date AS predicted_date, hour, ptf_try AS predicted_ptf, price_status
         FROM {tbl('mart_ptf_realized')}
-        WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+        WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 3 DAY)
         ORDER BY date, hour
     """)
     df_model_so = query(f"""
         SELECT predicted_date, hour, predicted_ptf
         FROM {tbl('gold_ptf_forward_predictions')}
-        WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)
+        WHERE predicted_date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 3 DAY)
         ORDER BY predicted_date, hour
     """)
     if not df_real_so.empty:
@@ -2670,9 +2687,16 @@ elif page == "⏰ Vardiya Optimizasyonu":
                 how="left", indicator=True
             )
             df_model_so = df_model_so[df_model_so["_merge"] == "left_only"].drop(columns="_merge")
-    # Gerçek fiyat (final/interim) + kalan boşlukları model tahmini dolduruyor —
-    # "İleriye Yönelik Tahmin" panelindeki aynı mantık (mart_ptf_realized önce).
+    # Gerçek fiyat (final/interim) tercih edilir, kalan boşlukları model tahmini
+    # dolduruyor — "İleriye Yönelik Tahmin" panelindeki ile aynı ÖNCELİK kuralı
+    # (real üstün), ama pencereler kasıtlı olarak farklı (yukarıdaki not).
     df_pred_so = pd.concat([df_real_so, df_model_so], ignore_index=True) if not df_model_so.empty else df_real_so
+    # Defensive: a duplicate (predicted_date, hour) row (e.g. a transient overlap
+    # during mart_ptf_realized's final/interim transition) would corrupt the
+    # positional rolling(8) window below without this — nunique() alone can't
+    # detect "24 distinct hours but 25 rows".
+    if not df_pred_so.empty:
+        df_pred_so = df_pred_so.drop_duplicates(subset=["predicted_date", "hour"])
 
     if df_pred_so.empty:
         st.info(

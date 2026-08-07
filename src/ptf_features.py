@@ -141,10 +141,13 @@ def build_ptf_features(df: pd.DataFrame) -> pd.DataFrame:
 # accuracy — while the leak-free model still beat a naive T-24h baseline in
 # 5/5 windows (mean MASE 0.666), confirming genuine skill survives the cut.
 # Also matters for genuinely-forward predictions specifically (not just
-# backtest honesty): gold_ptf_predictions rows for hours that haven't
-# happened yet always have these columns NaN→0 at inference (confirmed via
-# BigQuery time-travel on 2026-08-03), so a model trained expecting mostly
-# real values for them would have suffered train/serve skew on live use.
+# backtest honesty): rows for hours that haven't happened yet always have
+# these columns NaN→0 at inference (confirmed via BigQuery time-travel on
+# 2026-08-03), so a model trained expecting mostly real values for them would
+# have suffered train/serve skew on live use. As of 2026-08-04's
+# gold_ptf_predictions/gold_ptf_forward_predictions split, this specifically
+# describes gold_ptf_forward_predictions — gold_ptf_predictions is
+# backtest-only now (see ptf_inference.py) and never contains a future row.
 # Removed: actual_consumption_mwh, consumption_error, wind_generation_mwh,
 # solar_generation_mwh, hydro_generation_mwh, gas_generation_mwh,
 # total_generation_mwh, actual_renewable_ratio, renewable_ratio,
