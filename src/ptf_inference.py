@@ -40,6 +40,10 @@ PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_ptf_predictions"
 # decision support, e.g. the Vardiya Optimizasyonu page).
 FORWARD_PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_ptf_forward_predictions"
 
+# Archive of resolved forward predictions (predicted vs. actual, plus genuine
+# forecast lead time) — see _cleanup_stale_forward_predictions().
+FORWARD_ACCURACY_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_ptf_forward_accuracy"
+
 # Lookback for lag-168 + rolling-168 features, plus a full day's worth of
 # margin (up to 24 rows can be newly-predicted in one run — see module
 # docstring) so even the oldest row in a full-day batch still has 168 true
@@ -403,19 +407,77 @@ def run_backtest_inference(model, required_features: list) -> int:
     return len(X_batch)
 
 
+# Schema for gold_ptf_forward_accuracy — the honest accuracy signal for
+# genuine forward prediction. Unlike gold_ptf_predictions' backtest (which
+# only ever predicts hours whose price is already known), a forward
+# prediction is written before the day-ahead auction has even run for that
+# hour — once it resolves, this table is where predicted-vs-actual gets
+# preserved instead of just being thrown away by the cleanup below.
+_FORWARD_ACCURACY_SCHEMA = [
+    bigquery.SchemaField("predicted_date",       "DATE",      mode="REQUIRED"),
+    bigquery.SchemaField("hour",                 "INTEGER",   mode="REQUIRED"),
+    bigquery.SchemaField("predicted_ptf",        "FLOAT64",   mode="REQUIRED"),
+    bigquery.SchemaField("predicted_at",         "TIMESTAMP", mode="REQUIRED",
+                         description="When this forecast was last (re-)written — run_forward_forecast() re-writes every still-future row on every run, so this is the freshest forecast before resolution, not necessarily the first-ever one"),
+    bigquery.SchemaField("actual_ptf",           "FLOAT64",   mode="REQUIRED"),
+    bigquery.SchemaField("actual_price_status",  "STRING",    mode="REQUIRED",
+                         description="'final' or 'interim' — which mart_ptf_realized source resolved this hour"),
+    bigquery.SchemaField("lead_time_hours",      "FLOAT64",   mode="REQUIRED",
+                         description="Hours between predicted_at and the target hour's real datetime — how far ahead of settlement this was genuinely forecast blind"),
+    bigquery.SchemaField("archived_at",          "TIMESTAMP", mode="REQUIRED"),
+]
+
+
+def _ensure_forward_accuracy_table(client: bigquery.Client) -> None:
+    dataset_ref = bigquery.DatasetReference(PROJECT_ID, DATASET_ID)
+    table_ref   = dataset_ref.table("gold_ptf_forward_accuracy")
+    table       = bigquery.Table(table_ref, schema=_FORWARD_ACCURACY_SCHEMA)
+    table.time_partitioning = bigquery.TimePartitioning(
+        type_=bigquery.TimePartitioningType.DAY,
+        field="predicted_date",
+    )
+    created = client.create_table(table, exists_ok=True)
+    if created.created is not None:
+        logger.info(f"✅ Created BigQuery table: {FORWARD_ACCURACY_TABLE}")
+
+
 def _cleanup_stale_forward_predictions() -> int:
-    """Delete FORWARD_PREDICTIONS_TABLE rows whose (date, hour) has since
-    acquired a real price in mart_ptf_realized.
+    """Archive-then-delete FORWARD_PREDICTIONS_TABLE rows whose (date, hour)
+    has since acquired a real price in mart_ptf_realized.
 
     extract_forward_features()'s anti-join only prevents *new* writes for
     hours mart_ptf_realized already covers — it never retracts old rows once
-    an hour transitions from future to settled, so without this the table
-    accumulates permanently-stale forecasts that outlive their usefulness
-    (any consumer that doesn't independently re-derive the same anti-join,
-    e.g. a future API or a third dashboard page, would show a "prediction"
-    for an hour whose real price directly contradicts it).
+    an hour transitions from future to settled, so without archiving, the
+    table would either accumulate permanently-stale forecasts (any consumer
+    that doesn't independently re-derive the same anti-join would show a
+    "prediction" for an hour whose real price contradicts it) or, if simply
+    deleted, the platform would throw away its own genuinely-blind D+1/D+2
+    forecasts the moment they resolve, losing the one dataset that can
+    honestly answer "how accurate is our forward forecast in practice."
+    The archive INSERT is idempotent (NOT EXISTS on the natural key) so a
+    retried/overlapping run can't double-archive the same row.
     """
     client = get_bq_client()
+    _ensure_forward_accuracy_table(client)
+
+    archive_sql = f"""
+        INSERT INTO `{FORWARD_ACCURACY_TABLE}`
+            (predicted_date, hour, predicted_ptf, predicted_at,
+             actual_ptf, actual_price_status, lead_time_hours, archived_at)
+        SELECT
+            p.predicted_date, p.hour, p.predicted_ptf, p.predicted_at,
+            r.ptf_try, r.price_status,
+            TIMESTAMP_DIFF(r.datetime, p.predicted_at, HOUR) AS lead_time_hours,
+            CURRENT_TIMESTAMP() AS archived_at
+        FROM `{FORWARD_PREDICTIONS_TABLE}` p
+        JOIN `{PROJECT_ID}.{DATASET_ID}.mart_ptf_realized` r
+          ON r.date = p.predicted_date AND r.hour = p.hour
+        WHERE NOT EXISTS (
+            SELECT 1 FROM `{FORWARD_ACCURACY_TABLE}` a
+            WHERE a.predicted_date = p.predicted_date AND a.hour = p.hour
+              AND a.predicted_at = p.predicted_at
+        )
+    """
     delete_sql = f"""
         DELETE FROM `{FORWARD_PREDICTIONS_TABLE}` p
         WHERE EXISTS (
@@ -424,13 +486,14 @@ def _cleanup_stale_forward_predictions() -> int:
         )
     """
     try:
+        client.query(archive_sql).result()
         job = client.query(delete_sql)
         job.result()
     except NotFound:
         return 0
     n = job.num_dml_affected_rows or 0
     if n:
-        logger.info(f"Cleaned up {n} stale forward prediction(s) now covered by mart_ptf_realized.")
+        logger.info(f"Archived + cleaned up {n} stale forward prediction(s) now covered by mart_ptf_realized.")
     return n
 
 
