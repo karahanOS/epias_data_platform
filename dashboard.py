@@ -233,7 +233,13 @@ def _query_noerr(sql: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 # ── DATA FRESHNESS ────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800, persist="disk")
+# NOT persist="disk": Streamlit silently ignores ttl for persisted caches (logs
+# "Persistent cached functions currently don't support TTL"), so a disk-backed
+# entry here would never expire on its own — it'd freeze at whatever date was
+# cached the first time this ran (e.g. right after a deploy) and stay stale
+# indefinitely afterward, which defeats the whole point of a freshness
+# indicator. Memory-only + a real ttl keeps it honestly current.
+@st.cache_data(ttl=1800)
 def get_last_updated() -> str:
     """Return the most recent date available in mart_price_analysis."""
     df = query(f"SELECT MAX(date) AS last_date FROM {tbl('mart_price_analysis')}")
@@ -286,6 +292,7 @@ with st.sidebar:
     if st.button("🔄 Veriyi Yenile", use_container_width=True):
         query.clear()
         _query_noerr.clear()
+        get_last_updated.clear()
         st.rerun()
 
     # Data freshness indicator
