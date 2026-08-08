@@ -23,8 +23,8 @@
 -- underlying tables directly (matching what the dashboard did before this
 -- model existed), while still centralizing the coalesce SQL in one place.
 --
--- NOT referenced via {{ source(...) }}: gold_ptf_forward_predictions lives
--- in this same dbt target dataset (epias_gold) but isn't dbt-managed —
+-- NOT referenced via a dbt source() macro: gold_ptf_forward_predictions
+-- lives in this same dbt target dataset (epias_gold) but isn't dbt-managed —
 -- source() is meant for genuinely external (pre-dbt) data, so this uses
 -- target.database/target.schema directly instead.
 
