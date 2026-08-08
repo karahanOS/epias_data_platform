@@ -1199,36 +1199,21 @@ elif page == "🤖 PTF Tahmin & ML":
         df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
         df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").fillna(-1).astype(int)
 
-    # Genuinely future predictions — built from day-ahead-available features
-    # only (LEP, RES forecast, AIC, lagged price/SMF, etc; see
-    # mart_ptf_forward_features.sql), written by run_forward_forecast().
-    # date >= CURRENT_DATE('Asia/Istanbul') (not a multi-day lookback) matters:
-    # this table is meant to hold only genuinely-future rows, but a lookback
-    # window let stale rows for now-settled dates through, since df_real_fwd
-    # below (restricted to today-or-later) could never anti-join against them.
-    df_fwd_pred = query(f"""
-        SELECT predicted_date, hour, predicted_ptf FROM {tbl('gold_ptf_forward_predictions')}
-        WHERE predicted_date >= CURRENT_DATE('Asia/Istanbul')
-        ORDER BY predicted_date, hour
-    """)
-    if not df_fwd_pred.empty:
-        df_fwd_pred["predicted_date"] = pd.to_datetime(df_fwd_pred["predicted_date"])
-        df_fwd_pred["hour"] = pd.to_numeric(df_fwd_pred["hour"], errors="coerce").fillna(-1).astype(int)
-
-    # Real (not modeled) future price — K.PTF becomes available ~1 day before
-    # the delivery day even starts, as soon as the day-ahead auction clears
-    # (~14:00 TRT the day before), while the final PTF withholds the same
-    # hour until delivery day's own ~14:00. mart_ptf_realized coalesces both
-    # (price_status='final'|'interim'); wherever it has a row, that's the
-    # real cleared price, not a prediction — see mart_ptf_realized.sql.
-    df_real_fwd = query(f"""
-        SELECT date, hour, ptf_try, price_status FROM {tbl('mart_ptf_realized')}
+    # Single "what do we currently think this hour's price is" series — real
+    # (final PTF or pre-appeal K.PTF) preferred, XGBoost forward prediction
+    # only for hours neither covers yet. value_source ('final'|'interim'|
+    # 'model') replaces what used to be a hand-rolled pandas anti-join here —
+    # see mart_ptf_forecast_outlook.sql (ADR-0005) for why that duplication
+    # was worth centralizing into one dbt view.
+    df_outlook = query(f"""
+        SELECT date, hour, datetime, value, value_source FROM {tbl('mart_ptf_forecast_outlook')}
         WHERE date >= CURRENT_DATE('Asia/Istanbul')
         ORDER BY date, hour
     """)
-    if not df_real_fwd.empty:
-        df_real_fwd["date"] = pd.to_datetime(df_real_fwd["date"])
-        df_real_fwd["hour"] = pd.to_numeric(df_real_fwd["hour"], errors="coerce").fillna(-1).astype(int)
+    if not df_outlook.empty:
+        df_outlook["date"] = pd.to_datetime(df_outlook["date"])
+        df_outlook["datetime"] = pd.to_datetime(df_outlook["datetime"], utc=True).dt.tz_localize(None)
+        df_outlook["hour"] = pd.to_numeric(df_outlook["hour"], errors="coerce").fillna(-1).astype(int)
 
     if df_lag.empty:
         st.warning("Veri bulunamadı.")
@@ -1267,30 +1252,21 @@ elif page == "🤖 PTF Tahmin & ML":
         st.plotly_chart(fig2, use_container_width=True, key="ml_lag168")
 
     # ── FORWARD FORECAST PANEL ────────────────────────────────────────────────
-    # Two distinct series, never blended into one line:
-    #   - df_real_fwd (mart_ptf_realized): the REAL cleared price (final PTF
-    #     or pre-appeal K.PTF) for hours where the day-ahead auction already
-    #     happened — not a prediction.
-    #   - df_fwd_pred (gold_ptf_forward_predictions), restricted to hours
-    #     df_real_fwd does NOT cover: genuine XGBoost predictions for D+2 and
-    #     beyond, where no auction has run yet at all.
+    # df_outlook (mart_ptf_forecast_outlook) already carries the real-vs-model
+    # precedence — just split by value_source for the two chart traces.
     st.markdown("### 🔮 İleriye Yönelik Tahmin (Gerçek Forward-Looking)")
 
-    df_real_line = pd.DataFrame()
-    if not df_real_fwd.empty:
-        df_real_line = df_real_fwd.copy()
-        df_real_line["ts"] = df_real_line["date"] + pd.to_timedelta(df_real_line["hour"], unit="h")
-        df_real_line = df_real_line.sort_values("ts")
+    if df_outlook.empty:
+        # query()'s generic exception handler returns a columnless
+        # pd.DataFrame() (not just on BQNotFound) — guard before indexing by
+        # column name, same class of bug this session's code review flagged.
+        df_real_line  = pd.DataFrame()
+        df_model_line = pd.DataFrame()
+    else:
+        df_real_line  = df_outlook[df_outlook["value_source"] != "model"].sort_values("datetime")
+        df_model_line = df_outlook[df_outlook["value_source"] == "model"].sort_values("datetime")
 
-    df_model_line = pd.DataFrame()
-    if not df_fwd_pred.empty:
-        df_model_line = df_fwd_pred.copy()
-        df_model_line["ts"] = df_model_line["predicted_date"] + pd.to_timedelta(df_model_line["hour"], unit="h")
-        if not df_real_line.empty:
-            df_model_line = df_model_line[~df_model_line["ts"].isin(df_real_line["ts"])]
-        df_model_line = df_model_line.sort_values("ts")
-
-    if df_real_line.empty and df_model_line.empty:
+    if df_outlook.empty:
         st.info(
             "**Henüz ileriye dönük veri yok.**  \n"
             "`mart_ptf_realized` (gerçek K.PTF/PTF), GÖP açık artırması kapandığında "
@@ -1302,7 +1278,7 @@ elif page == "🤖 PTF Tahmin & ML":
         fig_fwd = go.Figure()
         if not df_real_line.empty:
             fig_fwd.add_trace(go.Scatter(
-                x=df_real_line["ts"], y=df_real_line["ptf_try"],
+                x=df_real_line["datetime"], y=df_real_line["value"],
                 mode="lines+markers",
                 name="Gerçekleşen GÖP (K.PTF/PTF)",
                 line=dict(color="#00d4ff", width=2.5),
@@ -1311,7 +1287,7 @@ elif page == "🤖 PTF Tahmin & ML":
             ))
         if not df_model_line.empty:
             fig_fwd.add_trace(go.Scatter(
-                x=df_model_line["ts"], y=df_model_line["predicted_ptf"],
+                x=df_model_line["datetime"], y=df_model_line["value"],
                 mode="lines+markers",
                 name="XGBoost Tahmin (D+2 ve sonrası)",
                 line=dict(color="#ff6b35", width=2.5, dash="dash"),
@@ -1323,16 +1299,7 @@ elif page == "🤖 PTF Tahmin & ML":
              hovermode="x unified")
         st.plotly_chart(fig_fwd, use_container_width=True, key="ml_forward")
 
-        # Empty-but-columnless frames (pd.DataFrame() with no rows/columns) can't be
-        # selected/renamed by column name — only concat the ones that actually have data.
-        _forward_frames = []
-        if not df_real_line.empty:
-            _forward_frames.append(df_real_line.rename(columns={"ptf_try": "value"})[["ts", "value"]])
-        if not df_model_line.empty:
-            _forward_frames.append(df_model_line.rename(columns={"predicted_ptf": "value"})[["ts", "value"]])
-        df_forward_all = pd.concat(_forward_frames, ignore_index=True)
-        _forward_values = df_forward_all["value"].dropna()
-
+        _forward_values = df_outlook["value"].dropna()
         fw1, fw2, fw3 = st.columns(3)
         if _forward_values.empty:
             fw1.metric("Ort. PTF", "—")
@@ -1346,6 +1313,58 @@ elif page == "🤖 PTF Tahmin & ML":
             st.caption(
                 f"🔵 {len(df_real_line)} saat gerçekleşen GÖP fiyatı (K.PTF/PTF) — "
                 f"tahmin değil. 🟠 {len(df_model_line)} saat model tahmini."
+            )
+
+    # ── FORWARD FORECAST ACCURACY (ADR-0005) ──────────────────────────────────
+    # gold_ptf_forward_accuracy archives predicted-vs-actual for every genuine
+    # forward prediction once it resolves (see ptf_inference.py's
+    # _cleanup_stale_forward_predictions()) — this is the honest signal for
+    # "how good is a genuinely-blind D+1/D+2 forecast in practice", distinct
+    # from the backtest section below (which only ever predicts hours whose
+    # price was already known).
+    st.markdown("### 📐 İleriye Dönük Tahmin Doğruluğu (Arşiv)")
+    df_fwd_acc = query(f"""
+        SELECT predicted_date, hour, predicted_ptf, actual_ptf, lead_time_hours,
+               ABS(predicted_ptf - actual_ptf) AS abs_error
+        FROM {tbl('gold_ptf_forward_accuracy')}
+        ORDER BY predicted_date DESC, hour DESC
+        LIMIT 500
+    """)
+    if df_fwd_acc.empty:
+        st.info(
+            "Henüz çözülmüş (gerçek fiyatı bilinen) bir ileriye dönük tahmin yok. "
+            "Bir tahmin, hedef saatin gerçek fiyatı `mart_ptf_realized`'a girdiğinde "
+            "buraya otomatik arşivlenir."
+        )
+    else:
+        for col in ("predicted_ptf", "actual_ptf", "lead_time_hours", "abs_error"):
+            df_fwd_acc[col] = pd.to_numeric(df_fwd_acc[col], errors="coerce")
+        fa1, fa2, fa3 = st.columns(3)
+        fa1.metric("Ort. Mutlak Hata (MAE)", f"{df_fwd_acc['abs_error'].mean():,.2f} TL/MWh")
+        fa2.metric("Örneklem", f"{len(df_fwd_acc)} saat")
+        fa3.metric("Ort. Lead Time", f"{df_fwd_acc['lead_time_hours'].mean():,.1f} saat")
+
+        # Lead-time bucket'larına göre MAE — decay düzeltmesinin (ADR-0005,
+        # mart_ptf_forward_features.sql) ufuk büyüdükçe hatayı gerçekten
+        # bastırıp bastırmadığını zaman içinde görmek için.
+        _bins = [0, 6, 12, 24, 36, 1000]
+        _labels = ["0-6s", "6-12s", "12-24s", "24-36s", "36s+"]
+        df_fwd_acc["lead_bucket"] = pd.cut(df_fwd_acc["lead_time_hours"], bins=_bins, labels=_labels)
+        bucket_mae = df_fwd_acc.groupby("lead_bucket", observed=True)["abs_error"].agg(["mean", "count"]).reset_index()
+        bucket_mae.columns = ["lead_bucket", "mae", "n"]
+
+        fig_acc = px.bar(bucket_mae, x="lead_bucket", y="mae", text="n",
+            color_discrete_sequence=["#00d4ff"],
+            title="Lead Time'a Göre Ortalama Mutlak Hata",
+            labels={"lead_bucket": "Tahmin Ufku (saat önce)", "mae": "MAE (TL/MWh)"})
+        fig_acc.update_traces(texttemplate="n=%{text}", textposition="outside")
+        dark(fig_acc, height=340, yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
+        st.plotly_chart(fig_acc, use_container_width=True, key="ml_fwd_accuracy")
+
+        with st.expander(f"Son {min(len(df_fwd_acc), 50)} arşivlenmiş tahmin"):
+            st.dataframe(
+                df_fwd_acc.head(50)[["predicted_date", "hour", "predicted_ptf", "actual_ptf", "lead_time_hours", "abs_error"]],
+                use_container_width=True, hide_index=True,
             )
 
     # ── BACKTESTING ───────────────────────────────────────────────────────────
@@ -2657,45 +2676,21 @@ elif page == "⏰ Vardiya Optimizasyonu":
         "GÖP açık artırması henüz kapanmamış saatler için `gold_ptf_forward_predictions`'daki "
         "model tahminine düşer (backtest amaçlı `gold_ptf_predictions` değil)."
     )
-    # CURRENT_DATE('Asia/Istanbul'), not bare CURRENT_DATE() (UTC) — matches the
-    # convention ptf_inference.py's extract_forward_features() documents as
-    # necessary, and keeps this in sync with the "İleriye Yönelik Tahmin" panel's
-    # own real-price query. The two queries below intentionally share this same
-    # 3-day-lookback window with EACH OTHER (unlike that panel's, which is
-    # today-only) — this page wants the most recent full day even if that day
-    # has just elapsed, so a short lookback is correct here, not a bug.
-    df_real_so = query(f"""
-        SELECT date AS predicted_date, hour, ptf_try AS predicted_ptf, price_status
-        FROM {tbl('mart_ptf_realized')}
+    # mart_ptf_forecast_outlook already carries the real-vs-model precedence
+    # (ADR-0005) — this page just needs a wider lookback than the "İleriye
+    # Yönelik Tahmin" panel's today-only window, since it wants the most
+    # recent FULL day even if that day has just elapsed.
+    df_pred_so = query(f"""
+        SELECT date AS predicted_date, hour, value AS predicted_ptf, value_source AS price_status
+        FROM {tbl('mart_ptf_forecast_outlook')}
         WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 3 DAY)
         ORDER BY date, hour
     """)
-    df_model_so = query(f"""
-        SELECT predicted_date, hour, predicted_ptf
-        FROM {tbl('gold_ptf_forward_predictions')}
-        WHERE predicted_date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 3 DAY)
-        ORDER BY predicted_date, hour
-    """)
-    if not df_real_so.empty:
-        df_real_so["predicted_date"] = pd.to_datetime(df_real_so["predicted_date"])
-    if not df_model_so.empty:
-        df_model_so["predicted_date"] = pd.to_datetime(df_model_so["predicted_date"])
-        df_model_so["price_status"] = "model"
-        if not df_real_so.empty:
-            df_model_so = df_model_so.merge(
-                df_real_so[["predicted_date", "hour"]], on=["predicted_date", "hour"],
-                how="left", indicator=True
-            )
-            df_model_so = df_model_so[df_model_so["_merge"] == "left_only"].drop(columns="_merge")
-    # Gerçek fiyat (final/interim) tercih edilir, kalan boşlukları model tahmini
-    # dolduruyor — "İleriye Yönelik Tahmin" panelindeki ile aynı ÖNCELİK kuralı
-    # (real üstün), ama pencereler kasıtlı olarak farklı (yukarıdaki not).
-    df_pred_so = pd.concat([df_real_so, df_model_so], ignore_index=True) if not df_model_so.empty else df_real_so
-    # Defensive: a duplicate (predicted_date, hour) row (e.g. a transient overlap
-    # during mart_ptf_realized's final/interim transition) would corrupt the
-    # positional rolling(8) window below without this — nunique() alone can't
-    # detect "24 distinct hours but 25 rows".
     if not df_pred_so.empty:
+        df_pred_so["predicted_date"] = pd.to_datetime(df_pred_so["predicted_date"])
+        # Defensive: a duplicate (predicted_date, hour) row would corrupt the
+        # positional rolling(8) window below — nunique() alone can't detect
+        # "24 distinct hours but 25 rows".
         df_pred_so = df_pred_so.drop_duplicates(subset=["predicted_date", "hour"])
 
     if df_pred_so.empty:
