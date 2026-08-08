@@ -1205,15 +1205,37 @@ elif page == "🤖 PTF Tahmin & ML":
     # 'model') replaces what used to be a hand-rolled pandas anti-join here —
     # see mart_ptf_forecast_outlook.sql (ADR-0005) for why that duplication
     # was worth centralizing into one dbt view.
+    # Window starts 7 days back (not just "today") so the real/actual line
+    # extends far enough to sit behind the archived prediction markers below
+    # — safe to widen: gold_ptf_forward_predictions no longer holds rows for
+    # resolved past dates (they're archived+deleted daily), so this can only
+    # pull in more 'final'/'interim' history, never a stale 'model' row.
     df_outlook = query(f"""
         SELECT date, hour, datetime, value, value_source FROM {tbl('mart_ptf_forecast_outlook')}
-        WHERE date >= CURRENT_DATE('Asia/Istanbul')
+        WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 7 DAY)
         ORDER BY date, hour
     """)
     if not df_outlook.empty:
         df_outlook["date"] = pd.to_datetime(df_outlook["date"])
         df_outlook["datetime"] = pd.to_datetime(df_outlook["datetime"], utc=True).dt.tz_localize(None)
         df_outlook["hour"] = pd.to_numeric(df_outlook["hour"], errors="coerce").fillna(-1).astype(int)
+
+    # Archived forward predictions (resolved — see ptf_inference.py's
+    # _cleanup_stale_forward_predictions()) overlaid on the same chart below,
+    # so "what we predicted" and "what actually happened" (the line above)
+    # sit on the same timeline instead of a separate panel.
+    df_fwd_acc = query(f"""
+        SELECT predicted_date, hour, predicted_ptf, actual_ptf, lead_time_hours
+        FROM {tbl('gold_ptf_forward_accuracy')}
+        WHERE predicted_date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 7 DAY)
+        ORDER BY predicted_date, hour
+    """)
+    if not df_fwd_acc.empty:
+        df_fwd_acc["predicted_date"] = pd.to_datetime(df_fwd_acc["predicted_date"])
+        df_fwd_acc["hour"] = pd.to_numeric(df_fwd_acc["hour"], errors="coerce").fillna(-1).astype(int)
+        df_fwd_acc["ts"] = df_fwd_acc["predicted_date"] + pd.to_timedelta(df_fwd_acc["hour"], unit="h")
+        for col in ("predicted_ptf", "actual_ptf", "lead_time_hours"):
+            df_fwd_acc[col] = pd.to_numeric(df_fwd_acc[col], errors="coerce")
 
     if df_lag.empty:
         st.warning("Veri bulunamadı.")
@@ -1293,8 +1315,28 @@ elif page == "🤖 PTF Tahmin & ML":
                 line=dict(color="#ff6b35", width=2.5, dash="dash"),
                 hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
             ))
-        dark(fig_fwd, height=360,
-             title="Önümüzdeki Saatlik PTF — Gerçekleşen (K.PTF/PTF) vs Model Tahmini",
+        # Archived (resolved) forward predictions — what the model guessed for
+        # an hour that has since settled, plotted at that same hour so it
+        # sits directly against the real (blue) line above it: distance
+        # between the marker and the line IS the historical forecast error.
+        if not df_fwd_acc.empty:
+            fig_fwd.add_trace(go.Scatter(
+                x=df_fwd_acc["ts"], y=df_fwd_acc["predicted_ptf"],
+                mode="markers",
+                name="Geçmiş Model Tahmini (arşiv)",
+                marker=dict(
+                    size=8, symbol="diamond", color="#facc15",
+                    line=dict(width=0.5, color="rgba(0,0,0,0.4)"),
+                ),
+                customdata=df_fwd_acc[["actual_ptf", "lead_time_hours"]],
+                hovertemplate=(
+                    "%{x|%d %b %H:%M}<br>Tahmin: %{y:,.0f} TL/MWh<br>"
+                    "Gerçekleşen: %{customdata[0]:,.0f} TL/MWh<br>"
+                    "Lead: %{customdata[1]:.0f} saat<extra></extra>"
+                ),
+            ))
+        dark(fig_fwd, height=380,
+             title="Saatlik PTF — Gerçekleşen (K.PTF/PTF), Canlı ve Geçmiş Model Tahmini",
              yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
              hovermode="x unified")
         st.plotly_chart(fig_fwd, use_container_width=True, key="ml_forward")
@@ -1309,84 +1351,11 @@ elif page == "🤖 PTF Tahmin & ML":
             fw1.metric("Ort. PTF", f"{_forward_values.mean():,.2f} TL/MWh")
             fw2.metric("Maks PTF", f"{_forward_values.max():,.2f} TL/MWh")
             fw3.metric("Min PTF",  f"{_forward_values.min():,.2f} TL/MWh")
-        if not df_real_line.empty:
-            st.caption(
-                f"🔵 {len(df_real_line)} saat gerçekleşen GÖP fiyatı (K.PTF/PTF) — "
-                f"tahmin değil. 🟠 {len(df_model_line)} saat model tahmini."
-            )
-
-    # ── FORWARD FORECAST ACCURACY (ADR-0005) ──────────────────────────────────
-    # gold_ptf_forward_accuracy archives predicted-vs-actual for every genuine
-    # forward prediction once it resolves (see ptf_inference.py's
-    # _cleanup_stale_forward_predictions()) — this is the honest signal for
-    # "how good is a genuinely-blind D+1/D+2 forecast in practice", distinct
-    # from the backtest section below (which only ever predicts hours whose
-    # price was already known).
-    st.markdown("### 📐 İleriye Dönük Tahmin Doğruluğu (Arşiv)")
-    df_fwd_acc = query(f"""
-        SELECT predicted_date, hour, predicted_ptf, actual_ptf, lead_time_hours,
-               ABS(predicted_ptf - actual_ptf) AS abs_error
-        FROM {tbl('gold_ptf_forward_accuracy')}
-        ORDER BY predicted_date DESC, hour DESC
-        LIMIT 500
-    """)
-    if df_fwd_acc.empty:
-        st.info(
-            "Henüz çözülmüş (gerçek fiyatı bilinen) bir ileriye dönük tahmin yok. "
-            "Bir tahmin, hedef saatin gerçek fiyatı `mart_ptf_realized`'a girdiğinde "
-            "buraya otomatik arşivlenir."
+        st.caption(
+            f"🔵 {len(df_real_line)} saat gerçekleşen GÖP fiyatı (K.PTF/PTF) — tahmin değil. "
+            f"🟠 {len(df_model_line)} saat canlı model tahmini. "
+            f"🔶 {len(df_fwd_acc)} saat geçmiş (çözülmüş) model tahmini arşivi."
         )
-    else:
-        for col in ("predicted_ptf", "actual_ptf", "lead_time_hours", "abs_error"):
-            df_fwd_acc[col] = pd.to_numeric(df_fwd_acc[col], errors="coerce")
-        fa1, fa2, fa3 = st.columns(3)
-        fa1.metric("Ort. Mutlak Hata (MAE)", f"{df_fwd_acc['abs_error'].mean():,.2f} TL/MWh")
-        fa2.metric("Örneklem", f"{len(df_fwd_acc)} saat")
-        fa3.metric("Ort. Lead Time", f"{df_fwd_acc['lead_time_hours'].mean():,.1f} saat")
-
-        # Tahmin vs gerçekleşen scatter — y=x çizgisine yakınlık kalibrasyonu
-        # gösterir (üstünde = model az tahmin etmiş, altında = fazla tahmin
-        # etmiş). Renk lead_time_hours'a göre — ufuk büyüdükçe noktaların
-        # çizgiden uzaklaşıp uzaklaşmadığı (ADR-0005'in decay düzeltmesinin
-        # işe yarayıp yaramadığı) tek bakışta görülür.
-        _axis_min = float(min(df_fwd_acc["predicted_ptf"].min(), df_fwd_acc["actual_ptf"].min()))
-        _axis_max = float(max(df_fwd_acc["predicted_ptf"].max(), df_fwd_acc["actual_ptf"].max()))
-        fig_acc = go.Figure()
-        fig_acc.add_trace(go.Scatter(
-            x=[_axis_min, _axis_max], y=[_axis_min, _axis_max],
-            mode="lines", name="Mükemmel tahmin (y=x)",
-            line=dict(color="rgba(255,255,255,0.25)", width=1.5, dash="dash"),
-            hoverinfo="skip",
-        ))
-        fig_acc.add_trace(go.Scatter(
-            x=df_fwd_acc["predicted_ptf"], y=df_fwd_acc["actual_ptf"],
-            mode="markers",
-            marker=dict(
-                size=9, color=df_fwd_acc["lead_time_hours"],
-                colorscale=[[0, "#00d4ff"], [1, "#ff6b35"]],
-                showscale=True, colorbar=dict(title="Lead (saat)"),
-                line=dict(width=0.5, color="rgba(255,255,255,0.3)"),
-            ),
-            name="Arşivlenmiş tahmin",
-            customdata=df_fwd_acc[["predicted_date", "hour", "lead_time_hours"]],
-            hovertemplate=(
-                "%{customdata[0]|%d %b} saat %{customdata[1]}:00<br>"
-                "Tahmin: %{x:,.0f} TL/MWh<br>Gerçekleşen: %{y:,.0f} TL/MWh<br>"
-                "Lead: %{customdata[2]:.0f} saat<extra></extra>"
-            ),
-        ))
-        dark(fig_acc, height=420,
-             title="Tahmin vs Gerçekleşen (renk = kaç saat önceden tahmin edildi)",
-             xaxis=dict(title="Model Tahmini (TL/MWh)", gridcolor="rgba(255,255,255,0.05)"),
-             yaxis=dict(title="Gerçekleşen (TL/MWh)", gridcolor="rgba(255,255,255,0.05)"),
-             showlegend=False)
-        st.plotly_chart(fig_acc, use_container_width=True, key="ml_fwd_accuracy")
-
-        with st.expander(f"Son {min(len(df_fwd_acc), 50)} arşivlenmiş tahmin"):
-            st.dataframe(
-                df_fwd_acc.head(50)[["predicted_date", "hour", "predicted_ptf", "actual_ptf", "lead_time_hours", "abs_error"]],
-                use_container_width=True, hide_index=True,
-            )
 
     # ── BACKTESTING ───────────────────────────────────────────────────────────
     if df_pred.empty:
