@@ -1344,21 +1344,42 @@ elif page == "🤖 PTF Tahmin & ML":
         fa2.metric("Örneklem", f"{len(df_fwd_acc)} saat")
         fa3.metric("Ort. Lead Time", f"{df_fwd_acc['lead_time_hours'].mean():,.1f} saat")
 
-        # Lead-time bucket'larına göre MAE — decay düzeltmesinin (ADR-0005,
-        # mart_ptf_forward_features.sql) ufuk büyüdükçe hatayı gerçekten
-        # bastırıp bastırmadığını zaman içinde görmek için.
-        _bins = [0, 6, 12, 24, 36, 1000]
-        _labels = ["0-6s", "6-12s", "12-24s", "24-36s", "36s+"]
-        df_fwd_acc["lead_bucket"] = pd.cut(df_fwd_acc["lead_time_hours"], bins=_bins, labels=_labels)
-        bucket_mae = df_fwd_acc.groupby("lead_bucket", observed=True)["abs_error"].agg(["mean", "count"]).reset_index()
-        bucket_mae.columns = ["lead_bucket", "mae", "n"]
-
-        fig_acc = px.bar(bucket_mae, x="lead_bucket", y="mae", text="n",
-            color_discrete_sequence=["#00d4ff"],
-            title="Lead Time'a Göre Ortalama Mutlak Hata",
-            labels={"lead_bucket": "Tahmin Ufku (saat önce)", "mae": "MAE (TL/MWh)"})
-        fig_acc.update_traces(texttemplate="n=%{text}", textposition="outside")
-        dark(fig_acc, height=340, yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
+        # Tahmin vs gerçekleşen scatter — y=x çizgisine yakınlık kalibrasyonu
+        # gösterir (üstünde = model az tahmin etmiş, altında = fazla tahmin
+        # etmiş). Renk lead_time_hours'a göre — ufuk büyüdükçe noktaların
+        # çizgiden uzaklaşıp uzaklaşmadığı (ADR-0005'in decay düzeltmesinin
+        # işe yarayıp yaramadığı) tek bakışta görülür.
+        _axis_min = float(min(df_fwd_acc["predicted_ptf"].min(), df_fwd_acc["actual_ptf"].min()))
+        _axis_max = float(max(df_fwd_acc["predicted_ptf"].max(), df_fwd_acc["actual_ptf"].max()))
+        fig_acc = go.Figure()
+        fig_acc.add_trace(go.Scatter(
+            x=[_axis_min, _axis_max], y=[_axis_min, _axis_max],
+            mode="lines", name="Mükemmel tahmin (y=x)",
+            line=dict(color="rgba(255,255,255,0.25)", width=1.5, dash="dash"),
+            hoverinfo="skip",
+        ))
+        fig_acc.add_trace(go.Scatter(
+            x=df_fwd_acc["predicted_ptf"], y=df_fwd_acc["actual_ptf"],
+            mode="markers",
+            marker=dict(
+                size=9, color=df_fwd_acc["lead_time_hours"],
+                colorscale=[[0, "#00d4ff"], [1, "#ff6b35"]],
+                showscale=True, colorbar=dict(title="Lead (saat)"),
+                line=dict(width=0.5, color="rgba(255,255,255,0.3)"),
+            ),
+            name="Arşivlenmiş tahmin",
+            customdata=df_fwd_acc[["predicted_date", "hour", "lead_time_hours"]],
+            hovertemplate=(
+                "%{customdata[0]|%d %b} saat %{customdata[1]}:00<br>"
+                "Tahmin: %{x:,.0f} TL/MWh<br>Gerçekleşen: %{y:,.0f} TL/MWh<br>"
+                "Lead: %{customdata[2]:.0f} saat<extra></extra>"
+            ),
+        ))
+        dark(fig_acc, height=420,
+             title="Tahmin vs Gerçekleşen (renk = kaç saat önceden tahmin edildi)",
+             xaxis=dict(title="Model Tahmini (TL/MWh)", gridcolor="rgba(255,255,255,0.05)"),
+             yaxis=dict(title="Gerçekleşen (TL/MWh)", gridcolor="rgba(255,255,255,0.05)"),
+             showlegend=False)
         st.plotly_chart(fig_acc, use_container_width=True, key="ml_fwd_accuracy")
 
         with st.expander(f"Son {min(len(df_fwd_acc), 50)} arşivlenmiş tahmin"):
