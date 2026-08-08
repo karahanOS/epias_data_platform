@@ -1205,14 +1205,11 @@ elif page == "🤖 PTF Tahmin & ML":
     # 'model') replaces what used to be a hand-rolled pandas anti-join here —
     # see mart_ptf_forecast_outlook.sql (ADR-0005) for why that duplication
     # was worth centralizing into one dbt view.
-    # Window starts 7 days back (not just "today") so the real/actual line
-    # extends far enough to sit behind the archived prediction markers below
-    # — safe to widen: gold_ptf_forward_predictions no longer holds rows for
-    # resolved past dates (they're archived+deleted daily), so this can only
-    # pull in more 'final'/'interim' history, never a stale 'model' row.
+    # Sadece bugün + yarın — panel "şu an ne biliyoruz" sorusuna odaklı,
+    # geniş bir geçmiş penceresi değil.
     df_outlook = query(f"""
         SELECT date, hour, datetime, value, value_source FROM {tbl('mart_ptf_forecast_outlook')}
-        WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 7 DAY)
+        WHERE date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
         ORDER BY date, hour
     """)
     if not df_outlook.empty:
@@ -1223,11 +1220,11 @@ elif page == "🤖 PTF Tahmin & ML":
     # Archived forward predictions (resolved — see ptf_inference.py's
     # _cleanup_stale_forward_predictions()) overlaid on the same chart below,
     # so "what we predicted" and "what actually happened" (the line above)
-    # sit on the same timeline instead of a separate panel.
+    # sit on the same timeline — same bugün+yarın window as df_outlook.
     df_fwd_acc = query(f"""
         SELECT predicted_date, hour, predicted_ptf, actual_ptf, lead_time_hours
         FROM {tbl('gold_ptf_forward_accuracy')}
-        WHERE predicted_date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 7 DAY)
+        WHERE predicted_date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
         ORDER BY predicted_date, hour
     """)
     if not df_fwd_acc.empty:
