@@ -80,6 +80,26 @@ DATA_DELAYS: Dict[str, int] = {
     "get_interim_mcp":                  -1,
 }
 
+# ADR-0006 (2026-08-08): get_res_generation_and_forecast/get_aic were both
+# called with a single-day (target, target) range — same as everything else
+# — but unlike get_load_estimation_plan (whose API generously returns
+# tomorrow's data even for a single-day query, confirmed empirically), these
+# two respect the requested range strictly. A direct query for tomorrow
+# specifically DOES return real data (confirmed: EPİAŞ already publishes
+# both a day ahead), so the gap was purely our own request window, not an
+# EPİAŞ-side publish-timing limit. Consequence: mart_ptf_forward_features
+# always saw forecasted_res_mwh=0 / capacity_utilization_ratio=NULL for
+# genuinely-future dates, which actively misled the forward-forecast model
+# (0 RES ≠ neutral — a real price crash usually means *high* renewable
+# output, the opposite signal). LOOKAHEAD_DAYS widens just these two
+# sources' end date to target+1 so tomorrow's already-published data is
+# captured same-day instead of only becoming visible once "tomorrow"
+# becomes "today".
+LOOKAHEAD_DAYS: Dict[str, int] = {
+    "get_res_generation_and_forecast": 1,
+    "get_aic":                         1,
+}
+
 NO_DATE_METHODS: frozenset = frozenset({
     "get_market_participants",
     
@@ -105,8 +125,15 @@ def get_epias_data_callable(method_name: str, **context) -> list:
     # available today once the day-ahead auction clears (~14:00 TRT).
     target = (datetime.strptime(ds, "%Y-%m-%d") - timedelta(days=delay)).strftime("%Y-%m-%d")
 
+    # LOOKAHEAD_DAYS (ADR-0006): widen the END date only, so the fetch range
+    # becomes [target, target+N] instead of a single day — captures
+    # already-published future rows (e.g. tomorrow's RES forecast/AIC) in
+    # the same daily fetch instead of waiting for "tomorrow" to become "today".
+    lookahead = LOOKAHEAD_DAYS.get(method_name, 0)
+    end_target = (datetime.strptime(target, "%Y-%m-%d") + timedelta(days=lookahead)).strftime("%Y-%m-%d")
+
     method = getattr(client, method_name)
-    result = method() if method_name in NO_DATE_METHODS else method(target, target)
+    result = method() if method_name in NO_DATE_METHODS else method(target, end_target)
     return result
 
 def get_weather_data_callable(**context) -> list:

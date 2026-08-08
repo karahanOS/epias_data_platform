@@ -26,11 +26,17 @@
 -- all 24 target hours from one pre-auction information snapshot rather than
 -- autoregressively.
 --
--- Sources not yet confirmed to publish ahead of price at all times of day
--- (stg_res_forecast, stg_aic) are LEFT JOINed and COALESCE(...,0) same as
--- mart_ml_features — falls back gracefully, matching training-time
--- fillna(0) behaviour, rather than blocking the whole forecast on their
--- availability.
+-- stg_res_forecast/stg_aic are LEFT JOINed; when a target hour's own row
+-- hasn't landed yet, COALESCE falls back to an hourly-seasonal average
+-- (res_forecast_hourly_avg/aic_hourly_avg below) rather than a bare 0 — see
+-- ADR-0006 (2026-08-08): the daily Bronze fetch for these two sources used
+-- to request only "today", so a genuinely-future target hour always saw
+-- forecasted_res_mwh=0/capacity_utilization_ratio=NULL even though EPİAŞ
+-- already publishes both a day ahead (fixed in dags/epias_dag.py's
+-- LOOKAHEAD_DAYS) — the hourly-average fallback here is a second line of
+-- defense for whatever gap remains (partial-day lag, an upstream retry,
+-- etc.), since a hard 0 actively misleads the model rather than degrading
+-- neutrally.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 WITH targets AS (
@@ -42,8 +48,34 @@ res_forecast AS (
     SELECT date, hour, forecasted_res_mwh FROM {{ ref('stg_res_forecast') }}
 ),
 
+-- ADR-0006: hourly-seasonal fallback for forecasted_res_mwh — used only
+-- when a genuinely future target hour's own RES forecast hasn't landed in
+-- stg_res_forecast yet (a real, sometimes-recurring pipeline-timing gap,
+-- not an EPİAŞ-side publish limit — see ADR-0006's investigation). A hard
+-- COALESCE(...,0) actively misleads the model: 0 RES reads as "no
+-- renewable output today", but a real price crash is usually caused by the
+-- opposite (high RES output, oversupply) — this "typical for the hour"
+-- average is a much safer neutral default than a hardcoded zero.
+res_forecast_hourly_avg AS (
+    SELECT hour, AVG(forecasted_res_mwh) AS avg_res_by_hour
+    FROM {{ ref('stg_res_forecast') }}
+    WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 14 DAY)
+    GROUP BY hour
+),
+
 aic AS (
     SELECT date, hour, total_aic_mwh FROM {{ ref('stg_aic') }}
+),
+
+-- Same rationale as res_forecast_hourly_avg, for total_aic_mwh (feeds
+-- capacity_utilization_ratio's denominator — a NULL here currently makes
+-- the whole ratio NULL, which _cast_to_model_input() fills to 0 at
+-- inference, i.e. "zero available capacity", equally misleading).
+aic_hourly_avg AS (
+    SELECT hour, AVG(total_aic_mwh) AS avg_aic_by_hour
+    FROM {{ ref('stg_aic') }}
+    WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 14 DAY)
+    GROUP BY hour
 ),
 
 shock AS (
@@ -122,12 +154,16 @@ joined AS (
         )) AS lead_hours,
 
         t.forecasted_load_mwh,
-        COALESCE(rf.forecasted_res_mwh, 0)          AS forecasted_res_mwh,
-        (t.forecasted_load_mwh - COALESCE(rf.forecasted_res_mwh, 0)) AS forecasted_residual_load_mwh,
+        -- ADR-0006: COALESCE toward the hourly-seasonal average, not a bare
+        -- 0, when this target hour's own RES forecast hasn't landed yet —
+        -- see res_forecast_hourly_avg's comment above for why a hard zero
+        -- actively misleads the model rather than degrading neutrally.
+        COALESCE(rf.forecasted_res_mwh, rha.avg_res_by_hour, 0) AS forecasted_res_mwh,
+        (t.forecasted_load_mwh - COALESCE(rf.forecasted_res_mwh, rha.avg_res_by_hour, 0)) AS forecasted_residual_load_mwh,
 
         SAFE_DIVIDE(
-            t.forecasted_load_mwh - COALESCE(rf.forecasted_res_mwh, 0),
-            a.total_aic_mwh
+            t.forecasted_load_mwh - COALESCE(rf.forecasted_res_mwh, rha.avg_res_by_hour, 0),
+            COALESCE(a.total_aic_mwh, aha.avg_aic_by_hour)
         )                                            AS capacity_utilization_ratio,
 
         COALESCE(sh.supply_shock_index, 0)          AS supply_shock_index,
@@ -155,7 +191,9 @@ joined AS (
 
     FROM targets t
     LEFT JOIN res_forecast rf  ON rf.date = t.date AND rf.hour = t.hour
+    LEFT JOIN res_forecast_hourly_avg rha ON rha.hour = t.hour
     LEFT JOIN aic a            ON a.date  = t.date AND a.hour  = t.hour
+    LEFT JOIN aic_hourly_avg aha ON aha.hour = t.hour
     LEFT JOIN shock sh         ON sh.date = t.date
     LEFT JOIN shock_trend st   ON st.date = t.date
     LEFT JOIN cross_lag cl     ON cl.date = DATE_SUB(t.date, INTERVAL 1 DAY) AND cl.hour = t.hour
