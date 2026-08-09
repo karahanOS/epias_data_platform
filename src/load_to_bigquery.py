@@ -98,6 +98,13 @@ class BQExternalTableManager:
             "outages",
             "weather",
             "sbfgp",  # backfill-only source (daily_eligible=False), missing here — stg_sbfgp couldn't build
+            # ADR-0007 (plans/07-company-level-market-activity-kgup.md): same failure
+            # mode as sbfgp above — this list isn't derived from EPIAS_SOURCES, so a
+            # new source has to be added here explicitly or its external table (and
+            # therefore its dbt staging model) never gets created no matter how many
+            # times the ingestion DAG runs successfully.
+            "dam_clearing_by_org",   # Faz 1 — GÖP şirket bazlı eşleşme miktarı
+            "kgup_bulk_by_org",      # Faz 2 — UEVÇB/şirket bazlı KGÜP
         ]
         
         logger.info(f"Toplam {len(tables)} tablo BigQuery'ye tanımlanıyor...")
