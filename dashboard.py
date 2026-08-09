@@ -1959,6 +1959,80 @@ elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
     dark(fig4, height=340)
     st.plotly_chart(fig4, use_container_width=True, key="pp_rev_hist")
 
+    # ── COMPANY PRODUCTION ACTIVITY (ADR-0007 Faz 2) ─────────────────────────
+    st.markdown("---")
+    st.markdown("### 🏢 Şirket Bazlı KGÜP Aktivitesi")
+    st.caption("Kesinleşmiş üretim planı, şirket + santral (UEVÇB) bazında — Faz 1'deki GÖP alım-satım hacminden farklı bir piyasa katmanı.")
+
+    df_prod = query(f"""
+        SELECT
+            trade_date AS date,
+            org_id,
+            organization_name,
+            SUM(active_uevcb_count) AS uevcb_count,
+            SUM(total_kgup_mwh)     AS total_mwh,
+            SUM(wind_mwh)           AS wind_mwh,
+            SUM(hydro_mwh)          AS hydro_mwh,
+            SUM(solar_mwh)          AS solar_mwh,
+            SUM(natural_gas_mwh)    AS gas_mwh,
+            SUM(coal_mwh)           AS coal_mwh
+        FROM {tbl('mart_company_production_activity')}
+        WHERE EXTRACT(YEAR FROM trade_date) = {sel_year}{_month_filter_td}
+          AND total_kgup_mwh > 0
+          AND organization_name IS NOT NULL
+        GROUP BY 1, 2, 3
+        ORDER BY total_mwh DESC
+    """)
+
+    if df_prod.empty:
+        st.info("Şirket bazlı KGÜP verisi henüz mevcut değil. "
+                "epias_gop_company_activity gibi ayrı bir DAG değil — kgup_bulk_by_org kaynağı "
+                "hourly pipeline'ın parçası; ilk çalışmadan sonra mart_company_production_activity rebuild gerekebilir.")
+    else:
+        top10p = (df_prod.groupby("organization_name")[["total_mwh", "uevcb_count"]]
+                  .sum().sort_values("total_mwh", ascending=False).head(10).reset_index())
+
+        col_p1, col_p2 = st.columns(2)
+
+        with col_p1:
+            fig_p = go.Figure(go.Bar(
+                y=top10p["organization_name"], x=top10p["total_mwh"],
+                orientation="h", marker_color="rgba(0,212,255,0.75)"))
+            fig_p.update_layout(**DARK_LAYOUT, height=400,
+                title="En Büyük 10 Üretici — Toplam KGÜP (MWh)",
+                xaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
+                yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig_p, use_container_width=True, key="kgup_co_bar")
+
+        with col_p2:
+            fuel_mix = (df_prod.groupby("organization_name")
+                        [["wind_mwh", "hydro_mwh", "solar_mwh", "gas_mwh", "coal_mwh"]]
+                        .sum())
+            fuel_mix = fuel_mix.loc[top10p["organization_name"]]
+            fig_fuel = go.Figure()
+            for col, name, color in [
+                ("wind_mwh", "Rüzgar", "#00d4ff"), ("hydro_mwh", "Baraj/Akarsu", "#7c3aed"),
+                ("solar_mwh", "Güneş", "#f59e0b"), ("gas_mwh", "Doğalgaz", "#ef4444"),
+                ("coal_mwh", "Kömür", "#64748b"),
+            ]:
+                fig_fuel.add_trace(go.Bar(y=fuel_mix.index, x=fuel_mix[col], name=name,
+                    orientation="h", marker_color=color))
+            fig_fuel.update_layout(**DARK_LAYOUT, barmode="stack", height=400,
+                title="En Büyük 10 Üretici — Kaynak Karışımı",
+                xaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
+                yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig_fuel, use_container_width=True, key="kgup_co_fuel")
+
+        st.markdown("#### Şirket Özet Tablosu")
+        summary_p = (df_prod.groupby("organization_name")
+                     [["total_mwh", "uevcb_count", "wind_mwh", "hydro_mwh", "solar_mwh", "gas_mwh", "coal_mwh"]]
+                     .sum().sort_values("total_mwh", ascending=False).reset_index())
+        summary_p.columns = ["Şirket", "Toplam KGÜP (MWh)", "Aktif Santral Sayısı",
+                              "Rüzgar (MWh)", "Baraj/Akarsu (MWh)", "Güneş (MWh)", "Doğalgaz (MWh)", "Kömür (MWh)"]
+        for col in ["Toplam KGÜP (MWh)", "Rüzgar (MWh)", "Baraj/Akarsu (MWh)", "Güneş (MWh)", "Doğalgaz (MWh)", "Kömür (MWh)"]:
+            summary_p[col] = summary_p[col].map(lambda x: f"{x:,.1f}")
+        st.dataframe(summary_p, use_container_width=True, hide_index=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 11 — PTF TAVAN & MİNİMUM ANALİZİ

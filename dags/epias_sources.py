@@ -120,6 +120,17 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # backfill_eligible=False: N gün × 1629 org backfill maliyeti aşırı; geriye
     # dönük doldurma gerekirse ayrı, hız sınırlı bir script ile yapılmalı.
     "dam_clearing_by_org": ("get_dam_clearing_quantity_by_organization", "bronze/dam_clearing_by_org", True, False, False),
+    # kgup_bulk_by_org: ADR-0007 Faz 2 (plans/07-company-level-market-activity-kgup.md).
+    # Şirket + UEVÇB bazlı KGÜP (üretim planı) — organization-list (706 org) ->
+    # uevcb-list-bulk (~1900 UEVÇB) -> dpp-bulk, hepsi get_kgup_bulk_by_organization()
+    # içinde. Faz 1'in (dam_clearing_by_org) 1629-çağrılık, ~20 dakikalık maliyetinin
+    # AKSİNE bu kaynak canlı testte ~10 batched API çağrısı, birkaç saniye sürdü —
+    # bu yüzden dedicated bir DAG'a gerek yok, mevcut `dpp` kaynağıyla aynı emsal
+    # üzerinden doğrudan hourly ALL_SOURCES loop'una eklendi (daily_eligible=True
+    # burada gerçekten güvenli, Faz 1'deki gibi değil).
+    # allow_empty=True: dpp/dam_clearing ile aynı /v1/generation, /v1/markets/dam
+    # ailesi karakteri — 14:00 TRT öncesi günün KGÜP'ü henüz kesinleşmemiş olabilir.
+    "kgup_bulk_by_org":   ("get_kgup_bulk_by_organization",   "bronze/kgup_bulk_by_org",   True,  False, True),
 }
 
 # Models excluded from dbt runs while their Silver backfill is incomplete.

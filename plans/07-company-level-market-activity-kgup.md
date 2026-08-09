@@ -127,11 +127,14 @@ Asıl gerilim, "istenen" (GİP şirket aktivitesi) ile "mümkün olan" (KGÜP ş
 - Yeni DAG dosyası (`epias_gop_company_activity_dag.py`) GCE VM'deki Airflow `dags/` klasörüne yayılmalı
 - İlk `dbt run --select stg_dam_clearing_by_org mart_company_gop_activity` DAG en az bir kez çalışıp Silver tablosu oluştuktan sonra
 
-## Action Items — Faz 2 (KGÜP, sonraki iterasyon)
+## Action Items — Faz 2 (KGÜP) — kod tamamlandı, deploy bekliyor
 
-1. [ ] `epias_client.py`: `get_dpp_bulk`'ı gerçek `KgupBulkRequestDto` şemasına göre düzelt — `date` (tekil gün) + `region="TR1"` + `uevcbIds` (≤1000/batch), organizasyon evreni için `get_organization_list()` (market-participants değil) kullan
-2. [ ] `organization-list` kaynağını `EPIAS_SOURCES`'a ekle (statik referans, `participants` ile aynı desende)
-3. [ ] Yeni bronze/silver/staging zinciri: `kgup_bulk` (org + uevcb bazlı KGÜP, saatlik yakıt kırılımı)
-4. [ ] `mart_company_production_activity.sql` (yeni mart: günlük/saatlik şirket bazlı toplam üretim planı, gün içi revizyon büyüklüğü)
-5. [ ] Dashboard: Faz 1 martının yanına KGÜP aktivitesini ekle
-6. [ ] *(Bu ADR kapsamı dışı, ayrı görev — task chip olarak zaten oluşturuldu)* `dpp`/`sbfgp`/`dpp-first-version` BGÜP/KGÜP/KUDÜP isimlendirme karışıklığını kod genelinde düzelt
+1. [x] `epias_client.py`: `get_dpp_bulk` gerçek `KgupBulkRequestDto` şemasına göre düzeltildi (`date` tekil gün + `region="TR1"` + `uevcbIds` ≤1000/batch); `get_organization_list` de aynı oturumda düzeltildi (canlı testte 400 döndüğü tespit edildi — boş body gönderiyordu, `startDate`/`endDate` zorunluymuş)
+2. [x] `get_kgup_bulk_by_organization(start_date, end_date)` — yeni orkestratör: organization-list (706 org, canlı doğrulandı) → uevcb-list-bulk (~1900 UEVÇB) → dpp-bulk, günlük döngü. Smoke test PASS (5-org slice, 192 satır, hepsi orgId/uevcbId taşıyor)
+3. [x] `dags/epias_sources.py`: `kgup_bulk_by_org` girdisi eklendi — `daily_eligible=True`, mevcut hourly loop'a katıldı (Faz 1'in aksine: ~10 batched çağrı/gün, saniyeler sürüyor, `dpp` kaynağıyla aynı emsal — ayrı DAG'a gerek yoktu)
+4. [x] `spark_jobs/bronze_to_silver_kgup_bulk_by_org.py`, `epias_dbt/models/staging/{sources,schema}.yml` + `stg_kgup_bulk_by_org.sql`
+5. [x] `epias_dbt/models/marts/mart_company_production_activity.sql` — günlük şirket bazlı toplam KGÜP + yakıt kırılımı + aktif santral sayısı
+6. [x] Dashboard: "🏭 Üretim Planı (BGÜP vs KGÜP)" sayfasına (Page 10) "🏢 Şirket Bazlı KGÜP Aktivitesi" bölümü eklendi
+7. [ ] *(Bu ADR kapsamı dışı, ayrı görev — task chip olarak zaten oluşturuldu)* `dpp`/`sbfgp`/`dpp-first-version` BGÜP/KGÜP/KUDÜP isimlendirme karışıklığını kod genelinde düzelt
+
+**Deploy edilmedi (Faz 1 ile aynı gerekçe):** `spark_jobs/bronze_to_silver_kgup_bulk_by_org.py` `gs://epias-data-lake/dataproc/jobs/`'a senkronize edilmeli; kod GitHub'a henüz push edilmedi (kullanıcı onayı bekleniyor).

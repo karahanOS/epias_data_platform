@@ -484,12 +484,90 @@ class EPIASClient:
         body["region"] = "TR1"
         return self._post("/v1/generation/data/sbfgp", body).get("items", [])
 
-    def get_dpp_bulk(self, start_date: str, end_date: str) -> list:
-        """Tüm UEVCB'ler toplu BGÜP (beyan). POST /v1/generation/data/dpp-bulk"""
-        return self._post(
-            "/v1/generation/data/dpp-bulk",
-            self._date_body(start_date, end_date),
-        ).get("items", [])
+    def get_dpp_bulk(self, date: str, uevcb_ids: list) -> list:
+        """
+        UEVÇB bazlı toplu KGÜP (EPİAŞ'ın kendi başlığı: "5.72. Uevçb Bazlı
+        Toplu Kgüp Listeleme Servisi" — kodda daha önce "BGÜP" deniyordu,
+        yanlıştı, bkz. plans/07-company-level-market-activity-kgup.md).
+        POST /v1/generation/data/dpp-bulk
+
+        NOT: KgupBulkRequestDto TEK bir `date` alıyor (startDate/endDate
+        değil) + `region` + `uevcbIds` (zorunlu, ≤1000, tekrarsız) — eski
+        imza (start_date, end_date) yanlış şemaya gönderiyordu; hiçbir
+        DAG'da çağrılmadığı için hiç ortaya çıkmamıştı. Canlı doğrulandı
+        2026-08-09 (ADR-0007 Faz 2).
+        """
+        if len(uevcb_ids) > 1000:
+            raise ValueError(f"uevcb_ids en fazla 1000 olabilir, {len(uevcb_ids)} verildi")
+        body = {
+            "date": self._to_iso(date, end_of_day=False),
+            "region": "TR1",
+            "uevcbIds": uevcb_ids,
+        }
+        return self._post("/v1/generation/data/dpp-bulk", body).get("items", [])
+
+    def get_kgup_bulk_by_organization(self, start_date: str, end_date: str) -> list:
+        """
+        Şirket (ve UEVÇB) bazlı KGÜP — ADR-0007 Faz 2.
+
+        1) get_organization_list() ile organizasyon evreni alınır (canlı
+           testte 706 organizasyon — GÖP'ün clearing-quantity-organization-
+           list'inden (1629, Faz 1) daha küçük: üretim lisansı olan şirketler,
+           piyasa üyeliği olan HER şirket değil).
+        2) Her 100 organizasyon için uevcb-list-bulk çağrılır (KgupBulkDataDto
+           .orgId'nin referans listesi bu — get_market_participants() değil,
+           bkz. ADR'daki gerekçe).
+        3) Elde edilen tüm uevcbId'ler ≤1000'lik gruplara bölünüp, start..end
+           aralığındaki HER gün için ayrı ayrı get_dpp_bulk() çağrılır
+           (KgupBulkRequestDto tek günlük — startDate/endDate değil).
+
+        Response satırları zaten orgId/uevcbId/uevcbName taşıyor — Faz 1'in
+        clearing-quantity'sinin aksine (o response'ta organizationId yoktu,
+        çağıran taraf enjekte etmek zorundaydı) burada enjeksiyon gerekmiyor.
+        """
+        orgs = self.get_organization_list(start_date, end_date)
+        org_ids = [o.get("organizationId") for o in orgs if o.get("organizationId")]
+
+        uevcb_ids: list = []
+        seen: set = set()
+        for i in range(0, len(org_ids), 100):
+            chunk = org_ids[i:i + 100]
+            body = {"startDate": self._to_iso(start_date), "organizationIds": chunk}
+            try:
+                rows = self._post("/v1/generation/data/uevcb-list-bulk", body).get("items", [])
+            except Exception as e:
+                self.logger.error(f"uevcb-list-bulk batch {i}-{i + 100} için hata, atlanıyor: {e}")
+                continue
+            for r in rows:
+                uid = r.get("id")
+                if uid is not None and uid not in seen:
+                    seen.add(uid)
+                    uevcb_ids.append(uid)
+            time.sleep(0.8)
+
+        self.logger.info(
+            f"KGÜP-bulk: {len(org_ids)} organizasyon -> {len(uevcb_ids)} benzersiz UEVÇB"
+        )
+
+        all_rows: list = []
+        start_dt   = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt     = datetime.strptime(end_date, "%Y-%m-%d")
+        day_count  = (end_dt - start_dt).days + 1
+
+        for d in range(day_count):
+            day_str = (start_dt + timedelta(days=d)).strftime("%Y-%m-%d")
+            for i in range(0, len(uevcb_ids), 1000):
+                chunk = uevcb_ids[i:i + 1000]
+                try:
+                    rows = self.get_dpp_bulk(day_str, chunk)
+                except Exception as e:
+                    self.logger.error(f"dpp-bulk {day_str} batch {i}-{i + 1000} için hata, atlanıyor: {e}")
+                    continue
+                all_rows.extend(rows)
+                time.sleep(0.8)
+
+        self.logger.info(f"✅ KGÜP-bulk tamamlandı — {len(all_rows)} satır")
+        return all_rows
 
     def get_injection_quantity(self, start_date: str, end_date: str) -> list:
         """Uzlaştırmaya esas veriş miktarı (UEVM). POST /v1/generation/data/injection-quantity"""
@@ -508,9 +586,17 @@ class EPIASClient:
         body["region"] = "TR1"
         return self._post("/v1/generation/data/aic", body).get("items", [])
 
-    def get_organization_list(self) -> list:
-        """Organizasyon referans listesi. POST /v1/generation/data/organization-list"""
-        return self._post("/v1/generation/data/organization-list", {}).get("items", [])
+    def get_organization_list(self, start_date: str, end_date: str) -> list:
+        """
+        Organizasyon referans listesi. POST /v1/generation/data/organization-list
+        NOT: OrganizationListRequestDto startDate/endDate zorunlu istiyor — daha
+        önce boş body {} gönderiliyordu, canlı testte 400 (SEF1144/SEF1145)
+        döndüğü doğrulandı (2026-08-09, ADR-0007 Faz 2 sırasında).
+        """
+        return self._post(
+            "/v1/generation/data/organization-list",
+            self._date_body(start_date, end_date),
+        ).get("items", [])
 
     def get_uevcb_list(self, start_date: str, end_date: str) -> list:
         self.logger.info("⚡ UEVCB listesi çekiliyor... (BULK ENDPOINT kullanılarak yüksek hızda)")

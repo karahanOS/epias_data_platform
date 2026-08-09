@@ -137,6 +137,29 @@ models:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
               quote: false
 
+  - name: stg_kgup_bulk_by_org
+    description: "UEVÇB + şirket bazlı KGÜP (üretim planı) — ADR-0007 Faz 2"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+            - org_id
+            - uevcb_id
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+      - name: org_id
+        tests: [not_null]
+      - name: uevcb_id
+        tests: [not_null]
+
   - name: stg_order_up
     description: "Yukarı yönlü düzenleme emirleri — saatlik (EPIAS DGP)"
     tests:
