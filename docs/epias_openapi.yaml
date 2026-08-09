@@ -697,9 +697,14 @@ paths:
   /v1/generation/data/dpp:
     post:
       tags: [generation]
-      summary: BGÜP - Birim Bazında Gün Öncesi Üretim Planı
+      summary: KGÜP - Birim Bazında Kesinleşmiş Günlük Üretim Planı
       description: |
-        Santral/organizasyon bazında gün öncesi üretim planı (BGÜP).
+        Santral/organizasyon bazında kesinleşmiş günlük üretim planı (KGÜP).
+        EPİAŞ resmi başlığı: "5.71. Kesinleşmiş Günlük Üretim Planı (KGÜP)
+        Listeleme Servisi" — bu depoda önceden "BGÜP" olarak yanlış
+        etiketlenmişti, bkz. plans/07-company-level-market-activity-kgup.md.
+        Gerçek BGÜP karşılığı /v1/generation/data/dpp-first-version (5.73,
+        henüz wire edilmedi).
         `organizationId` ve `uevcbId` ile filtrelenebilir.
       security:
         - CasTicket: []
@@ -738,8 +743,10 @@ paths:
   /v1/generation/data/dpp-bulk:
     post:
       tags: [generation]
-      summary: BGÜP Toplu Veri
-      description: Tüm organizasyonlar için toplu BGÜP verisi. organizationId filtresiz.
+      summary: KGÜP Toplu Veri
+      description: >
+        Tüm organizasyonlar için toplu KGÜP verisi (EPİAŞ 5.72, "Uevçb Bazlı
+        Toplu KGÜP Listeleme Servisi"). organizationId filtresiz.
       security:
         - CasTicket: []
       requestBody:
@@ -759,8 +766,12 @@ paths:
   /v1/generation/data/sbfgp:
     post:
       tags: [generation]
-      summary: KGÜP - Kesinleşmiş Gün Öncesi Üretim Planı
-      description: Kesinleşmiş Gün Öncesi Üretim Planı (KGÜP) saatlik verileri.
+      summary: KUDÜP - Kesinleştirilmiş Uzlaştırma Dönemi Üretim Planı
+      description: >
+        Kesinleştirilmiş Uzlaştırma Dönemi Üretim Planı (KUDÜP) saatlik
+        verileri (EPİAŞ 5.83). Bu depoda önceden "KGÜP" olarak yanlış
+        etiketlenmişti — /v1/generation/data/dpp'nin (gerçek KGÜP) sonraki
+        uzlaştırma katmanı, bkz. plans/07-company-level-market-activity-kgup.md.
       security:
         - CasTicket: []
       requestBody:

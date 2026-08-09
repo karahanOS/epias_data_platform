@@ -121,7 +121,7 @@ models:
               quote: false
 
   - name: stg_dpp
-    description: "Doğal pozisyon planı — kaynak tipi bazlı saatlik (EPIAS)"
+    description: "KGÜP (Kesinleşmiş Günlük Üretim Planı) — kaynak tipi bazlı saatlik (EPİAŞ 5.71, /v1/generation/data/dpp). Model adı endpoint adını yansıtıyor (dpp); içerik BGÜP değil KGÜP'tür, bkz. plans/07-company-level-market-activity-kgup.md."
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:
@@ -388,7 +388,7 @@ models:
         tests: [not_null]
 
   - name: stg_sbfgp
-    description: "Kesinleşmiş günlük üretim planı (SBFGP) — saatlik (EPIAS)"
+    description: "KUDÜP (Kesinleştirilmiş Uzlaştırma Dönemi Üretim Planı) — saatlik (EPİAŞ 5.83, /v1/generation/data/sbfgp). Model adı endpoint adını yansıtıyor (sbfgp); içerik KGÜP değil KUDÜP'tür — stg_dpp'nin (KGÜP) sonraki uzlaştırma katmanı, bkz. plans/07-company-level-market-activity-kgup.md."
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:

@@ -458,10 +458,14 @@ class EPIASClient:
         uevcb_id: Optional[int] = None,
     ) -> list:
         """
-        Beyan Edilen Günlük Üretim Planı (BGÜP / DPP).
+        Kesinleşmiş Günlük Üretim Planı (KGÜP).
         POST /v1/generation/data/dpp
-        NOT: Bu endpoint BGÜP döner — gün öncesinde şirketlerin TEIAŞ'a bildirdiği plan.
-             Kesinleşmiş plan (KGÜP) için get_sbfgp() kullanın.
+        NOT: EPİAŞ'ın kendi başlığı "5.71. Kesinleşmiş Günlük Üretim Planı (KGÜP)
+             Listeleme Servisi" — kodda daha önce "BGÜP" deniyordu, yanlıştı
+             (bkz. plans/07-company-level-market-activity-kgup.md). Gerçek BGÜP
+             karşılığı /v1/generation/data/dpp-first-version (5.73) — henüz wire
+             edilmedi. Uzlaştırma dönemine ait daha sonraki katman (KUDÜP) için
+             get_sbfgp() kullanın.
              region zorunlu (swagger'da eksik). Türkiye tek bölge → "TR1".
         """
         body = self._date_body(start_date, end_date)
@@ -474,10 +478,16 @@ class EPIASClient:
 
     def get_sbfgp(self, start_date: str, end_date: str) -> list:
         """
-        Kesinleşmiş Günlük Üretim Planı (KGÜP / SBFGP).
+        Kesinleştirilmiş Uzlaştırma Dönemi Üretim Planı (KUDÜP / SBFGP).
         POST /v1/generation/data/sbfgp
+        NOT: EPİAŞ'ın kendi başlığı "5.83. Kesinleştirilmiş Uzlaştırma Dönemi Üretim
+             Planı (KUDÜP) Listeleme Servisi" — kodda daha önce "KGÜP" deniyordu,
+             yanlıştı (bkz. plans/07-company-level-market-activity-kgup.md). Bu,
+             get_dpp()'nin döndürdüğü KGÜP'ten SONRAKİ, uzlaştırma dönemine ait ayrı
+             bir katman.
         GİP kapanışından sonra DUY 69. madde kapsamında güncellenen nihai plandır.
-        BGÜP ile farkı = intraday revizyon = şirketlerin GİP'te ne kadar ayarlama yaptığı.
+        get_dpp() (KGÜP) ile farkı = intraday revizyon = şirketlerin GİP'te ne kadar
+        ayarlama yaptığı.
         NOT: region zorunlu (swagger'da eksik) → "TR1".
         """
         body = self._date_body(start_date, end_date)

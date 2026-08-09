@@ -7,9 +7,14 @@ from spark_utils import BaseEpiasSparkJob
 
 class SbfgpSilverJob(BaseEpiasSparkJob):
     """
-    Kesinleşmiş Günlük Üretim Planı (KGÜP / SBFGP) verilerini işler.
+    Kesinleştirilmiş Uzlaştırma Dönemi Üretim Planı (KUDÜP) verilerini işler —
+    EPİAŞ 5.83 (/v1/generation/data/sbfgp). Kod tabanında daha önce "KGÜP"
+    deniyordu, yanlıştı (bkz. plans/07-company-level-market-activity-kgup.md).
+    Bu, bronze_to_silver_dpp.py'nin döndürdüğü KGÜP'ten SONRAKİ, uzlaştırma
+    dönemine ait ayrı bir katman. Job/kaynak adı (sbfgp) endpoint adını
+    yansıtıyor, değiştirilmedi.
     GİP kapanışından sonra DUY 69. madde kapsamında güncellenen nihai plandır.
-    BGÜP (stg_dpp) ile karşılaştırılarak intraday revizyon miktarı hesaplanabilir.
+    KGÜP (stg_dpp) ile karşılaştırılarak intraday revizyon miktarı hesaplanabilir.
     """
     def __init__(self, spark=None):
         super().__init__(app_name="BronzeToSilver_SBFGP", source_name="sbfgp", primary_keys=["date", "time"], spark=spark)
@@ -27,7 +32,7 @@ class SbfgpSilverJob(BaseEpiasSparkJob):
             self.finish()
             return
 
-        self.logger.info("SBFGP (KGÜP) verisi için tipler dönüştürülüyor...")
+        self.logger.info("SBFGP (KUDÜP) verisi için tipler dönüştürülüyor...")
 
         df = df.withColumn("date", self.parse_epias_timestamp())
 

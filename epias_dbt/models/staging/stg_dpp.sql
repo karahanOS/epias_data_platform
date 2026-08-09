@@ -5,9 +5,12 @@
     partition_by={"field": "date", "data_type": "date"}
 ) }}
 
--- DPP = Declaratory Production Plan (Beyan Edilen Günlük Üretim Planı / BGÜP)
--- Bu tablo gün öncesinde şirketlerin TEIAŞ'a bildirdiği üretim planıdır.
--- KGÜP (kesinleşmiş) için stg_sbfgp.sql kullanılmalıdır.
+-- DPP kaynağı aslında KGÜP'tür (Kesinleşmiş Günlük Üretim Planı), BGÜP değil —
+-- EPİAŞ'ın kendi başlığı "5.71. Kesinleşmiş Günlük Üretim Planı (KGÜP) Listeleme
+-- Servisi" (bkz. plans/07-company-level-market-activity-kgup.md). Model adı
+-- (stg_dpp) ve kaynak tablo adı (silver.dpp) API endpoint adını yansıtıyor,
+-- değiştirilmedi — sadece bu yorum ve get_dpp()'nin docstring'i düzeltildi.
+-- Uzlaştırma dönemine ait SONRAKİ katman (KUDÜP) için stg_sbfgp.sql kullanılmalıdır.
 WITH deduped AS (
     SELECT
         CAST(date AS DATE)                                    AS date,

@@ -272,7 +272,7 @@ with st.sidebar:
         "🤖 PTF Tahmin & ML",
         "🌿 Lisanssız Üretim (YEKDEM)",
         "⚡ GİP & Hava Durumu",
-        "🏭 Üretim Planı (BGÜP vs KGÜP)",
+        "🏭 Üretim Planı (KGÜP vs KUDÜP)",
         "🔥 PTF Tavan & Minimum Analizi",
         "📈 Çapraz Piyasa Arbitraj",
         "⚡ RES Öngörü Hatası",
@@ -1847,22 +1847,27 @@ elif page == "⚡ GİP & Hava Durumu":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 10 — ÜRETİM PLANI (BGÜP vs KGÜP)
+# PAGE 10 — ÜRETİM PLANI (KGÜP vs KUDÜP)
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
+# NOT: bu sayfa önceden "BGÜP vs KGÜP" olarak etiketlenmişti; EPİAŞ'ın resmi
+# Şeffaflık Platformu dokümantasyonuna göre ikisi de yanlıştı — gerçek katmanlar
+# KGÜP (gün öncesi kesinleşen) ve KUDÜP (uzlaştırma dönemi kesinleşen). Aynı alttaki
+# veri/sinyal, sadece isimler düzeltildi. Bkz. plans/07-company-level-market-activity-kgup.md
+# ve mart_production_plan.sql'in başındaki açıklama.
+elif page == "🏭 Üretim Planı (KGÜP vs KUDÜP)":
     st.markdown("""
     <div class='page-header'>
         <span class='badge'>PLANLAMA</span>
-        <h1>Üretim Planı: BGÜP vs KGÜP</h1>
-        <p>Beyan edilen plan vs kesinleşmiş plan — GİP revizyonlarının büyüklüğü ve yönü</p>
+        <h1>Üretim Planı: KGÜP vs KUDÜP</h1>
+        <p>Gün öncesi kesinleşen plan (KGÜP) vs uzlaştırma dönemi kesinleşen plan (KUDÜP) — GİP revizyonlarının büyüklüğü ve yönü</p>
     </div>""", unsafe_allow_html=True)
 
     df = query(f"""
         SELECT date, hour,
-               bgup_total_mwh, kgup_total_mwh,
-               bgup_wind_mwh, kgup_wind_mwh,
-               bgup_solar_mwh, kgup_solar_mwh,
-               bgup_hydro_mwh, kgup_hydro_mwh,
+               kgup_total_mwh, kudup_total_mwh,
+               kgup_wind_mwh, kudup_wind_mwh,
+               kgup_solar_mwh, kudup_solar_mwh,
+               kgup_hydro_mwh, kudup_hydro_mwh,
                intraday_revision_mwh, wind_revision_mwh,
                solar_revision_mwh, hydro_revision_mwh,
                revision_direction, revision_pct,
@@ -1881,11 +1886,11 @@ elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
         )
         st.stop()
 
-    dfy = df.dropna(subset=["bgup_total_mwh", "kgup_total_mwh"])
+    dfy = df.dropna(subset=["kgup_total_mwh", "kudup_total_mwh"])
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Ort BGÜP", f"{dfy['bgup_total_mwh'].mean():,.0f} MWh")
-    c2.metric("Ort KGÜP", f"{dfy['kgup_total_mwh'].mean():,.0f} MWh")
+    c1.metric("Ort KGÜP", f"{dfy['kgup_total_mwh'].mean():,.0f} MWh")
+    c2.metric("Ort KUDÜP", f"{dfy['kudup_total_mwh'].mean():,.0f} MWh")
     c3.metric("Ort Revizyon", f"{dfy['intraday_revision_mwh'].mean():+.0f} MWh")
     rev_pct = (dfy["revision_direction"] != "Denge").mean() * 100
     c4.metric("Aktif Revizyon %", f"%{rev_pct:.1f}")
@@ -1895,22 +1900,22 @@ elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
     col_l, col_r = st.columns(2)
 
     with col_l:
-        # Daily BGÜP vs KGÜP trend
+        # Daily KGÜP vs KUDÜP trend
         daily = dfy.groupby("date").agg(
-            bgup=("bgup_total_mwh","mean"),
             kgup=("kgup_total_mwh","mean"),
+            kudup=("kudup_total_mwh","mean"),
             rev=("intraday_revision_mwh","mean")).reset_index()
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        fig.add_trace(go.Scatter(x=daily["date"], y=daily["bgup"],
-            name="BGÜP (Beyan)", line=dict(color="#00d4ff", width=1.5)))
         fig.add_trace(go.Scatter(x=daily["date"], y=daily["kgup"],
-            name="KGÜP (Kesinleşmiş)", line=dict(color="#10b981", width=1.5)))
+            name="KGÜP (Gün Öncesi)", line=dict(color="#00d4ff", width=1.5)))
+        fig.add_trace(go.Scatter(x=daily["date"], y=daily["kudup"],
+            name="KUDÜP (Uzlaştırma)", line=dict(color="#10b981", width=1.5)))
         fig.add_trace(go.Bar(x=daily["date"], y=daily["rev"],
-            name="Revizyon (KGÜP-BGÜP)",
+            name="Revizyon (KUDÜP-KGÜP)",
             marker_color=np.where(daily["rev"] >= 0, "rgba(16,185,129,0.5)", "rgba(239,68,68,0.5)")),
             secondary_y=True)
         fig.update_layout(**DARK_LAYOUT, height=400,
-            title="Günlük BGÜP / KGÜP & Revizyon",
+            title="Günlük KGÜP / KUDÜP & Revizyon",
             xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
             yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
             yaxis2=dict(title="Revizyon (MWh)", gridcolor="rgba(0,0,0,0)"))
@@ -1942,7 +1947,7 @@ elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
         name="Güneş Revizyonu", marker_color="rgba(245,158,11,0.7)"))
     fig3.add_trace(go.Bar(x=hourly_src["hour"], y=hourly_src["hydro_rev"],
         name="Baraj Revizyonu", marker_color="rgba(124,58,237,0.7)"))
-    dark(fig3, height=380, title="Saatlik Ort. Kaynak Revizyonu (KGÜP - BGÜP)",
+    dark(fig3, height=380, title="Saatlik Ort. Kaynak Revizyonu (KUDÜP - KGÜP)",
          barmode="group",
          xaxis=dict(title="Saat", tickmode="linear", gridcolor="rgba(255,255,255,0.05)"),
          yaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"))
@@ -1954,7 +1959,7 @@ elif page == "🏭 Üretim Planı (BGÜP vs KGÜP)":
         x="revision_pct", nbins=60, color="revision_direction",
         color_discrete_map=color_map,
         barmode="overlay", opacity=0.75,
-        title="Revizyon Büyüklüğü Dağılımı (BGÜP'e göre %)",
+        title="Revizyon Büyüklüğü Dağılımı (KGÜP'e göre %)",
         labels={"revision_pct": "Revizyon %", "revision_direction": "Yön"})
     dark(fig4, height=340)
     st.plotly_chart(fig4, use_container_width=True, key="pp_rev_hist")

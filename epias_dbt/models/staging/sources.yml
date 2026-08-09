@@ -67,7 +67,7 @@ sources:
         freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
 
       - name: dpp
-        description: "BGÜP — Beyan Edilen Günlük Üretim Planı (gün öncesi plan)"
+        description: "KGÜP — Kesinleşmiş Günlük Üretim Planı, gün öncesi (EPİAŞ 5.71, /v1/generation/data/dpp). Kaynak adı endpoint adını yansıtıyor; önceden 'BGÜP' olarak yanlış etiketlenmişti, bkz. plans/07-company-level-market-activity-kgup.md."
         # Backfill beklemede — freshness geçici olarak geniş tutuldu
         freshness: {warn_after: {count: 72, period: hour}, error_after: {count: 168, period: hour}}
 
@@ -76,7 +76,7 @@ sources:
         freshness: {warn_after: {count: 38, period: hour}, error_after: {count: 62, period: hour}}
 
       - name: sbfgp
-        description: "KGÜP — Kesinleşmiş Günlük Üretim Planı (GİP sonrası)"
+        description: "KUDÜP — Kesinleştirilmiş Uzlaştırma Dönemi Üretim Planı, GİP sonrası (EPİAŞ 5.83, /v1/generation/data/sbfgp). Kaynak adı endpoint adını yansıtıyor; önceden 'KGÜP' olarak yanlış etiketlenmişti — bu, 'dpp' kaynağının (gerçek KGÜP) sonraki uzlaştırma katmanı, bkz. plans/07-company-level-market-activity-kgup.md."
         # Freshness yok: tablo henüz mevcut değil, silver_sbfgp_backfill bekleniyor
 
       # --- Tüketim ve Talep ---

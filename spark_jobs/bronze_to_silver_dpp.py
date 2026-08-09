@@ -7,9 +7,13 @@ from spark_utils import BaseEpiasSparkJob
 
 class DppSilverJob(BaseEpiasSparkJob):
     """
-    Beyan Edilen Günlük Üretim Planı (BGÜP / DPP) verilerini işler.
-    Kaynak bazında saatlik planlanan üretimi gösterir.
-    NOT: Kesinleşmiş plan (KGÜP) için bronze_to_silver_sbfgp.py kullanılmalıdır.
+    Kesinleşmiş Günlük Üretim Planı (KGÜP) verilerini işler — EPİAŞ 5.71
+    (/v1/generation/data/dpp). Kod tabanında daha önce "BGÜP" deniyordu, yanlıştı
+    (bkz. plans/07-company-level-market-activity-kgup.md). Job/kaynak adı (dpp)
+    endpoint adını yansıtıyor, değiştirilmedi.
+    Kaynak bazında saatlik kesinleşen planlanan üretimi gösterir.
+    NOT: Uzlaştırma dönemine ait SONRAKİ katman (KUDÜP) için
+         bronze_to_silver_sbfgp.py kullanılmalıdır.
     """
     def __init__(self, spark=None):
         # Eski: primary_keys=["date", "organizationId", "uevcbId"]
@@ -28,7 +32,7 @@ class DppSilverJob(BaseEpiasSparkJob):
             self.finish()
             return
 
-        self.logger.info("DPP (BGÜP) verisi için tipler dönüştürülüyor...")
+        self.logger.info("DPP (KGÜP) verisi için tipler dönüştürülüyor...")
 
         df = df.withColumn("date", self.parse_epias_timestamp())
 

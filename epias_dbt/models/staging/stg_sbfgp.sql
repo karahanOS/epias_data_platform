@@ -5,9 +5,14 @@
     partition_by={"field": "date", "data_type": "date"}
 ) }}
 
--- SBFGP = Son Bildirim Günlük Üretim Planı = Kesinleşmiş Günlük Üretim Planı (KGÜP)
+-- SBFGP kaynağı aslında KUDÜP'tür (Kesinleştirilmiş Uzlaştırma Dönemi Üretim
+-- Planı), KGÜP değil — EPİAŞ'ın kendi başlığı "5.83. Kesinleştirilmiş Uzlaştırma
+-- Dönemi Üretim Planı (KUDÜP) Listeleme Servisi" (bkz.
+-- plans/07-company-level-market-activity-kgup.md). Model/kaynak tablo adı
+-- (stg_sbfgp / silver.sbfgp) değiştirilmedi — sadece bu yorum ve get_sbfgp()'nin
+-- docstring'i düzeltildi.
 -- GİP kapanışından sonra DUY 69. madde kapsamında güncellenen nihai plandır.
--- stg_dpp (BGÜP) ile farkı → intraday revizyon miktarı
+-- stg_dpp (gerçek KGÜP) ile farkı → intraday revizyon miktarı
 SELECT
     CAST(date AS DATE)                                    AS date,
     CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64)    AS hour,
