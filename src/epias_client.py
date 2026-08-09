@@ -268,6 +268,76 @@ class EPIASClient:
             self._date_body(start_date, end_date),
         ).get("items", [])
 
+    def get_dam_clearing_quantity_organizations(self, period: str) -> list:
+        """
+        GÖP eşleşme miktarı için organizasyon referans listesi (o dönemde aktif olanlar).
+        POST /v1/markets/dam/data/clearing-quantity-organization-list
+        Canlı testte (2026-08-09, period=2026-08-05) 1629 organizasyon döndü.
+        """
+        return self._post(
+            "/v1/markets/dam/data/clearing-quantity-organization-list",
+            {"period": self._to_iso(period, end_of_day=False)},
+        ).get("items", [])
+
+    def get_dam_clearing_quantity_by_organization(self, start_date: str, end_date: str) -> list:
+        """
+        GÖP şirket bazlı saatlik eşleşme miktarı (matchedBids/matchedOffers, MWh).
+
+        Tek bir bulk endpoint YOK (KGÜP'ün dpp-bulk'unun aksine) — önce
+        clearing-quantity-organization-list ile roster alınır, sonra HER
+        organizationId için ayrı ayrı clearing-quantity çağrılır.
+        ClearingQuantityRequestDto'nun kendi açıklaması ("Tüm Liste için bkz:
+        Göp Eşleşme Miktarı Organizasyon Listeleme Servisi") bu iki servisin
+        birlikte kullanılmasını zaten öngörüyor.
+
+        NOT (maliyet): canlı testte tek günlük roster 1629 organizasyon
+        döndürdü. Bu depoda belgelenen ~80 req/dk limitine göre bu fonksiyon
+        ~20 dakika sürer — SADECE günlük pipeline'da (hourly değil) kullan.
+        Çoğu organizasyon çoğu gün için 0 satır döner; bu gürültü değil,
+        gerçek "bugün pasif" sinyalidir.
+
+        NOT (roster kapsamı): roster `start_date` günü için çekiliyor. Geniş
+        bir start..end aralığı (backfill) için tek bir org, aralığın sadece
+        sonraki bir gününde aktif olmuşsa roster'da eksik kalabilir — günlük
+        pipeline'da (start_date == end_date) bu sorun değil.
+
+        Response satırlarında organizationId geri dönmüyor
+        (ClearingQuantityDataDto: sadece date/hour/matchedBids/matchedOffers)
+        — burada enjekte ediyoruz.
+        """
+        roster = self.get_dam_clearing_quantity_organizations(start_date)
+        body_base = self._date_body(start_date, end_date)
+        all_rows: list = []
+
+        for i, org in enumerate(roster):
+            org_id = org.get("organizationId")
+            if org_id is None:
+                continue
+            body = dict(body_base)
+            body["organizationId"] = org_id
+            try:
+                items = self._post("/v1/markets/dam/data/clearing-quantity", body).get("items", [])
+            except Exception as e:
+                self.logger.error(f"clearing-quantity org_id={org_id} için hata, atlanıyor: {e}")
+                continue
+            for row in items:
+                row["organizationId"] = org_id
+                row["organizationName"] = org.get("organizationName")
+            all_rows.extend(items)
+
+            # 80 req/dk limitinin altında kal (get_uevcb_list ile aynı ruh)
+            time.sleep(0.8)
+            if (i + 1) % 200 == 0:
+                self.logger.info(
+                    f"GÖP şirket bazlı eşleşme: {i + 1}/{len(roster)} organizasyon işlendi"
+                )
+
+        self.logger.info(
+            f"✅ GÖP şirket bazlı eşleşme miktarı tamamlandı — "
+            f"{len(roster)} organizasyon, {len(all_rows)} satır"
+        )
+        return all_rows
+
     def get_dam_trade_volume(self, start_date: str, end_date: str) -> list:
         """GÖP işlem hacmi (TL). POST /v1/markets/dam/data/day-ahead-market-trade-volume"""
         return self._post(

@@ -98,6 +98,28 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     "participants":     ("get_market_participants",         "bronze/participants",     True,  False, True),
     # backfill-only: not yet promoted to daily pipeline
     "sbfgp":            ("get_sbfgp",                       "bronze/sbfgp",            False, True,  False),
+    # dam_clearing_by_org: ADR-0007 Faz 1 (plans/07-company-level-market-activity-kgup.md).
+    # Şirket bazlı GÖP eşleşme miktarı (matchedBids/matchedOffers). GİP'te
+    # organizasyon atfı hiç yok (canlı doğrulandı) ama GÖP'te clearing-quantity
+    # organizationId filtresi destekliyor — tek eksik roster'ı, ki onu da
+    # clearing-quantity-organization-list veriyor. Bulk endpoint YOK: roster'daki
+    # HER organizasyon için ayrı bir POST demek (canlı testte 1629 organizasyon,
+    # ~20 dakika/gün @ ~80 req/dk limiti).
+    #
+    # ⚠️  daily_eligible=False BİLEREK: bu flag'in adı yanıltıcı — epias_dag.py'de
+    # "daily_eligible=True" olan HER kaynak, ALL_SOURCES üzerinden asıl hourly
+    # (schedule_interval="0 * * * *") pipeline'ın HER çalışmasına giriyor, günde
+    # bir kez değil (bkz. epias_dag.py:236 ALL_SOURCES = {... if v[4]}). Bu kaynağı
+    # oraya koymak 20 dakikalık işi saatte bir tekrarlamak, yani günde ~8 saat API
+    # çağrısı ve muhtemelen üst üste binen DAG run'ları demek olurdu (aynı sınıf
+    # hata epias_ptf_training_weekly.py'nin ayrılma gerekçesiyle — bkz. o dosyanın
+    # docstring'i). Bunun yerine dedicated bir günlük DAG kullanılıyor:
+    # dags/epias_gop_company_activity_dag.py (schedule_interval="30 11 * * *",
+    # yani ~14:30 TRT — GÖP açık artırması kapandıktan sonra). Bu dict girdisi
+    # sadece method_name/gcs_path için tek doğru kaynak (DRY) olarak burada duruyor.
+    # backfill_eligible=False: N gün × 1629 org backfill maliyeti aşırı; geriye
+    # dönük doldurma gerekirse ayrı, hız sınırlı bir script ile yapılmalı.
+    "dam_clearing_by_org": ("get_dam_clearing_quantity_by_organization", "bronze/dam_clearing_by_org", True, False, False),
 }
 
 # Models excluded from dbt runs while their Silver backfill is incomplete.

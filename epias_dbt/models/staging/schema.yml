@@ -205,6 +205,26 @@ models:
               values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
               quote: false
 
+  - name: stg_dam_clearing_by_org
+    description: "GÖP şirket bazlı saatlik eşleşme miktarı (matchedBids/matchedOffers) — ADR-0007 Faz 1"
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date
+            - hour
+            - organization_id
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: hour
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+      - name: organization_id
+        tests: [not_null]
+
   - name: stg_imbalance
     description: "Dengesizlik miktarı ve gerçekleşen üretim/tüketim — saatlik (EPIAS)"
     tests:

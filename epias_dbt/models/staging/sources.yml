@@ -27,6 +27,12 @@ sources:
         description: "GÖP saatlik alış/satış eşleşme hacimleri"
         freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}
 
+      - name: dam_clearing_by_org
+        description: "GÖP şirket bazlı saatlik eşleşme miktarı (matchedBids/matchedOffers) — ADR-0007 Faz 1 (plans/07-company-level-market-activity-kgup.md). Ayrı günlük DAG'da (epias_gop_company_activity_daily, 11:30 UTC) üretilir, hourly değil."
+        # Günlük (hourly değil) bir DAG tarafından üretiliyor — geniş marj
+        # (interim_mcp'nin ~14:00 TRT sonrası yayın gerekçesiyle aynı mantık).
+        freshness: {warn_after: {count: 30, period: hour}, error_after: {count: 48, period: hour}}
+
       - name: idm_transactions
         description: "GİP (Gün İçi Piyasası) bireysel işlem kayıtları"
         freshness: {warn_after: {count: 26, period: hour}, error_after: {count: 50, period: hour}}

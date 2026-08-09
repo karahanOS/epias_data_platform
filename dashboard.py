@@ -1766,33 +1766,38 @@ elif page == "⚡ GİP & Hava Durumu":
                 dark(fig4, height=360, coloraxis_colorbar=dict(title="Rüzgar"))
                 st.plotly_chart(fig4, use_container_width=True, key="gip_wx_corr")
 
-    # ── COMPANY ACTIVITY ─────────────────────────────────────────────────────
+    # ── COMPANY ACTIVITY (GÖP, GİP değil — ADR-0007 Faz 1) ───────────────────
+    # GİP'te (bu sayfanın geri kalanı) hiçbir EPİAŞ endpoint'i işlemi bir
+    # şirkete atfetmiyor — 16 GİP endpoint'i tek tek doğrulandı (bkz.
+    # plans/07-company-level-market-activity-kgup.md). Bu bölüm bu yüzden
+    # GÖP'e (Gün Öncesi Piyasası) dayanıyor — clearing-quantity endpoint'inin
+    # organizationId filtresi üzerinden, gerçek ve doğrulanmış veri.
     st.markdown("---")
-    st.markdown("### 🏢 Şirket Bazlı GİP Aktivitesi")
+    st.markdown("### 🏢 Şirket Bazlı GÖP Aktivitesi")
+    st.caption("GİP değil, Gün Öncesi Piyasası (GÖP) — EPİAŞ'ın herkese açık API'si GİP işlemlerini şirkete atfetmiyor (karşı taraf anonimliği).")
 
     df_co = query(f"""
         SELECT
             trade_date AS date,
             organization_name,
-            organization_code,
-            SUM(total_buy_mwh)          AS buy_mwh,
-            SUM(total_sell_mwh)         AS sell_mwh,
-            SUM(net_position_mwh)       AS net_mwh,
-            SUM(total_volume_mwh)       AS vol_mwh,
-            SUM(total_transaction_count) AS txn_count
-        FROM {tbl('mart_gip_company_analysis')}
+            SUM(total_bids_mwh)    AS bids_mwh,
+            SUM(total_offers_mwh)  AS offers_mwh,
+            SUM(net_position_mwh)  AS net_mwh,
+            SUM(total_volume_mwh)  AS vol_mwh,
+            SUM(active_hours)      AS active_hours
+        FROM {tbl('mart_company_gop_activity')}
         WHERE EXTRACT(YEAR FROM trade_date) = {sel_year}{_month_filter_td}
           AND organization_name IS NOT NULL
-        GROUP BY 1, 2, 3
+        GROUP BY 1, 2
         ORDER BY vol_mwh DESC
     """)
 
     if df_co.empty:
-        st.info("Şirket bazlı GİP verisi henüz mevcut değil. "
-                "stg_idm_transactions ve mart_gip_company_analysis rebuild gerekebilir.")
+        st.info("Şirket bazlı GÖP verisi henüz mevcut değil. "
+                "epias_gop_company_activity_daily DAG'ı ve mart_company_gop_activity rebuild gerekebilir.")
     else:
         # ── Top-10 by volume ──────────────────────────────────────────────
-        top10 = (df_co.groupby("organization_name")[["buy_mwh","sell_mwh","vol_mwh"]]
+        top10 = (df_co.groupby("organization_name")[["bids_mwh","offers_mwh","vol_mwh"]]
                  .sum().sort_values("vol_mwh", ascending=False).head(10).reset_index())
 
         col_co1, col_co2 = st.columns(2)
@@ -1800,18 +1805,18 @@ elif page == "⚡ GİP & Hava Durumu":
         with col_co1:
             fig_co = go.Figure()
             fig_co.add_trace(go.Bar(
-                y=top10["organization_name"], x=top10["buy_mwh"],
+                y=top10["organization_name"], x=top10["bids_mwh"],
                 name="Alış (MWh)", orientation="h",
                 marker_color="rgba(16,185,129,0.75)"))
             fig_co.add_trace(go.Bar(
-                y=top10["organization_name"], x=top10["sell_mwh"],
+                y=top10["organization_name"], x=top10["offers_mwh"],
                 name="Satış (MWh)", orientation="h",
                 marker_color="rgba(239,68,68,0.75)"))
             fig_co.update_layout(**DARK_LAYOUT, barmode="stack", height=400,
-                title="En Aktif 10 Şirket — Alış / Satış Hacmi",
+                title="En Aktif 10 Şirket — GÖP Alış / Satış Hacmi",
                 xaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)"),
                 yaxis=dict(autorange="reversed"))
-            st.plotly_chart(fig_co, use_container_width=True, key="gip_co_bar")
+            st.plotly_chart(fig_co, use_container_width=True, key="gop_co_bar")
 
         with col_co2:
             # Net position: buyer-heavy vs seller-heavy companies
@@ -1826,18 +1831,18 @@ elif page == "⚡ GİP & Hava Durumu":
                 xaxis=dict(title="MWh", gridcolor="rgba(255,255,255,0.05)",
                            zeroline=True, zerolinecolor="rgba(255,255,255,0.2)"),
                 yaxis=dict(autorange="reversed"))
-            st.plotly_chart(fig_net, use_container_width=True, key="gip_co_net")
+            st.plotly_chart(fig_net, use_container_width=True, key="gop_co_net")
 
         # ── Summary table ─────────────────────────────────────────────────
         st.markdown("#### Şirket Özet Tablosu")
-        summary = (df_co.groupby(["organization_name","organization_code"])
-                   [["buy_mwh","sell_mwh","net_mwh","vol_mwh","txn_count"]]
+        summary = (df_co.groupby("organization_name")
+                   [["bids_mwh","offers_mwh","net_mwh","vol_mwh","active_hours"]]
                    .sum().sort_values("vol_mwh", ascending=False).reset_index())
-        summary.columns = ["Şirket", "Kod", "Alış (MWh)", "Satış (MWh)",
-                            "Net Pozisyon (MWh)", "Toplam Hacim (MWh)", "İşlem Adedi"]
+        summary.columns = ["Şirket", "Alış (MWh)", "Satış (MWh)",
+                            "Net Pozisyon (MWh)", "Toplam Hacim (MWh)", "Aktif Saat Sayısı"]
         for col in ["Alış (MWh)","Satış (MWh)","Net Pozisyon (MWh)","Toplam Hacim (MWh)"]:
             summary[col] = summary[col].map(lambda x: f"{x:,.1f}")
-        summary["İşlem Adedi"] = summary["İşlem Adedi"].map(lambda x: f"{x:,}")
+        summary["Aktif Saat Sayısı"] = summary["Aktif Saat Sayısı"].map(lambda x: f"{x:,}")
         st.dataframe(summary, use_container_width=True, hide_index=True)
 
 
