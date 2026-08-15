@@ -19,19 +19,29 @@ SELECT
 FROM {{ source('silver', 'idm_transactions') }} AS s
 
 {% if is_incremental() %}
+{% set cutoff = (run_started_at.date() - modules.datetime.timedelta(days=7)) %}
 WHERE DATE(s.date) >= (SELECT MAX(date) FROM {{ this }})
-  -- Partition-pruning hint (2026-08-15): the line above filters on `date`, a
-  -- column INSIDE the Parquet files, which the external table's Hive
-  -- partitioning (year/month/day, auto-detected from the GCS path by
-  -- load_to_bigquery.py) cannot use to skip files -- confirmed via
-  -- INFORMATION_SCHEMA.JOBS_BY_PROJECT that real merge runs were scanning
-  -- 250-600+ MB from an external table that only ever needs ~1 new day's
-  -- worth (~1 MB). This second condition is redundant with the one above for
-  -- correctness (it does not change which rows are selected) but lets
-  -- BigQuery prune whole day-partition files before reading them. The 1-day
-  -- buffer matches the cross-partition-boundary handling already documented
-  -- below (a transaction can land in either of two adjacent day-partitions).
-  AND DATE(s.year, s.month, s.day) >= DATE_SUB((SELECT MAX(date) FROM {{ this }}), INTERVAL 1 DAY)
+  -- Partition-pruning hint (2026-08-15, revised): first attempt used
+  -- DATE(s.year, s.month, s.day) >= DATE_SUB((SELECT MAX(date) FROM {{ this }}), ...)
+  -- and confirmed via INFORMATION_SCHEMA.JOBS_BY_PROJECT that it did NOT
+  -- prune -- 578 MiB / 606M bytes processed, identical to before the change.
+  -- Two likely reasons: wrapping the partition columns in DATE(...) hides
+  -- them from the optimizer, and bounding by a correlated subquery
+  -- (SELECT MAX(date) FROM {{ this }}) may not be resolvable before file
+  -- selection. This version uses raw, unwrapped year/month/day comparisons
+  -- against a literal cutoff computed at dbt-compile time (Jinja, not SQL) --
+  -- the textbook-correct shape for triggering partition elimination. 7-day
+  -- buffer (not 1) because this exact pipeline has already had real
+  -- multi-day outages (billing suspension, dedup incident) -- must stay
+  -- correct even after a gap that long. Still redundant with the line above
+  -- for correctness; only changes what gets scanned, not what gets selected.
+  -- NOT YET CONFIRMED to actually prune -- verify via INFORMATION_SCHEMA
+  -- before trusting this comment.
+  AND (
+    s.year > {{ cutoff.year }}
+    OR (s.year = {{ cutoff.year }} AND s.month > {{ cutoff.month }})
+    OR (s.year = {{ cutoff.year }} AND s.month = {{ cutoff.month }} AND s.day >= {{ cutoff.day }})
+  )
 {% endif %}
 -- Confirmed via real data (2026-07-27): the same transaction id can appear in
 -- two adjacent Hive day-partitions with identical content (e.g. a transaction
