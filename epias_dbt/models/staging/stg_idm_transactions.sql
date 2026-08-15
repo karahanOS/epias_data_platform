@@ -1,13 +1,7 @@
-{% set dest_cutoff = (run_started_at.date() - modules.datetime.timedelta(days=14)).strftime('%Y-%m-%d') %}
-
 {{ config(
     materialized='incremental',
-    unique_key=['id'],
-    incremental_strategy='merge',
-    partition_by={"field": "date", "data_type": "date"},
-    incremental_predicates=[
-        "DBT_INTERNAL_DEST.date >= DATE('" ~ dest_cutoff ~ "')"
-    ]
+    incremental_strategy='insert_overwrite',
+    partition_by={"field": "date", "data_type": "date"}
 ) }}
 
 -- Split 2026-08-15 (see stg_idm_transactions_recent.sql for why): this model
@@ -16,20 +10,33 @@
 -- WHERE clause -- confirmed by two failed fix attempts, each scanning the
 -- full 578 MB table. stg_idm_transactions_recent.sql does the actual
 -- pruned read (a plain SELECT, which prunes correctly) into a small native
--- table; this model just merges from that.
+-- table; this model just writes from that.
 --
--- Second, separate fix (same day): even after the source side dropped to
--- 8.3 MB, the MERGE itself still scanned 586 MB -- because a MERGE also has
--- to check the DESTINATION table for each incoming id, and this destination
--- has accumulated history since 2025 with nothing scoping that lookup.
--- incremental_predicates adds a filter on DBT_INTERNAL_DEST (dbt-bigquery's
--- alias for the MERGE's target) so BigQuery can prune destination partitions
--- too -- this table IS native (not external), so partition pruning inside
--- MERGE isn't subject to the limitation found above. 14-day buffer is double
--- the source model's 7-day window: any incoming row's `id` is tied to a
--- `date` within the last 7 days, so a genuine match in the destination must
--- also fall within a similarly recent window -- 14 days is a safe margin,
--- not a tight one.
+-- Third fix, same day: even reading from the small 8.3 MB source, and even
+-- after adding incremental_predicates to filter the destination side, the
+-- MERGE still scanned ~606 MB every run -- confirmed via `bq show` that the
+-- destination table (605 MB, 590 partitions) really is correctly
+-- date-partitioned, so this isn't a missing-partitioning problem. It's a
+-- documented BigQuery characteristic: MERGE statements generally scan the
+-- entire target table regardless of predicates, because evaluating
+-- WHEN NOT MATCHED conceptually requires checking the whole table. Switched
+-- from `merge`/`unique_key` to `insert_overwrite`, which replaces whole
+-- day-partitions atomically instead of row-matching by id -- partition
+-- replacement prunes correctly since it operates on the partition key
+-- directly.
+--
+-- Trade-off (accepted 2026-08-15): the cross-partition-boundary dedup below
+-- (an id landing in two adjacent day-partitions) stays safe as long as both
+-- adjacent partitions are in the same run's touched range, which they
+-- normally are -- each run's touched range sits at the current leading
+-- edge. Unlike MERGE's global id-matching, insert_overwrite would not clean
+-- up a stale duplicate if an id's "winning" day ever shifted to fall
+-- outside the currently-touched partitions between runs. Deemed acceptable:
+-- the dedup logic itself (QUALIFY in stg_idm_transactions_recent.sql) is
+-- deterministic and re-evaluates the same 7-day window fresh every run, so
+-- once a day's partition is written correctly it stays correct unless the
+-- underlying raw Silver data for that day changes later -- a scenario that
+-- would have needed a manual reprocess under the old MERGE strategy too.
 
 SELECT
     id,
