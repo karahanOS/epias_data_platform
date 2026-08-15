@@ -194,6 +194,30 @@ class EPIASClient:
             "endDate":   self._to_iso(end,   end_of_day=True),
         }
 
+    @staticmethod
+    def _safe_end_iso(end_date: str) -> str:
+        """End-of-day ISO zaman damgası — end_date bugünse "şimdi - 1 saat"e
+        sınırlanır.
+
+        EPIAS bazı BPM endpoint'lerinde (system-marginal-price doğrulandı,
+        2026-08-15) gelecekteki bir endDate'i reddediyor:
+        errorCode "(VAL)SEF1116" — "Verilen tarih bilgisi(endDate) geçmiş
+        zaman olmalıdır." Körlemesine T23:00 göndermek (_to_iso'nun normal
+        end_of_day davranışı) bugünün tarihi için gece yarısına kadar hep
+        gelecekte kalıyor ve her istek reddediliyor — bu, get_smf'nin
+        DATA_DELAYS'te delay=1 ile tamamen ertelenmesinin asıl sebebiydi
+        (bkz. epias_dag.py). Canlı doğrulandı: "şimdi"ye yakın geçmiş bir
+        endDate göndermek başarılı oluyor ve SMF için gerçekten ~5-6 saat
+        önceye kadar veri dönüyor — EPİAŞ Kurul Kararı 10711'in resmi S+5
+        yayın gecikmesiyle örtüşüyor. 1 saatlik tampon, saat sınırında
+        clock-skew/gecikme kaynaklı reddi önlemek için.
+        """
+        now_tr = datetime.utcnow() + timedelta(hours=3)
+        if end_date == now_tr.strftime("%Y-%m-%d"):
+            safe_now = now_tr - timedelta(hours=1)
+            return safe_now.strftime("%Y-%m-%dT%H:00:00+03:00")
+        return EPIASClient._to_iso(end_date, end_of_day=True)
+
     # ═════════════════════════════════════════════════════════════════════════
     # ENDPOINTler
     # ═════════════════════════════════════════════════════════════════════════
@@ -237,10 +261,19 @@ class EPIASClient:
         return self.get_ptf(start_date, end_date)
 
     def get_smf(self, start_date: str, end_date: str) -> list:
-        """Sistem Marjinal Fiyatı. POST /v1/markets/bpm/data/system-marginal-price"""
+        """Sistem Marjinal Fiyatı. POST /v1/markets/bpm/data/system-marginal-price
+
+        end_date bugünse endDate _safe_end_iso ile "şimdi - 1 saat"e
+        sınırlanır (bkz. _safe_end_iso docstring) — aynı gün içinde
+        elde edilebilecek en taze SMF verisini (resmi S+5 gecikmeyle)
+        güvenle çeker.
+        """
         data = self._post(
             "/v1/markets/bpm/data/system-marginal-price",
-            self._date_body(start_date, end_date),
+            {
+                "startDate": self._to_iso(start_date, end_of_day=False),
+                "endDate":   self._safe_end_iso(end_date),
+            },
         ).get("items", [])
         for row in data:
             val = row.get("systemMarginalPrice")

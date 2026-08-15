@@ -43,15 +43,28 @@ BUCKET_NAME   = "epias-data-lake"
 # ── VERİ GECİKME TABLOSU ─────────────────────────────────────────────────────
 DATA_DELAYS: Dict[str, int] = {
     "get_ptf_smf_sdf":                  0,
-    # smf/idm_transaction_history/outages: EPIAS API rejects endDate >= today
-    # for these three ("endDate must be in the past"). Under the daily
-    # schedule this never surfaced (ds was effectively yesterday by the time
-    # the DAG ran). Under hourly scheduling ds is always "today" intraday, so
-    # these three failed on every single hourly run once the hourly schedule
-    # went live (2026-07-24) — cascading into silver_batch failures and
-    # blocking load_silver_to_bigquery/run_dbt_gold_models for the whole
-    # pipeline. Fix: delay=1, same pattern as get_injection_quantity.
-    "get_smf":                          1,
+    # idm_transaction_history/outages: EPIAS API rejects endDate >= today for
+    # these two ("endDate must be in the past"). Under the daily schedule this
+    # never surfaced (ds was effectively yesterday by the time the DAG ran).
+    # Under hourly scheduling ds is always "today" intraday, so these failed
+    # on every single hourly run once the hourly schedule went live
+    # (2026-07-24) — cascading into silver_batch failures and blocking
+    # load_silver_to_bigquery/run_dbt_gold_models for the whole pipeline.
+    # Fix: delay=1, same pattern as get_injection_quantity.
+    #
+    # get_smf used to be in this same delay=1 group, but the actual root
+    # cause (2026-08-15 investigation, SMF forecaster plan) turned out to be
+    # narrower than "same-day is rejected": EPIAS errorCode (VAL)SEF1116
+    # rejects any endDate *timestamp* that's still in the future, and
+    # epias_client.py's _date_body() always requested through end-of-day
+    # 23:00 — trivially future for any same-day query issued before midnight.
+    # get_smf now internally caps endDate at "now - 1h" for same-day requests
+    # (EPIASClient._safe_end_iso) and was live-verified to return real SMF
+    # data up to ~5-6h old, matching the official S+5 publish lag (EPİAŞ
+    # Kurul Kararı 10711, row 53) — so delay=0 is now correct and lets every
+    # hourly run pick up the freshest available SMF as the day progresses,
+    # same as most other sources (see schedule_interval comment below).
+    "get_smf":                          0,
     "get_supply_demand":                0,
     "get_dam_clearing_quantity":        0,
     "get_price_independent_bid":        0,

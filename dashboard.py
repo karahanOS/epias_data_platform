@@ -11,7 +11,8 @@ Sayfalar:
   5. 🔋 Arz-Talep & Residual Yük — mart_supply_demand + mart_forecasted_residual_load + mart_ptf_drivers
   6. 🚨 Arz Şoku & Risk          — mart_supply_shock_index
   7. 🤖 PTF Tahmin & ML          — mart_ptf_lag_features + gold_ptf_predictions
-  8. 🌿 Lisanssız Üretim (YEKDEM)— mart_unlicensed_impact
+  8. 🔋 SMF Tahmin & ML          — mart_smf_lag_features + gold_smf_predictions (2-stage: yön + fiyat)
+  9. 🌿 Lisanssız Üretim (YEKDEM)— mart_unlicensed_impact
 """
 
 import decimal as _decimal
@@ -164,12 +165,14 @@ def get_gcs_client():
         return storage.Client(project=PROJECT)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_shap_importance() -> pd.DataFrame:
-    """Fetch the SHAP importance CSV straight from GCS (written by ptf_trainer.py's
-    weekly retrain via upload_to_gcs) instead of reading the committed models/
-    directory file, which nothing ever refreshes after the initial commit."""
+def load_shap_importance(blob_path: str = "models/ptf_shap_importance.csv") -> pd.DataFrame:
+    """Fetch a SHAP importance CSV straight from GCS (written by the relevant
+    trainer's weekly retrain via upload_to_gcs) instead of reading a committed
+    models/ directory file, which nothing ever refreshes after the initial
+    commit. blob_path defaults to PTF's for backward compatibility; smf_trainer.py
+    writes models/smf_direction_importance.csv and models/smf_price_importance.csv."""
     import io
-    blob = get_gcs_client().bucket(GCS_BUCKET).blob("models/ptf_shap_importance.csv")
+    blob = get_gcs_client().bucket(GCS_BUCKET).blob(blob_path)
     return pd.read_csv(io.BytesIO(blob.download_as_bytes()))
 
 # NOT persist="disk": Streamlit silently ignores ttl for persisted caches (logs
@@ -273,6 +276,7 @@ with st.sidebar:
         "🔋 Arz-Talep & Residual Yük",
         "🚨 Arz Şoku & Risk",
         "🤖 PTF Tahmin & ML",
+        "🔋 SMF Tahmin & ML",
         "🌿 Lisanssız Üretim (YEKDEM)",
         "⚡ GİP & Hava Durumu",
         "🏭 Üretim Planı (KGÜP vs KUDÜP)",
@@ -1617,6 +1621,326 @@ elif page == "🤖 PTF Tahmin & ML":
     dark(fig5, height=360, title="Günlük PTF vs 24h Hareketli Ortalama",
          yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
     st.plotly_chart(fig5, use_container_width=True, key="ml_roll")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 7b — SMF TAHMİN & ML (2 aşamalı: yön sınıflandırıcı + fiyat regresörü)
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🔋 SMF Tahmin & ML":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>ML</span>
+        <h1>SMF Tahmin Modeli — Yön + Fiyat (2 Aşamalı)</h1>
+        <p>XGBoost backtesting, 5h/24h/168h lag korelasyonları ve feature importance</p>
+    </div>""", unsafe_allow_html=True)
+
+    df_lag = query(f"""
+        SELECT date, hour, smf_try, system_direction,
+               smf_try_lag_5h, smf_try_lag_24h, smf_try_lag_168h, smf_rolling_avg_24h,
+               EXTRACT(YEAR FROM date) AS year
+        FROM {tbl('mart_smf_lag_features')}
+        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
+        ORDER BY date, hour
+    """)
+
+    # gold_smf_predictions is a BACKTEST table — only already-settled hours —
+    # same rationale as gold_ptf_predictions, see that page's comment.
+    df_pred = query(f"""
+        SELECT predicted_date, hour, predicted_smf, predicted_direction,
+               proba_energy_deficit, proba_energy_surplus, proba_in_balance
+        FROM {tbl('gold_smf_predictions')}
+        WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+        ORDER BY predicted_date, hour
+    """)
+    if not df_pred.empty:
+        df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
+        df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").fillna(-1).astype(int)
+
+    # "What do we currently think this hour's SMF is" — real (mart_smf_realized)
+    # preferred, model forward prediction only where real doesn't cover yet.
+    df_outlook = query(f"""
+        SELECT date, hour, datetime, value, value_source FROM {tbl('mart_smf_forecast_outlook')}
+        WHERE date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+        ORDER BY date, hour
+    """)
+    if not df_outlook.empty:
+        df_outlook["date"] = pd.to_datetime(df_outlook["date"])
+        df_outlook["datetime"] = pd.to_datetime(df_outlook["datetime"], utc=True).dt.tz_localize(None)
+        df_outlook["hour"] = pd.to_numeric(df_outlook["hour"], errors="coerce").fillna(-1).astype(int)
+
+    df_fwd_acc = query(f"""
+        SELECT predicted_date, hour, predicted_smf, predicted_direction, actual_smf, actual_direction, lead_time_hours
+        FROM {tbl('gold_smf_forward_accuracy')}
+        WHERE predicted_date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+        ORDER BY predicted_date, hour
+    """)
+    if not df_fwd_acc.empty:
+        df_fwd_acc["predicted_date"] = pd.to_datetime(df_fwd_acc["predicted_date"])
+        df_fwd_acc["hour"] = pd.to_numeric(df_fwd_acc["hour"], errors="coerce").fillna(-1).astype(int)
+        df_fwd_acc["ts"] = df_fwd_acc["predicted_date"] + pd.to_timedelta(df_fwd_acc["hour"], unit="h")
+        for col in ("predicted_smf", "actual_smf", "lead_time_hours"):
+            df_fwd_acc[col] = pd.to_numeric(df_fwd_acc[col], errors="coerce")
+
+    if df_lag.empty:
+        st.warning("Veri bulunamadı.")
+        st.stop()
+
+    dfy = df_lag.dropna(subset=["smf_try_lag_24h", "smf_try_lag_168h", "smf_rolling_avg_24h"])
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Ort SMF", f"{dfy['smf_try'].mean():,.2f} TL")
+    c2.metric("T-5h Korel.", f"{dfy['smf_try'].corr(dfy['smf_try_lag_5h']):.3f}",
+              help="2026-08-15 aynı-gün SMF düzeltmesiyle mümkün olan taze sinyal — bkz. epias_client.py _safe_end_iso")
+    c3.metric("T-24h Korel.", f"{dfy['smf_try'].corr(dfy['smf_try_lag_24h']):.3f}")
+    c4.metric("T-168h Korel.", f"{dfy['smf_try'].corr(dfy['smf_try_lag_168h']):.3f}")
+
+    st.markdown("---")
+
+    col_5h, col_24h, col_168h = st.columns(3)
+
+    with col_5h:
+        fig = px.scatter(dfy.dropna(subset=["smf_try_lag_5h"]).sample(
+                min(3000, dfy["smf_try_lag_5h"].notna().sum()), random_state=42),
+            x="smf_try_lag_5h", y="smf_try", opacity=0.4, trendline="ols",
+            color_discrete_sequence=["#22d3ee"],
+            title="SMF(t) vs SMF(t-5h) — Taze Sinyal",
+            labels={"smf_try_lag_5h": "SMF t-5h (TL/MWh)", "smf_try": "SMF t (TL/MWh)"})
+        dark(fig)
+        st.plotly_chart(fig, use_container_width=True, key="smf_ml_lag5")
+
+    with col_24h:
+        fig2 = px.scatter(dfy.sample(min(3000, len(dfy)), random_state=42),
+            x="smf_try_lag_24h", y="smf_try", opacity=0.4, trendline="ols",
+            color_discrete_sequence=["#00d4ff"],
+            title="SMF(t) vs SMF(t-24h)",
+            labels={"smf_try_lag_24h": "SMF t-24h (TL/MWh)", "smf_try": "SMF t (TL/MWh)"})
+        dark(fig2)
+        st.plotly_chart(fig2, use_container_width=True, key="smf_ml_lag24")
+
+    with col_168h:
+        fig3 = px.scatter(dfy.sample(min(3000, len(dfy)), random_state=42),
+            x="smf_try_lag_168h", y="smf_try", opacity=0.4, trendline="ols",
+            color_discrete_sequence=["#7c3aed"],
+            title="SMF(t) vs SMF(t-168h)",
+            labels={"smf_try_lag_168h": "SMF t-168h (TL/MWh)", "smf_try": "SMF t (TL/MWh)"})
+        dark(fig3)
+        st.plotly_chart(fig3, use_container_width=True, key="smf_ml_lag168")
+
+    # ── FORWARD FORECAST PANEL ────────────────────────────────────────────────
+    st.markdown("### 🔮 İleriye Yönelik Tahmin (Gerçek Forward-Looking)")
+
+    if df_outlook.empty:
+        df_real_line  = pd.DataFrame()
+        df_model_line = pd.DataFrame()
+    else:
+        df_real_line  = df_outlook[df_outlook["value_source"] != "model"].sort_values("datetime")
+        df_model_line = df_outlook[df_outlook["value_source"] == "model"].sort_values("datetime")
+
+    if df_outlook.empty:
+        st.info(
+            "**Henüz ileriye dönük veri yok.**  \n"
+            "`mart_smf_realized`, aynı-gün SMF verisi (S+5 gecikmeyle) geldikçe otomatik dolar; "
+            "`gold_smf_forward_predictions` ise saatlik inference çalışmasıyla üretilir.  \n"
+            "Airflow DAG: `smf_hourly_inference → run_smf_inference`"
+        )
+    else:
+        fig_fwd = go.Figure()
+        if not df_real_line.empty:
+            fig_fwd.add_trace(go.Scatter(
+                x=df_real_line["datetime"], y=df_real_line["value"],
+                mode="lines+markers",
+                name="Gerçekleşen SMF",
+                line=dict(color="#00d4ff", width=2.5),
+                fill="tozeroy", fillcolor="rgba(0,212,255,0.07)",
+                hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
+            ))
+        if not df_model_line.empty:
+            fig_fwd.add_trace(go.Scatter(
+                x=df_model_line["datetime"], y=df_model_line["value"],
+                mode="lines+markers",
+                name="XGBoost Tahmin",
+                line=dict(color="#ff6b35", width=2.5, dash="dash"),
+                hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
+            ))
+        if not df_fwd_acc.empty:
+            fig_fwd.add_trace(go.Scatter(
+                x=df_fwd_acc["ts"], y=df_fwd_acc["predicted_smf"],
+                mode="markers",
+                name="Geçmiş Model Tahmini (arşiv)",
+                marker=dict(
+                    size=8, symbol="diamond", color="#facc15",
+                    line=dict(width=0.5, color="rgba(0,0,0,0.4)"),
+                ),
+                customdata=df_fwd_acc[["actual_smf", "lead_time_hours"]],
+                hovertemplate=(
+                    "%{x|%d %b %H:%M}<br>Tahmin: %{y:,.0f} TL/MWh<br>"
+                    "Gerçekleşen: %{customdata[0]:,.0f} TL/MWh<br>"
+                    "Lead: %{customdata[1]:.0f} saat<extra></extra>"
+                ),
+            ))
+        dark(fig_fwd, height=380,
+             title="Saatlik SMF — Gerçekleşen, Canlı ve Geçmiş Model Tahmini",
+             yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
+             hovermode="x unified")
+        st.plotly_chart(fig_fwd, use_container_width=True, key="smf_ml_forward")
+
+        _forward_values = df_outlook["value"].dropna()
+        fw1, fw2, fw3 = st.columns(3)
+        if _forward_values.empty:
+            fw1.metric("Ort. SMF", "—")
+            fw2.metric("Maks SMF", "—")
+            fw3.metric("Min SMF",  "—")
+        else:
+            fw1.metric("Ort. SMF", f"{_forward_values.mean():,.2f} TL/MWh")
+            fw2.metric("Maks SMF", f"{_forward_values.max():,.2f} TL/MWh")
+            fw3.metric("Min SMF",  f"{_forward_values.min():,.2f} TL/MWh")
+        st.caption(
+            f"🔵 {len(df_real_line)} saat gerçekleşen SMF — tahmin değil. "
+            f"🟠 {len(df_model_line)} saat canlı model tahmini. "
+            f"🔶 {len(df_fwd_acc)} saat geçmiş (çözülmüş) model tahmini arşivi."
+        )
+
+    # ── BACKTESTING ───────────────────────────────────────────────────────────
+    if df_pred.empty:
+        st.info(
+            "**Tahmin tablosu henüz mevcut değil.**  \n"
+            "`gold_smf_predictions` tablosu ilk `smf_inference.py` çalışması "
+            "tamamlandıktan sonra otomatik olarak oluşturulur.  \n"
+            "Airflow DAG: `smf_hourly_inference → run_smf_inference`"
+        )
+    else:
+        st.markdown("### 🎯 Model Backtesting — Gerçekleşen vs Tahmin (Fiyat + Yön)")
+
+        df_pred = df_pred.drop_duplicates(subset=["predicted_date", "hour"])
+
+        _pred_dates = df_pred["predicted_date"].dropna()
+        if _pred_dates.empty:
+            st.warning("Tahmin tarihleri yüklenemedi — `predicted_date` sütunu boş.")
+            st.stop()
+        _bt_min = _pred_dates.min().strftime("%Y-%m-%d")
+        _bt_max = (_pred_dates.max() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+        # stg_smf + stg_system_direction (not the Gold mart) — same hour-alignment
+        # rationale as the PTF page's backtest query (see that page's comment).
+        df_actual = query(f"""
+            SELECT s.date, s.hour, s.smf_try, sd.system_direction
+            FROM {tbl('stg_smf')} s
+            LEFT JOIN {tbl('stg_system_direction')} sd
+              ON sd.date = s.date AND sd.hour = s.hour
+            WHERE s.date BETWEEN '{_bt_min}' AND '{_bt_max}'
+            ORDER BY s.date, s.hour
+        """)
+
+        if df_actual.empty:
+            merged = pd.DataFrame()
+        else:
+            df_actual["date"] = pd.to_datetime(df_actual["date"])
+            merged = df_actual.merge(
+                df_pred, left_on=["date", "hour"], right_on=["predicted_date", "hour"],
+                how="inner")
+
+        if not merged.empty:
+            merged["ts"] = merged["date"] + pd.to_timedelta(merged["hour"], unit="h")
+
+            err  = merged["smf_try"] - merged["predicted_smf"]
+            mae  = err.abs().mean()
+            rmse = (err**2).mean()**0.5
+            bias = -err.mean()
+
+            _smape_denom = (merged["smf_try"].abs() + merged["predicted_smf"].abs()) / 2
+            smape = err.abs().div(_smape_denom.replace(0, float("nan"))).mean() * 100
+
+            _actual_by_ts = df_actual.assign(
+                ts=df_actual["date"] + pd.to_timedelta(df_actual["hour"], unit="h")
+            ).set_index("ts")["smf_try"]
+            naive_pred = (merged["ts"] - pd.Timedelta(hours=24)).map(_actual_by_ts)
+            _naive_mae = (merged["smf_try"] - naive_pred).abs().mean()
+            mase = mae / _naive_mae if pd.notna(_naive_mae) and _naive_mae > 0 else float("nan")
+
+            direction_acc = (merged["predicted_direction"] == merged["system_direction"]).mean()
+
+            cm1, cm2, cm3, cm4, cm5, cm6 = st.columns(6)
+            cm1.metric("MAE", f"{mae:,.2f} TL/MWh")
+            cm2.metric("RMSE", f"{rmse:,.2f} TL/MWh")
+            cm3.metric("sMAPE", f"%{smape:.2f}")
+            cm4.metric("MASE (T-24h naive'e göre)",
+                       f"{mase:.2f}" if pd.notna(mase) else "—",
+                       help="<1: model, 'dünkü fiyatı tahmin et' naive yöntemini geçiyor. >1: naive daha iyi.")
+            cm5.metric("Bias", f"{bias:+,.2f} TL/MWh")
+            cm6.metric("Yön Doğruluğu", f"%{direction_acc*100:.1f}",
+                       help="Stage-1 sınıflandırıcının tahmin ettiği sistem yönü (Açık/Fazla/Dengede) gerçekleşenle eşleşme oranı")
+
+            _ts_max = merged["ts"].max()
+            _window_start = _ts_max - pd.Timedelta(days=7)
+            sample = (merged[merged["ts"] >= _window_start]
+                      .set_index("ts")
+                      .reindex(pd.date_range(_window_start.ceil("h"), _ts_max, freq="h")))
+
+            fig4 = go.Figure()
+            fig4.add_trace(go.Scatter(x=sample.index, y=sample["smf_try"],
+                name="Gerçekleşen", line=dict(color="#00d4ff", width=1.5),
+                connectgaps=False))
+            fig4.add_trace(go.Scatter(x=sample.index, y=sample["predicted_smf"],
+                name="XGBoost Tahmin", line=dict(color="#ff6b35", width=1.5, dash="dash"),
+                connectgaps=False))
+            dark(fig4, height=420, title="Son 7 Günlük Saatlik Backtesting",
+                 yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
+                 hovermode="x unified")
+            st.plotly_chart(fig4, use_container_width=True, key="smf_ml_bt")
+
+            _n_missing = int(sample["smf_try"].isna().sum())
+            if _n_missing > 0:
+                st.caption(
+                    f"⚠️ Son 7 günde {_n_missing} saat için tahmin/gerçekleşen veri "
+                    f"eşleşmedi (pipeline kesintisi veya saat hizalama farkı) — "
+                    f"grafikte boşluk olarak gösteriliyor."
+                )
+        else:
+            st.info("Tahmin ve gerçekleşen veriler eşleştirilemedi.")
+
+    # Dual SHAP importance — direction classifier + price regressor, each
+    # fetched fresh from GCS on every weekly retrain (see load_shap_importance).
+    shap_col1, shap_col2 = st.columns(2)
+    with shap_col1:
+        try:
+            shap_dir_df = load_shap_importance("models/smf_direction_importance.csv")
+            fig5 = px.bar(shap_dir_df.head(12),
+                x="feature_importance_vals", y="col_name", orientation="h",
+                color="feature_importance_vals", color_continuous_scale="Tealgrn",
+                title="🔬 Yön Sınıflandırıcı — Feature Importance",
+                labels={"feature_importance_vals": "Skor", "col_name": ""})
+            fig5.update_layout(**DARK_LAYOUT, height=400,
+                yaxis={"categoryorder": "total ascending"},
+                coloraxis_showscale=False)
+            st.plotly_chart(fig5, use_container_width=True, key="smf_ml_shap_dir")
+        except BQNotFound:
+            st.info("Yön modeli SHAP verisi henüz mevcut değil. smf_trainer.py çalıştırıldıktan sonra görünür.")
+    with shap_col2:
+        try:
+            shap_price_df = load_shap_importance("models/smf_price_importance.csv")
+            fig6 = px.bar(shap_price_df.head(12),
+                x="feature_importance_vals", y="col_name", orientation="h",
+                color="feature_importance_vals", color_continuous_scale="Blues",
+                title="🔬 Fiyat Regresörü — Feature Importance",
+                labels={"feature_importance_vals": "Skor", "col_name": ""})
+            fig6.update_layout(**DARK_LAYOUT, height=400,
+                yaxis={"categoryorder": "total ascending"},
+                coloraxis_showscale=False)
+            st.plotly_chart(fig6, use_container_width=True, key="smf_ml_shap_price")
+        except BQNotFound:
+            st.info("Fiyat modeli SHAP verisi henüz mevcut değil. smf_trainer.py çalıştırıldıktan sonra görünür.")
+
+    # Rolling avg trend
+    daily_roll = dfy.groupby("date").agg(
+        smf=("smf_try","mean"), roll=("smf_rolling_avg_24h","mean")).reset_index()
+    fig7 = go.Figure()
+    fig7.add_trace(go.Scatter(x=daily_roll["date"], y=daily_roll["smf"],
+        name="Günlük Ort SMF", line=dict(color="#00d4ff", width=1.5), opacity=0.7))
+    fig7.add_trace(go.Scatter(x=daily_roll["date"], y=daily_roll["roll"],
+        name="24h Rolling Ort", line=dict(color="#ff6b35", width=2.5)))
+    dark(fig7, height=360, title="Günlük SMF vs 24h Hareketli Ortalama",
+         yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
+    st.plotly_chart(fig7, use_container_width=True, key="smf_ml_roll")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
