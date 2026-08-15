@@ -18,7 +18,21 @@ SELECT
     CAST(quantity AS FLOAT64) AS quantity_mwh
 FROM {{ source('silver', 'idm_transactions') }} AS s
 
-{% if is_incremental() %} WHERE DATE(s.date) >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
+{% if is_incremental() %}
+WHERE DATE(s.date) >= (SELECT MAX(date) FROM {{ this }})
+  -- Partition-pruning hint (2026-08-15): the line above filters on `date`, a
+  -- column INSIDE the Parquet files, which the external table's Hive
+  -- partitioning (year/month/day, auto-detected from the GCS path by
+  -- load_to_bigquery.py) cannot use to skip files -- confirmed via
+  -- INFORMATION_SCHEMA.JOBS_BY_PROJECT that real merge runs were scanning
+  -- 250-600+ MB from an external table that only ever needs ~1 new day's
+  -- worth (~1 MB). This second condition is redundant with the one above for
+  -- correctness (it does not change which rows are selected) but lets
+  -- BigQuery prune whole day-partition files before reading them. The 1-day
+  -- buffer matches the cross-partition-boundary handling already documented
+  -- below (a transaction can land in either of two adjacent day-partitions).
+  AND DATE(s.year, s.month, s.day) >= DATE_SUB((SELECT MAX(date) FROM {{ this }}), INTERVAL 1 DAY)
+{% endif %}
 -- Confirmed via real data (2026-07-27): the same transaction id can appear in
 -- two adjacent Hive day-partitions with identical content (e.g. a transaction
 -- timestamped 07-23 15:54 UTC showing up in both day=23's and day=24's
