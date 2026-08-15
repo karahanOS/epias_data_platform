@@ -172,7 +172,15 @@ def load_shap_importance() -> pd.DataFrame:
     blob = get_gcs_client().bucket(GCS_BUCKET).blob("models/ptf_shap_importance.csv")
     return pd.read_csv(io.BytesIO(blob.download_as_bytes()))
 
-@st.cache_data(ttl=3600, show_spinner="BigQuery sorgulanıyor...", persist="disk")
+# NOT persist="disk": Streamlit silently ignores ttl for persisted caches (logs
+# "Persistent cached functions currently don't support TTL"), so a disk-backed
+# entry here would never expire on its own — it'd freeze at whatever rows were
+# cached the first time each query ran and stay stale indefinitely afterward
+# (found 2026-08-15: the company GÖP activity panel was showing Aug 13 as the
+# latest day days after Aug 14 was already in BigQuery). Memory-only + a real
+# ttl still caps BigQuery cost to one call/hour per distinct query, it just
+# also actually expires.
+@st.cache_data(ttl=3600, show_spinner="BigQuery sorgulanıyor...")
 def query(sql: str) -> pd.DataFrame:
     try:
         df = get_client().query(sql).to_dataframe()
@@ -216,7 +224,7 @@ def query(sql: str) -> pd.DataFrame:
 def tbl(mart: str) -> str:
     return f"`{PROJECT}.{DATASET}.{mart}`"
 
-@st.cache_data(ttl=3600, show_spinner=False, persist="disk")
+@st.cache_data(ttl=3600, show_spinner=False)
 def _query_noerr(sql: str) -> pd.DataFrame:
     """Run a BQ query silently — no st.error() on failure.
 
@@ -233,12 +241,7 @@ def _query_noerr(sql: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 # ── DATA FRESHNESS ────────────────────────────────────────────────────────────
-# NOT persist="disk": Streamlit silently ignores ttl for persisted caches (logs
-# "Persistent cached functions currently don't support TTL"), so a disk-backed
-# entry here would never expire on its own — it'd freeze at whatever date was
-# cached the first time this ran (e.g. right after a deploy) and stay stale
-# indefinitely afterward, which defeats the whole point of a freshness
-# indicator. Memory-only + a real ttl keeps it honestly current.
+# Same persist="disk"-vs-ttl gotcha as query() above — see that comment.
 @st.cache_data(ttl=1800)
 def get_last_updated() -> str:
     """Return the most recent date the platform genuinely has real PTF data
