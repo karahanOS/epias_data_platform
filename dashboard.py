@@ -1870,6 +1870,54 @@ elif page == "🔋 SMF Tahmin & ML":
             cm6.metric("Yön Doğruluğu", f"%{direction_acc*100:.1f}",
                        help="Stage-1 sınıflandırıcının tahmin ettiği sistem yönü (Açık/Fazla/Dengede) gerçekleşenle eşleşme oranı")
 
+            # ── Yön Sınıflandırıcı Metrikleri (Precision / Recall / F1 / AUC) ──
+            # Macro-averaged (3 sınıfın eşit ağırlıklı ortalaması) — bir azınlık
+            # sınıfın (IN_BALANCE) zayıf performansını gizlemez, "Yön Doğruluğu"
+            # tek başına yapamayacağı şekilde sınıf dengesizliğini açığa çıkarır.
+            # Saf pandas/numpy ile hesaplanır — scikit-learn requirements.txt'te
+            # yok (Streamlit Cloud dağıtımı ayrı bir ortam), yeni bağımlılık
+            # eklemeden AUC için rank-sum (Mann-Whitney U) formülü kullanılır;
+            # sklearn.metrics.roc_auc_score ile 4 ondalık basamağa kadar
+            # doğrulandı (2026-08-16).
+            _direction_classes = ["ENERGY_DEFICIT", "ENERGY_SURPLUS", "IN_BALANCE"]
+            _proba_col_map = {
+                "ENERGY_DEFICIT": "proba_energy_deficit",
+                "ENERGY_SURPLUS": "proba_energy_surplus",
+                "IN_BALANCE":     "proba_in_balance",
+            }
+            _precisions, _recalls, _f1s, _aucs = [], [], [], []
+            for _c in _direction_classes:
+                _tp = ((merged["predicted_direction"] == _c) & (merged["system_direction"] == _c)).sum()
+                _fp = ((merged["predicted_direction"] == _c) & (merged["system_direction"] != _c)).sum()
+                _fn = ((merged["predicted_direction"] != _c) & (merged["system_direction"] == _c)).sum()
+                _prec = _tp / (_tp + _fp) if (_tp + _fp) > 0 else 0.0
+                _rec  = _tp / (_tp + _fn) if (_tp + _fn) > 0 else 0.0
+                _f1   = 2 * _prec * _rec / (_prec + _rec) if (_prec + _rec) > 0 else 0.0
+                _precisions.append(_prec)
+                _recalls.append(_rec)
+                _f1s.append(_f1)
+
+                _is_pos = merged["system_direction"] == _c
+                _n_pos, _n_neg = _is_pos.sum(), (~_is_pos).sum()
+                if 0 < _n_pos < len(merged):
+                    _ranks = merged[_proba_col_map[_c]].rank()
+                    _aucs.append((_ranks[_is_pos].sum() - _n_pos * (_n_pos + 1) / 2) / (_n_pos * _n_neg))
+
+            _macro_precision = sum(_precisions) / len(_precisions)
+            _macro_recall    = sum(_recalls) / len(_recalls)
+            _macro_f1        = sum(_f1s) / len(_f1s)
+            _macro_auc       = sum(_aucs) / len(_aucs) if _aucs else float("nan")
+
+            cm7, cm8, cm9, cm10 = st.columns(4)
+            cm7.metric("Precision (macro)", f"{_macro_precision:.2f}",
+                       help="3 yön sınıfının (Açık/Fazla/Dengede) eşit ağırlıklı ortalama precision'ı")
+            cm8.metric("Recall (macro)", f"{_macro_recall:.2f}",
+                       help="3 yön sınıfının eşit ağırlıklı ortalama recall'ı")
+            cm9.metric("F1 (macro)", f"{_macro_f1:.2f}",
+                       help="Precision ve recall'ın harmonik ortalaması, 3 sınıfın eşit ağırlıklı ortalaması")
+            cm10.metric("AUC (macro, OvR)", f"{_macro_auc:.2f}" if pd.notna(_macro_auc) else "—",
+                        help="One-vs-rest ROC-AUC, 3 sınıfın ortalaması — modelin olasılık sıralamasının ne kadar iyi ayrıştırdığını gösterir")
+
             _ts_max = merged["ts"].max()
             _window_start = _ts_max - pd.Timedelta(days=7)
             sample = (merged[merged["ts"] >= _window_start]
