@@ -7,8 +7,13 @@ Runtime : 10-30 minutes (Optuna adds time on top of base training, x2 for two st
 
 Mirrors ptf_trainer.py's structure closely (Optuna + TimeSeriesSplit CV, recency
 weighting, MASE-vs-naive benchmark). The addition here is the 2-stage design:
-Stage 1 (XGBClassifier) predicts system_direction; Stage 2 (XGBRegressor)
+Stage 1 (CatBoostClassifier) predicts system_direction; Stage 2 (XGBRegressor)
 predicts smf_try using Stage 1's class probabilities as extra input features.
+
+Stage 1 was XGBoost until 2026-08-16, when a direct comparison against
+CatBoost/LightGBM/Random Forest (src/smf_direction_model_comparison.py) showed
+CatBoost with meaningfully better macro F1 (0.47 vs 0.44) and macro AUC (0.80
+vs 0.75) on real backtest data — see that script's results CSV.
 
 Stage-1-into-Stage-2 leakage: Stage 2's training features use Stage 1's
 OUT-OF-FOLD probabilities (via TimeSeriesSplit), not the fully-fit classifier's
@@ -27,6 +32,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+from catboost import CatBoostClassifier
 from sklearn.metrics import mean_absolute_error, log_loss, accuracy_score
 from sklearn.model_selection import TimeSeriesSplit
 
@@ -126,16 +132,24 @@ def _to_float(df_slice: pd.DataFrame) -> pd.DataFrame:
 # ── STAGE 1: DIRECTION CLASSIFIER ─────────────────────────────────────────────
 
 _DEFAULT_CLF_PARAMS = {
-    "n_estimators":     600,
-    "learning_rate":    0.05,
-    "max_depth":        5,
-    "subsample":        0.8,
-    "colsample_bytree": 0.8,
-    "min_child_weight": 3,
-    "gamma":            0.1,
-    "reg_alpha":        0.1,
-    "reg_lambda":       2.0,
+    "iterations":          600,
+    "learning_rate":       0.05,
+    "depth":               5,
+    "l2_leaf_reg":         3.0,
+    "bagging_temperature": 0.5,
+    "random_strength":     0.5,
 }
+
+
+def _catboost_classifier(params: dict, n_classes: int) -> CatBoostClassifier:
+    return CatBoostClassifier(
+        **params,
+        loss_function="MultiClass",
+        classes_count=n_classes,
+        auto_class_weights="Balanced",
+        random_state=42,
+        verbose=False,
+    )
 
 
 def _optimise_classifier_hyperparams(X: pd.DataFrame, y: np.ndarray,
@@ -149,22 +163,16 @@ def _optimise_classifier_hyperparams(X: pd.DataFrame, y: np.ndarray,
 
     def objective(trial):
         params = {
-            "n_estimators":      trial.suggest_int("n_estimators", 200, 1000),
-            "max_depth":         trial.suggest_int("max_depth", 3, 8),
-            "learning_rate":     trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-            "subsample":         trial.suggest_float("subsample", 0.5, 1.0),
-            "colsample_bytree":  trial.suggest_float("colsample_bytree", 0.4, 1.0),
-            "min_child_weight":  trial.suggest_int("min_child_weight", 1, 10),
-            "gamma":             trial.suggest_float("gamma", 0.0, 1.0),
-            "reg_alpha":         trial.suggest_float("reg_alpha", 0.0, 1.0),
-            "reg_lambda":        trial.suggest_float("reg_lambda", 0.5, 5.0),
-            "random_state":      42,
-            "objective":         "multi:softprob",
-            "num_class":         n_classes,
+            "iterations":          trial.suggest_int("iterations", 200, 1000),
+            "depth":               trial.suggest_int("depth", 3, 8),
+            "learning_rate":       trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+            "l2_leaf_reg":         trial.suggest_float("l2_leaf_reg", 1.0, 10.0),
+            "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 1.0),
+            "random_strength":     trial.suggest_float("random_strength", 0.0, 2.0),
         }
         scores = []
         for tr_idx, val_idx in tscv.split(X_f):
-            m = xgb.XGBClassifier(**params)
+            m = _catboost_classifier(params, n_classes)
             m.fit(X_f.iloc[tr_idx], y[tr_idx], sample_weight=sample_weight.iloc[tr_idx])
             proba = m.predict_proba(X_f.iloc[val_idx])
             scores.append(log_loss(y[val_idx], proba, labels=list(range(n_classes))))
@@ -190,10 +198,9 @@ def _generate_oof_direction_probabilities(X: pd.DataFrame, y: np.ndarray,
     n_classes = len(DIRECTION_CLASSES)
 
     oof = pd.DataFrame(np.nan, index=X.index, columns=_PROBA_COLS)
-    clf_params = {**params, "random_state": 42, "objective": "multi:softprob", "num_class": n_classes}
 
     for tr_idx, val_idx in tscv.split(X_f):
-        m = xgb.XGBClassifier(**clf_params)
+        m = _catboost_classifier(params, n_classes)
         m.fit(X_f.iloc[tr_idx], y[tr_idx], sample_weight=sample_weight.iloc[tr_idx])
         proba = m.predict_proba(X_f.iloc[val_idx])
         oof.iloc[val_idx] = proba
@@ -232,13 +239,12 @@ def train_direction_classifier(df: pd.DataFrame) -> tuple:
         best_params = dict(_DEFAULT_CLF_PARAMS)
 
     n_classes = len(DIRECTION_CLASSES)
-    clf_params = {**best_params, "random_state": 42, "objective": "multi:softprob", "num_class": n_classes}
 
     # Out-of-fold probabilities on the FULL training window (for Stage 2 input).
     oof_proba = _generate_oof_direction_probabilities(X_train, y_train, w_train, best_params)
 
     # Final model, fit on all training data — this is what gets deployed.
-    final_model = xgb.XGBClassifier(**clf_params)
+    final_model = _catboost_classifier(best_params, n_classes)
     final_model.fit(_to_float(X_train), y_train, sample_weight=w_train)
 
     # Held-out accuracy vs. naive "same direction as T-24h" baseline.

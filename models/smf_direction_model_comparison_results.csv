@@ -1,0 +1,4 @@
+model,accuracy,macro_f1,macro_precision,macro_recall,macro_auc
+CatBoost,0.7306,0.4698,0.4723,0.4691,0.7951
+Random Forest,0.7325,0.4672,0.47,0.4675,0.7784
+XGBoost,0.7251,0.4428,0.4732,0.4412,0.7543
