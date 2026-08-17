@@ -83,10 +83,21 @@ def extract_recent_data() -> pd.DataFrame:
 
 
 def extract_forward_features() -> pd.DataFrame:
-    """Pull genuinely future (not-yet-settled) rows from
-    mart_smf_forward_features — hours where mart_smf_realized has no matching
-    (date, hour) yet. Mirrors ptf_inference.py's extract_forward_features()
-    anti-join, against mart_smf_realized instead of mart_ptf_realized."""
+    """Pull genuinely future (not-yet-settled AND not-yet-happened) rows from
+    mart_smf_forward_features. Mirrors ptf_inference.py's
+    extract_forward_features() anti-join, against mart_smf_realized instead
+    of mart_ptf_realized — but with one deliberate difference: PTF settles a
+    whole day atomically (~14:00 TRT the day before), so "date >= today" is
+    enough to mean "genuinely future" there. SMF settles hour-by-hour with a
+    genuine ~5-6h publication lag (S+5, confirmed 2026-08-15), so an hour
+    that already happened 1-6h ago still has smf_try IS NULL purely because
+    reporting hasn't caught up — not because it's actually still future.
+    Confirmed 2026-08-18: without the f.datetime > CURRENT_TIMESTAMP() guard,
+    the pipeline kept re-"predicting" already-elapsed hours right up until
+    real data landed, producing archived gold_smf_forward_accuracy rows with
+    NEGATIVE lead_time_hours (predicted_at recorded hours AFTER the target
+    hour already occurred) — not genuine forecasts at all.
+    """
     logger.info("Pulling rows with no real SMF yet from mart_smf_forward_features...")
     client = get_bq_client()
 
@@ -96,7 +107,7 @@ def extract_forward_features() -> pd.DataFrame:
         LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.mart_smf_realized` r
           ON r.date = f.date AND r.hour = f.hour
         WHERE r.smf_try IS NULL
-          AND f.date >= CURRENT_DATE('Asia/Istanbul')
+          AND f.datetime > CURRENT_TIMESTAMP()
         ORDER BY f.date, f.hour
     """
     df = client.query(query).to_dataframe()
