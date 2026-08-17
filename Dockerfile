@@ -29,10 +29,14 @@ ENV PATH="${PATH}:/home/airflow/.local/bin"
 #    yani hiçbir hata vermeden, hiperparametre araması (regularization dahil)
 #    ve resmi tatil özelliği sessizce hiç çalışmadan production'da aylarca
 #    kaldılar. Bkz. ml_model_quality memory notu.
+#    catboost eklendi (2026-08-18): smf_trainer.py'nin yön sınıflandırıcısı
+#    XGBoost'tan CatBoost'a geçti; joblib.load() unpickle sırasında bu paketi
+#    import edebilmeli, yoksa smf_inference.py ModuleNotFoundError ile çöker
+#    (production'da 2026-08-16 gecesi böyle oldu — bkz. ml_model_quality notu).
 RUN pip install --no-cache-dir --upgrade \
     "apache-airflow-providers-google" \
     "dbt-bigquery<1.8.0" \
     "dbt-core<1.8.0" \
     pandas numpy requests google-cloud-bigquery pyarrow \
     xgboost scikit-learn openmeteo-requests requests-cache retry-requests \
-    optuna holidays
+    optuna holidays catboost
