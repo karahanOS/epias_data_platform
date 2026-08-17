@@ -1314,7 +1314,18 @@ elif page == "🤖 PTF Tahmin & ML":
     """)
     if not df_outlook.empty:
         df_outlook["date"] = pd.to_datetime(df_outlook["date"])
-        df_outlook["datetime"] = pd.to_datetime(df_outlook["datetime"], utc=True).dt.tz_localize(None)
+        # tz_convert('Asia/Istanbul') BEFORE stripping tz — the mart's `datetime`
+        # is a real UTC instant for "this (date,hour), interpreted as Istanbul
+        # local time" (TIMESTAMP_ADD(TIMESTAMP(date,'Asia/Istanbul'), ...)),
+        # matching every other (date,hour) key in this project. Stripping tz
+        # straight from UTC (no convert) silently relabels e.g. 16:00 Istanbul
+        # as "13:00" on the chart's naive x-axis — confirmed 2026-08-18 from a
+        # user screenshot showing the realized/forecast line 3h (exactly
+        # Turkey's UTC+3 offset) earlier than the archived-prediction diamond
+        # markers on the same chart, which are built via direct date+hour
+        # arithmetic below and were never affected.
+        df_outlook["datetime"] = (pd.to_datetime(df_outlook["datetime"], utc=True)
+                                   .dt.tz_convert("Asia/Istanbul").dt.tz_localize(None))
         df_outlook["hour"] = pd.to_numeric(df_outlook["hour"], errors="coerce").fillna(-1).astype(int)
 
     # Archived forward predictions (resolved — see ptf_inference.py's
@@ -1631,7 +1642,7 @@ elif page == "🔋 SMF Tahmin & ML":
     <div class='page-header'>
         <span class='badge'>ML</span>
         <h1>SMF Tahmin Modeli — Yön + Fiyat (2 Aşamalı)</h1>
-        <p>XGBoost backtesting, 5h/24h/168h lag korelasyonları ve feature importance</p>
+        <p>CatBoost (yön) + XGBoost (fiyat) backtesting, 5h/24h/168h lag korelasyonları ve feature importance</p>
     </div>""", unsafe_allow_html=True)
 
     df_lag = query(f"""
@@ -1665,7 +1676,18 @@ elif page == "🔋 SMF Tahmin & ML":
     """)
     if not df_outlook.empty:
         df_outlook["date"] = pd.to_datetime(df_outlook["date"])
-        df_outlook["datetime"] = pd.to_datetime(df_outlook["datetime"], utc=True).dt.tz_localize(None)
+        # tz_convert('Asia/Istanbul') BEFORE stripping tz — the mart's `datetime`
+        # is a real UTC instant for "this (date,hour), interpreted as Istanbul
+        # local time" (TIMESTAMP_ADD(TIMESTAMP(date,'Asia/Istanbul'), ...)),
+        # matching every other (date,hour) key in this project. Stripping tz
+        # straight from UTC (no convert) silently relabels e.g. 16:00 Istanbul
+        # as "13:00" on the chart's naive x-axis — confirmed 2026-08-18 from a
+        # user screenshot showing the realized/forecast line 3h (exactly
+        # Turkey's UTC+3 offset) earlier than the archived-prediction diamond
+        # markers on the same chart, which are built via direct date+hour
+        # arithmetic below and were never affected.
+        df_outlook["datetime"] = (pd.to_datetime(df_outlook["datetime"], utc=True)
+                                   .dt.tz_convert("Asia/Istanbul").dt.tz_localize(None))
         df_outlook["hour"] = pd.to_numeric(df_outlook["hour"], errors="coerce").fillna(-1).astype(int)
 
     df_fwd_acc = query(f"""
@@ -1758,7 +1780,7 @@ elif page == "🔋 SMF Tahmin & ML":
             fig_fwd.add_trace(go.Scatter(
                 x=df_model_line["datetime"], y=df_model_line["value"],
                 mode="lines+markers",
-                name="XGBoost Tahmin",
+                name="Model Tahmini (CatBoost+XGBoost)",
                 line=dict(color="#ff6b35", width=2.5, dash="dash"),
                 hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
             ))
@@ -1970,7 +1992,7 @@ elif page == "🔋 SMF Tahmin & ML":
                 name="Gerçekleşen", line=dict(color="#00d4ff", width=1.5),
                 connectgaps=False))
             fig4.add_trace(go.Scatter(x=sample.index, y=sample["predicted_smf"],
-                name="XGBoost Tahmin", line=dict(color="#ff6b35", width=1.5, dash="dash"),
+                name="Model Tahmini (CatBoost+XGBoost)", line=dict(color="#ff6b35", width=1.5, dash="dash"),
                 connectgaps=False))
             dark(fig4, height=420, title="Son 7 Günlük Saatlik Backtesting",
                  yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
