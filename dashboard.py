@@ -1885,17 +1885,28 @@ elif page == "🔋 SMF Tahmin & ML":
                 "ENERGY_SURPLUS": "proba_energy_surplus",
                 "IN_BALANCE":     "proba_in_balance",
             }
-            _precisions, _recalls, _f1s, _aucs = [], [], [], []
+            _direction_labels_tr = {
+                "ENERGY_DEFICIT": "Açık (Deficit)",
+                "ENERGY_SURPLUS": "Fazla (Surplus)",
+                "IN_BALANCE":     "Dengede (Balance)",
+            }
+            _precisions, _recalls, _f1s, _aucs, _confusion_rows = [], [], [], [], []
             for _c in _direction_classes:
                 _tp = ((merged["predicted_direction"] == _c) & (merged["system_direction"] == _c)).sum()
                 _fp = ((merged["predicted_direction"] == _c) & (merged["system_direction"] != _c)).sum()
                 _fn = ((merged["predicted_direction"] != _c) & (merged["system_direction"] == _c)).sum()
+                _tn = ((merged["predicted_direction"] != _c) & (merged["system_direction"] != _c)).sum()
                 _prec = _tp / (_tp + _fp) if (_tp + _fp) > 0 else 0.0
                 _rec  = _tp / (_tp + _fn) if (_tp + _fn) > 0 else 0.0
                 _f1   = 2 * _prec * _rec / (_prec + _rec) if (_prec + _rec) > 0 else 0.0
                 _precisions.append(_prec)
                 _recalls.append(_rec)
                 _f1s.append(_f1)
+                _confusion_rows.append({
+                    "Sınıf": _direction_labels_tr[_c],
+                    "True Positive": int(_tp), "False Positive": int(_fp),
+                    "True Negative": int(_tn), "False Negative": int(_fn),
+                })
 
                 _is_pos = merged["system_direction"] == _c
                 _n_pos, _n_neg = _is_pos.sum(), (~_is_pos).sum()
@@ -1917,6 +1928,36 @@ elif page == "🔋 SMF Tahmin & ML":
                        help="Precision ve recall'ın harmonik ortalaması, 3 sınıfın eşit ağırlıklı ortalaması")
             cm10.metric("AUC (macro, OvR)", f"{_macro_auc:.2f}" if pd.notna(_macro_auc) else "—",
                         help="One-vs-rest ROC-AUC, 3 sınıfın ortalaması — modelin olasılık sıralamasının ne kadar iyi ayrıştırdığını gösterir")
+
+            # ── KARIŞIKLIK MATRİSİ (CONFUSION MATRIX) ───────────────────────────
+            st.markdown("### 🧮 Karışıklık Matrisi — Sistem Yönü")
+            cm_col_left, cm_col_right = st.columns([3, 2])
+
+            with cm_col_left:
+                _cm_counts = pd.crosstab(
+                    merged["system_direction"], merged["predicted_direction"],
+                ).reindex(index=_direction_classes, columns=_direction_classes, fill_value=0)
+                _cm_display = _cm_counts.rename(
+                    index=_direction_labels_tr, columns=_direction_labels_tr)
+                fig_cm = px.imshow(
+                    _cm_display.values,
+                    x=list(_cm_display.columns), y=list(_cm_display.index),
+                    text_auto=True, color_continuous_scale="Blues",
+                    labels=dict(x="Tahmin Edilen Yön", y="Gerçekleşen Yön", color="Sayı"),
+                )
+                fig_cm.update_layout(**DARK_LAYOUT, height=340, coloraxis_showscale=False,
+                    title="Gerçekleşen vs Tahmin Edilen Yön (satır = gerçekleşen)")
+                fig_cm.update_traces(textfont_size=16)
+                st.plotly_chart(fig_cm, use_container_width=True, key="smf_ml_confmat")
+
+            with cm_col_right:
+                st.markdown("**Sınıf başına TP / FP / TN / FN**")
+                st.dataframe(pd.DataFrame(_confusion_rows), use_container_width=True, hide_index=True)
+                st.caption(
+                    "Her satır, ilgili sınıfı 'pozitif' kabul edip diğer ikisini 'negatif' "
+                    "sayan one-vs-rest kırılımı — 3 sınıflı bir problemde TP/FP/TN/FN tek "
+                    "başına tanımsız olduğu için sınıf bazında gösteriliyor."
+                )
 
             _ts_max = merged["ts"].max()
             _window_start = _ts_max - pd.Timedelta(days=7)
