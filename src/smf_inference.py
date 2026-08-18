@@ -29,7 +29,20 @@ PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_predictions"
 # Forward (genuinely not-yet-settled) predictions — separate table, same
 # rationale as ptf_inference.py's FORWARD_PREDICTIONS_TABLE.
 FORWARD_PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_forward_predictions"
-FORWARD_ACCURACY_TABLE    = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_forward_accuracy"
+
+# Fixed-horizon snapshot: the prediction each hour first had at <=5h wall-clock
+# lead time (matching SMF's official S+5 disclosure lag), written once and
+# never overwritten. Distinct from FORWARD_PREDICTIONS_TABLE, which is a live
+# view continuously refreshed as fresher features arrive and is EXPECTED to
+# change hour to hour for the same target — that's correct behavior for "what
+# does the model think right now," not a bug. This table exists so forecast
+# accuracy at a genuine, fixed lead time can be measured at all. Added
+# 2026-08-18 after confirming the prior gold_smf_forward_accuracy table (now
+# retired) only ever captured 0-2h lead-time snapshots, because it archived
+# whatever the live table's last value happened to be right before the hour
+# elapsed — never a real forward-looking horizon.
+FORWARD_SNAPSHOT_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_forward_snapshot_5h"
+FORWARD_SNAPSHOT_LEAD_HOURS = 5
 
 # Same lookback as ptf_inference.py — 168 (rolling window) + a day's margin.
 LOOKBACK_HOURS = 204
@@ -301,6 +314,88 @@ def write_prediction_to_bq(predicted_date: pd.Timestamp, row: pd.Series,
                 f"SMF={row['predicted_smf']:.2f} TRY direction={direction}")
 
 
+_FORWARD_SNAPSHOT_SCHEMA = [
+    bigquery.SchemaField("predicted_date",       "DATE",      mode="REQUIRED"),
+    bigquery.SchemaField("hour",                 "INTEGER",   mode="REQUIRED"),
+    bigquery.SchemaField("predicted_smf",        "FLOAT64",   mode="REQUIRED"),
+    bigquery.SchemaField("predicted_direction",  "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("proba_energy_deficit", "FLOAT64",   mode="REQUIRED"),
+    bigquery.SchemaField("proba_energy_surplus", "FLOAT64",   mode="REQUIRED"),
+    bigquery.SchemaField("proba_in_balance",     "FLOAT64",   mode="REQUIRED"),
+    bigquery.SchemaField("lead_hours_at_snapshot", "FLOAT64", mode="REQUIRED"),
+    bigquery.SchemaField("snapshotted_at",       "TIMESTAMP", mode="REQUIRED"),
+]
+
+
+def _ensure_forward_snapshot_table(client: bigquery.Client) -> None:
+    dataset_ref = bigquery.DatasetReference(PROJECT_ID, DATASET_ID)
+    table_ref   = dataset_ref.table("gold_smf_forward_snapshot_5h")
+    table       = bigquery.Table(table_ref, schema=_FORWARD_SNAPSHOT_SCHEMA)
+    table.time_partitioning = bigquery.TimePartitioning(
+        type_=bigquery.TimePartitioningType.DAY,
+        field="predicted_date",
+    )
+    created = client.create_table(table, exists_ok=True)
+    if created.created is not None:
+        logger.info(f"Created BigQuery table: {FORWARD_SNAPSHOT_TABLE}")
+
+
+def write_fixed_horizon_snapshot(predicted_date: pd.Timestamp, row: pd.Series,
+                                  lead_hours: float) -> None:
+    """Insert-once (never update) snapshot of the prediction the first time a
+    target hour is seen at <=FORWARD_SNAPSHOT_LEAD_HOURS wall-clock lead time.
+    WHEN NOT MATCHED THEN INSERT with no WHEN MATCHED clause makes this
+    idempotent/safe to call every hourly run — later runs for the same
+    (date, hour) are no-ops once a snapshot exists, so an outage that skips
+    the exact 5h mark just captures the closest lead time still <=5h once the
+    pipeline recovers, rather than losing the snapshot entirely."""
+    client = get_bq_client()
+    _ensure_forward_snapshot_table(client)
+
+    ts_utc  = predicted_date.tz_localize(None) if predicted_date.tzinfo is None else \
+              predicted_date.tz_convert("UTC").tz_localize(None)
+    ts_tr   = ts_utc + _TR_UTC_OFFSET
+    date_str = ts_tr.strftime("%Y-%m-%d")
+    hour     = int(ts_tr.hour)
+
+    smf_rounded  = round(float(row["predicted_smf"]), 4)
+    direction    = str(row["predicted_direction"])
+    p_deficit    = round(float(row["pred_proba_energy_deficit"]), 6)
+    p_surplus    = round(float(row["pred_proba_energy_surplus"]), 6)
+    p_balance    = round(float(row["pred_proba_in_balance"]), 6)
+    snapshotted_at = datetime.now(timezone.utc).isoformat()
+
+    merge_sql = f"""
+        MERGE `{FORWARD_SNAPSHOT_TABLE}` T
+        USING (
+            SELECT
+                DATE '{date_str}'          AS predicted_date,
+                {int(hour)}                 AS hour,
+                {smf_rounded}                AS predicted_smf,
+                '{direction}'                AS predicted_direction,
+                {p_deficit}                  AS proba_energy_deficit,
+                {p_surplus}                  AS proba_energy_surplus,
+                {p_balance}                  AS proba_in_balance,
+                {round(float(lead_hours), 4)} AS lead_hours_at_snapshot,
+                TIMESTAMP '{snapshotted_at}' AS snapshotted_at
+        ) S
+        ON T.predicted_date = S.predicted_date AND T.hour = S.hour
+        WHEN NOT MATCHED THEN
+            INSERT (predicted_date, hour, predicted_smf, predicted_direction,
+                    proba_energy_deficit, proba_energy_surplus, proba_in_balance,
+                    lead_hours_at_snapshot, snapshotted_at)
+            VALUES (S.predicted_date, S.hour, S.predicted_smf, S.predicted_direction,
+                    S.proba_energy_deficit, S.proba_energy_surplus, S.proba_in_balance,
+                    S.lead_hours_at_snapshot, S.snapshotted_at)
+    """
+    job = client.query(merge_sql)
+    job.result()
+
+    if job.num_dml_affected_rows:
+        logger.info(f"Fixed-horizon snapshot captured — {date_str} hour={hour} "
+                    f"lead={lead_hours:.1f}h SMF={row['predicted_smf']:.2f} TRY")
+
+
 def get_last_predicted_ts() -> pd.Timestamp:
     client = get_bq_client()
     query = f"""
@@ -341,61 +436,18 @@ def run_backtest_inference(artifact: dict) -> int:
     return len(X_batch)
 
 
-_FORWARD_ACCURACY_SCHEMA = [
-    bigquery.SchemaField("predicted_date",       "DATE",      mode="REQUIRED"),
-    bigquery.SchemaField("hour",                 "INTEGER",   mode="REQUIRED"),
-    bigquery.SchemaField("predicted_smf",        "FLOAT64",   mode="REQUIRED"),
-    bigquery.SchemaField("predicted_direction",  "STRING",    mode="REQUIRED"),
-    bigquery.SchemaField("predicted_at",         "TIMESTAMP", mode="REQUIRED"),
-    bigquery.SchemaField("actual_smf",           "FLOAT64",   mode="REQUIRED"),
-    bigquery.SchemaField("actual_direction",     "STRING",    mode="NULLABLE"),
-    bigquery.SchemaField("lead_time_hours",      "FLOAT64",   mode="REQUIRED"),
-    bigquery.SchemaField("archived_at",          "TIMESTAMP", mode="REQUIRED"),
-]
-
-
-def _ensure_forward_accuracy_table(client: bigquery.Client) -> None:
-    dataset_ref = bigquery.DatasetReference(PROJECT_ID, DATASET_ID)
-    table_ref   = dataset_ref.table("gold_smf_forward_accuracy")
-    table       = bigquery.Table(table_ref, schema=_FORWARD_ACCURACY_SCHEMA)
-    table.time_partitioning = bigquery.TimePartitioning(
-        type_=bigquery.TimePartitioningType.DAY,
-        field="predicted_date",
-    )
-    created = client.create_table(table, exists_ok=True)
-    if created.created is not None:
-        logger.info(f"Created BigQuery table: {FORWARD_ACCURACY_TABLE}")
-
-
 def _cleanup_stale_forward_predictions() -> int:
-    """Archive-then-delete FORWARD_PREDICTIONS_TABLE rows whose (date, hour)
-    has since acquired a real SMF in mart_smf_realized. Mirrors
-    ptf_inference.py's _cleanup_stale_forward_predictions() against
-    mart_smf_realized instead of mart_ptf_realized; system_direction is
-    joined in separately since mart_smf_realized doesn't carry it."""
+    """Delete FORWARD_PREDICTIONS_TABLE rows whose (date, hour) has since
+    acquired a real SMF in mart_smf_realized — the live table only ever holds
+    genuinely-future rows (see extract_forward_features()), so once an hour
+    settles its row is stale and gets removed. No longer archives to
+    gold_smf_forward_accuracy (retired 2026-08-18): that table only ever
+    captured whatever the live prediction happened to be right before the
+    hour elapsed (0-2h lead time in practice, confirmed from production
+    data), not a genuine forward-looking horizon. See
+    write_fixed_horizon_snapshot() / FORWARD_SNAPSHOT_TABLE for the
+    replacement, which captures a real fixed-lead-time prediction instead."""
     client = get_bq_client()
-    _ensure_forward_accuracy_table(client)
-
-    archive_sql = f"""
-        INSERT INTO `{FORWARD_ACCURACY_TABLE}`
-            (predicted_date, hour, predicted_smf, predicted_direction, predicted_at,
-             actual_smf, actual_direction, lead_time_hours, archived_at)
-        SELECT
-            p.predicted_date, p.hour, p.predicted_smf, p.predicted_direction, p.predicted_at,
-            r.smf_try, sd.system_direction,
-            TIMESTAMP_DIFF(r.datetime, p.predicted_at, HOUR) AS lead_time_hours,
-            CURRENT_TIMESTAMP() AS archived_at
-        FROM `{FORWARD_PREDICTIONS_TABLE}` p
-        JOIN `{PROJECT_ID}.{DATASET_ID}.mart_smf_realized` r
-          ON r.date = p.predicted_date AND r.hour = p.hour
-        LEFT JOIN `{PROJECT_ID}.{DATASET_ID}.stg_system_direction` sd
-          ON sd.date = p.predicted_date AND sd.hour = p.hour
-        WHERE NOT EXISTS (
-            SELECT 1 FROM `{FORWARD_ACCURACY_TABLE}` a
-            WHERE a.predicted_date = p.predicted_date AND a.hour = p.hour
-              AND a.predicted_at = p.predicted_at
-        )
-    """
     delete_sql = f"""
         DELETE FROM `{FORWARD_PREDICTIONS_TABLE}` p
         WHERE EXISTS (
@@ -404,19 +456,22 @@ def _cleanup_stale_forward_predictions() -> int:
         )
     """
     try:
-        client.query(archive_sql).result()
         job = client.query(delete_sql)
         job.result()
     except NotFound:
         return 0
     n = job.num_dml_affected_rows or 0
     if n:
-        logger.info(f"Archived + cleaned up {n} stale forward prediction(s) now covered by mart_smf_realized.")
+        logger.info(f"Cleaned up {n} stale forward prediction(s) now covered by mart_smf_realized.")
     return n
 
 
 def run_forward_forecast(artifact: dict) -> int:
-    """Predict every genuinely future (not-yet-settled) hour."""
+    """Predict every genuinely future (not-yet-settled) hour. Also captures a
+    fixed-horizon snapshot (see write_fixed_horizon_snapshot()) the first
+    time each target hour is seen at <=FORWARD_SNAPSHOT_LEAD_HOURS wall-clock
+    lead time, so forecast accuracy can be measured at a real, stable lead
+    time instead of only against whatever the live table's last value was."""
     direction_features = artifact["direction_features"]
 
     _cleanup_stale_forward_predictions()
@@ -430,8 +485,13 @@ def run_forward_forecast(artifact: dict) -> int:
         return 0
 
     predictions = _predict_both_stages(artifact, X_batch)
+    now_utc = pd.Timestamp.now(tz="UTC").tz_localize(None)
     for ts, row in predictions.iterrows():
         write_prediction_to_bq(predicted_date=ts, row=row, table=FORWARD_PREDICTIONS_TABLE)
+
+        lead_hours = (ts - now_utc) / pd.Timedelta(hours=1)
+        if lead_hours <= FORWARD_SNAPSHOT_LEAD_HOURS:
+            write_fixed_horizon_snapshot(predicted_date=ts, row=row, lead_hours=lead_hours)
 
     logger.info(f"Forward forecast: wrote {len(X_batch)} prediction(s).")
     return len(X_batch)

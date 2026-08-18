@@ -1690,11 +1690,27 @@ elif page == "🔋 SMF Tahmin & ML":
                                    .dt.tz_convert("Asia/Istanbul").dt.tz_localize(None))
         df_outlook["hour"] = pd.to_numeric(df_outlook["hour"], errors="coerce").fillna(-1).astype(int)
 
+    # gold_smf_forward_snapshot_5h replaces the old gold_smf_forward_accuracy
+    # (retired 2026-08-18): that table archived whatever the live forward
+    # prediction happened to be right before the hour elapsed — in practice a
+    # 0-2h lead time, not a genuine forward forecast. The snapshot table
+    # instead captures each hour's prediction once, the first time it's seen
+    # at <=5h wall-clock lead (matching SMF's official S+5 disclosure lag),
+    # and never overwrites it — see write_fixed_horizon_snapshot() in
+    # smf_inference.py. Inner-joined to mart_smf_realized so only resolved
+    # (actual now known) snapshots show as "geçmiş" markers here.
     df_fwd_acc = query(f"""
-        SELECT predicted_date, hour, predicted_smf, predicted_direction, actual_smf, actual_direction, lead_time_hours
-        FROM {tbl('gold_smf_forward_accuracy')}
-        WHERE predicted_date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
-        ORDER BY predicted_date, hour
+        SELECT
+            s.predicted_date, s.hour, s.predicted_smf, s.predicted_direction,
+            r.smf_try AS actual_smf, sd.system_direction AS actual_direction,
+            s.lead_hours_at_snapshot AS lead_time_hours
+        FROM {tbl('gold_smf_forward_snapshot_5h')} s
+        JOIN {tbl('mart_smf_realized')} r
+          ON r.date = s.predicted_date AND r.hour = s.hour
+        LEFT JOIN {tbl('stg_system_direction')} sd
+          ON sd.date = s.predicted_date AND sd.hour = s.hour
+        WHERE s.predicted_date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+        ORDER BY s.predicted_date, s.hour
     """)
     if not df_fwd_acc.empty:
         df_fwd_acc["predicted_date"] = pd.to_datetime(df_fwd_acc["predicted_date"])
