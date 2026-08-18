@@ -1294,58 +1294,72 @@ elif page == "🔋 SMF Tahmin & ML":
         df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
         df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").fillna(-1).astype(int)
 
-    # "What do we currently think this hour's SMF is" — real (mart_smf_realized)
-    # preferred, model forward prediction only where real doesn't cover yet.
-    df_outlook = query(f"""
-        SELECT date, hour, datetime, value, value_source FROM {tbl('mart_smf_forecast_outlook')}
-        WHERE datetime BETWEEN TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 HOUR)
-                            AND TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 16 HOUR)
-        ORDER BY date, hour
-    """)
-    if not df_outlook.empty:
-        df_outlook["date"] = pd.to_datetime(df_outlook["date"])
-        # tz_convert('Asia/Istanbul') BEFORE stripping tz — the mart's `datetime`
-        # is a real UTC instant for "this (date,hour), interpreted as Istanbul
-        # local time" (TIMESTAMP_ADD(TIMESTAMP(date,'Asia/Istanbul'), ...)),
-        # matching every other (date,hour) key in this project. Stripping tz
-        # straight from UTC (no convert) silently relabels e.g. 16:00 Istanbul
-        # as "13:00" on the chart's naive x-axis — confirmed 2026-08-18 from a
-        # user screenshot showing the realized/forecast line 3h (exactly
-        # Turkey's UTC+3 offset) earlier than the archived-prediction diamond
-        # markers on the same chart, which are built via direct date+hour
-        # arithmetic below and were never affected.
-        df_outlook["datetime"] = (pd.to_datetime(df_outlook["datetime"], utc=True)
-                                   .dt.tz_convert("Asia/Istanbul").dt.tz_localize(None))
-        df_outlook["hour"] = pd.to_numeric(df_outlook["hour"], errors="coerce").fillna(-1).astype(int)
-
-    # gold_smf_forward_snapshot_5h replaces the old gold_smf_forward_accuracy
-    # (retired 2026-08-18): that table archived whatever the live forward
-    # prediction happened to be right before the hour elapsed — in practice a
-    # 0-2h lead time, not a genuine forward forecast. The snapshot table
-    # instead captures each hour's prediction once, the first time it's seen
-    # at <=5h wall-clock lead (matching SMF's official S+5 disclosure lag),
-    # and never overwrites it — see write_fixed_horizon_snapshot() in
-    # smf_inference.py. Inner-joined to mart_smf_realized so only resolved
-    # (actual now known) snapshots show as "geçmiş" markers here.
-    df_fwd_acc = query(f"""
+    # Real value + predicted value across a rolling window centered on now —
+    # sourced per hour according to SMF's S+5 disclosure-lag constraint: once
+    # a target hour's lead time first drops to <=5h, its prediction is frozen
+    # in gold_smf_forward_snapshot_5h and never changes again (see
+    # write_fixed_horizon_snapshot() in smf_inference.py), so that's the
+    # authoritative "what was predicted" for any hour already inside the S+5
+    # window — including past hours, which always are. Hours still >5h out
+    # haven't been snapshotted yet, so they fall back to the live,
+    # continuously-refreshed gold_smf_forward_predictions (expected to change
+    # run to run at that range — not a bug). A generated hourly spine keeps
+    # every hour in the window present even where a source has no row yet.
+    df_window = query(f"""
+        WITH spine AS (
+            SELECT ts AS datetime
+            FROM UNNEST(GENERATE_TIMESTAMP_ARRAY(
+                TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 HOUR),
+                TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 16 HOUR),
+                INTERVAL 1 HOUR
+            )) AS ts
+        ),
+        spine_keyed AS (
+            SELECT
+                datetime,
+                DATE(datetime, 'Asia/Istanbul') AS date,
+                EXTRACT(HOUR FROM DATETIME(datetime, 'Asia/Istanbul')) AS hour
+            FROM spine
+        ),
+        real AS (
+            SELECT date, hour, smf_try AS actual_value
+            FROM {tbl('mart_smf_realized')}
+            WHERE date BETWEEN DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+                            AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+        ),
+        snapshot AS (
+            SELECT predicted_date AS date, hour, predicted_smf AS snapshot_value
+            FROM {tbl('gold_smf_forward_snapshot_5h')}
+            WHERE predicted_date BETWEEN DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+                                      AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+        ),
+        live AS (
+            SELECT predicted_date AS date, hour, predicted_smf AS live_value
+            FROM {tbl('gold_smf_forward_predictions')}
+            WHERE predicted_date BETWEEN DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+                                      AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+        )
         SELECT
-            s.predicted_date, s.hour, s.predicted_smf, s.predicted_direction,
-            r.smf_try AS actual_smf, sd.system_direction AS actual_direction,
-            s.lead_hours_at_snapshot AS lead_time_hours
-        FROM {tbl('gold_smf_forward_snapshot_5h')} s
-        JOIN {tbl('mart_smf_realized')} r
-          ON r.date = s.predicted_date AND r.hour = s.hour
-        LEFT JOIN {tbl('stg_system_direction')} sd
-          ON sd.date = s.predicted_date AND sd.hour = s.hour
-        WHERE s.predicted_date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
-        ORDER BY s.predicted_date, s.hour
+            sp.datetime, sp.date, sp.hour,
+            r.actual_value,
+            COALESCE(sn.snapshot_value, lv.live_value) AS predicted_value,
+            CASE WHEN sn.snapshot_value IS NOT NULL THEN 'snapshot' ELSE 'live' END AS predicted_source
+        FROM spine_keyed sp
+        LEFT JOIN real r      ON r.date = sp.date  AND r.hour = sp.hour
+        LEFT JOIN snapshot sn ON sn.date = sp.date  AND sn.hour = sp.hour
+        LEFT JOIN live lv     ON lv.date = sp.date  AND lv.hour = sp.hour
+        ORDER BY sp.datetime
     """)
-    if not df_fwd_acc.empty:
-        df_fwd_acc["predicted_date"] = pd.to_datetime(df_fwd_acc["predicted_date"])
-        df_fwd_acc["hour"] = pd.to_numeric(df_fwd_acc["hour"], errors="coerce").fillna(-1).astype(int)
-        df_fwd_acc["ts"] = df_fwd_acc["predicted_date"] + pd.to_timedelta(df_fwd_acc["hour"], unit="h")
-        for col in ("predicted_smf", "actual_smf", "lead_time_hours"):
-            df_fwd_acc[col] = pd.to_numeric(df_fwd_acc[col], errors="coerce")
+    if not df_window.empty:
+        # tz_convert('Asia/Istanbul') BEFORE stripping tz — `datetime` is a
+        # real UTC instant; stripping tz straight from UTC (no convert)
+        # silently relabels e.g. 16:00 Istanbul as "13:00" on the chart's
+        # naive x-axis — confirmed 2026-08-18 from a user screenshot showing
+        # a 3h (exactly Turkey's UTC+3 offset) misalignment from this exact bug.
+        df_window["datetime"] = (pd.to_datetime(df_window["datetime"], utc=True)
+                                  .dt.tz_convert("Asia/Istanbul").dt.tz_localize(None))
+        for col in ("actual_value", "predicted_value"):
+            df_window[col] = pd.to_numeric(df_window[col], errors="coerce")
 
     if df_lag.empty:
         st.warning("Veri bulunamadı.")
@@ -1395,75 +1409,82 @@ elif page == "🔋 SMF Tahmin & ML":
     # ── FORWARD FORECAST PANEL ────────────────────────────────────────────────
     st.markdown("### 🔮 İleriye Yönelik Tahmin (Gerçek Forward-Looking)")
 
-    if df_outlook.empty:
-        df_real_line  = pd.DataFrame()
-        df_model_line = pd.DataFrame()
+    if df_window.empty:
+        df_real_line   = pd.DataFrame()
+        df_pred_line   = pd.DataFrame()
+        df_pred_frozen = pd.DataFrame()
+        df_pred_live   = pd.DataFrame()
     else:
-        df_real_line  = df_outlook[df_outlook["value_source"] != "model"].sort_values("datetime")
-        df_model_line = df_outlook[df_outlook["value_source"] == "model"].sort_values("datetime")
+        df_real_line   = df_window.dropna(subset=["actual_value"]).sort_values("datetime")
+        df_pred_line   = df_window.dropna(subset=["predicted_value"]).sort_values("datetime")
+        df_pred_frozen = df_pred_line[df_pred_line["predicted_source"] == "snapshot"]
+        df_pred_live   = df_pred_line[df_pred_line["predicted_source"] == "live"]
 
-    if df_outlook.empty:
+    if df_real_line.empty and df_pred_line.empty:
         st.info(
-            "**Henüz ileriye dönük veri yok.**  \n"
+            "**Henüz veri yok.**  \n"
             "`mart_smf_realized`, aynı-gün SMF verisi (S+5 gecikmeyle) geldikçe otomatik dolar; "
-            "`gold_smf_forward_predictions` ise saatlik inference çalışmasıyla üretilir.  \n"
+            "`gold_smf_forward_predictions`/`gold_smf_forward_snapshot_5h` ise saatlik inference "
+            "çalışmasıyla üretilir.  \n"
             "Airflow DAG: `smf_hourly_inference → run_smf_inference`"
         )
     else:
         fig_fwd = go.Figure()
         if not df_real_line.empty:
             fig_fwd.add_trace(go.Scatter(
-                x=df_real_line["datetime"], y=df_real_line["value"],
+                x=df_real_line["datetime"], y=df_real_line["actual_value"],
                 mode="lines+markers",
                 name="Gerçekleşen SMF",
                 line=dict(color="#00d4ff", width=2.5),
                 fill="tozeroy", fillcolor="rgba(0,212,255,0.07)",
                 hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
             ))
-        if not df_model_line.empty:
+        if not df_pred_line.empty:
+            # One continuous predicted line across the whole window — sourced
+            # from the frozen S+5 snapshot where it exists (can't change
+            # anymore), the live forward table otherwise (still updates run
+            # to run). Marker shape flags which is which per point; kept as a
+            # single trace so it reads as one forecast, not two disconnected
+            # segments.
+            _source_label = df_pred_line["predicted_source"].map(
+                {"snapshot": "Sabit (S+5 içinde)", "live": "Canlı (henüz değişebilir)"})
             fig_fwd.add_trace(go.Scatter(
-                x=df_model_line["datetime"], y=df_model_line["value"],
+                x=df_pred_line["datetime"], y=df_pred_line["predicted_value"],
                 mode="lines+markers",
-                name="Model Tahmini (CatBoost+XGBoost)",
+                name="Model Tahmini",
                 line=dict(color="#ff6b35", width=2.5, dash="dash"),
-                hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
-            ))
-        if not df_fwd_acc.empty:
-            fig_fwd.add_trace(go.Scatter(
-                x=df_fwd_acc["ts"], y=df_fwd_acc["predicted_smf"],
-                mode="markers",
-                name="Geçmiş Model Tahmini (arşiv)",
                 marker=dict(
-                    size=8, symbol="diamond", color="#facc15",
-                    line=dict(width=0.5, color="rgba(0,0,0,0.4)"),
+                    size=7,
+                    symbol=["circle" if s == "snapshot" else "diamond-open"
+                            for s in df_pred_line["predicted_source"]],
                 ),
-                customdata=df_fwd_acc[["actual_smf", "lead_time_hours"]],
-                hovertemplate=(
-                    "%{x|%d %b %H:%M}<br>Tahmin: %{y:,.0f} TL/MWh<br>"
-                    "Gerçekleşen: %{customdata[0]:,.0f} TL/MWh<br>"
-                    "Lead: %{customdata[1]:.0f} saat<extra></extra>"
-                ),
+                customdata=_source_label,
+                hovertemplate="%{x|%d %b %H:%M}<br>Tahmin: %{y:,.0f} TL/MWh<br>%{customdata}<extra></extra>",
             ))
         dark(fig_fwd, height=380,
-             title="Saatlik SMF — Gerçekleşen, Canlı ve Geçmiş Model Tahmini",
+             title="Saatlik SMF — Gerçekleşen ve Model Tahmini (S+5 sabit + canlı)",
              yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
              hovermode="x unified")
         st.plotly_chart(fig_fwd, use_container_width=True, key="smf_ml_forward")
 
-        _forward_values = df_outlook["value"].dropna()
+        # "What do we currently think" per hour = real where settled, else
+        # predicted — the KPI tiles summarize that best-current-estimate
+        # series, while the chart above keeps the two as separate traces.
+        _outlook_values = (df_window["actual_value"].combine_first(df_window["predicted_value"])
+                            if not df_window.empty else pd.Series(dtype=float)).dropna()
         fw1, fw2, fw3 = st.columns(3)
-        if _forward_values.empty:
+        if _outlook_values.empty:
             fw1.metric("Ort. SMF", "—")
             fw2.metric("Maks SMF", "—")
             fw3.metric("Min SMF",  "—")
         else:
-            fw1.metric("Ort. SMF", f"{_forward_values.mean():,.2f} TL/MWh")
-            fw2.metric("Maks SMF", f"{_forward_values.max():,.2f} TL/MWh")
-            fw3.metric("Min SMF",  f"{_forward_values.min():,.2f} TL/MWh")
+            fw1.metric("Ort. SMF", f"{_outlook_values.mean():,.2f} TL/MWh")
+            fw2.metric("Maks SMF", f"{_outlook_values.max():,.2f} TL/MWh")
+            fw3.metric("Min SMF",  f"{_outlook_values.min():,.2f} TL/MWh")
         st.caption(
             f"🔵 {len(df_real_line)} saat gerçekleşen SMF — tahmin değil. "
-            f"🟠 {len(df_model_line)} saat canlı model tahmini. "
-            f"🔶 {len(df_fwd_acc)} saat geçmiş (çözülmüş) model tahmini arşivi."
+            f"🟠 {len(df_pred_frozen)} saat sabit tahmin (S+5 penceresine girdi, artık değişmez). "
+            f"🟡 {len(df_pred_live)} saat canlı tahmin (S+5 dışında, henüz değişebilir)."
         )
 
     # ── BACKTESTING ───────────────────────────────────────────────────────────
