@@ -275,6 +275,7 @@ with st.sidebar:
         "🔋 Arz-Talep & Residual Yük",
         "🚨 Arz Şoku & Risk",
         "🔋 SMF Tahmin & ML",
+        "💰 Trading Sinyalleri",
         "🌿 Lisanssız Üretim (YEKDEM)",
         "⚡ GİP & Hava Durumu",
         "🏭 Üretim Planı (KGÜP vs KUDÜP)",
@@ -1738,6 +1739,196 @@ elif page == "🔋 SMF Tahmin & ML":
     dark(fig7, height=360, title="Günlük SMF vs 24h Hareketli Ortalama",
          yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
     st.plotly_chart(fig7, use_container_width=True, key="smf_ml_roll")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 7.5 — TRADING SİNYALLERİ (ADR-08, Option B — expected-value engine)
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "💰 Trading Sinyalleri":
+    st.markdown("""
+    <div class='page-header'>
+        <span class='badge'>ADR-08</span>
+        <h1>Trading Sinyalleri — Beklenen Değer (EV) Motoru</h1>
+        <p>DUY Madde 28 uzlaştırma formülüne göre dengesizliği SMF'de bırakmak ile şimdi GİP'te
+        kapatmak arasındaki beklenen maliyet/değer farkı — plans/08-smf-trading-signal-architecture.md</p>
+    </div>""", unsafe_allow_html=True)
+
+    st.info(
+        "**Bu bir karar destek aracıdır — otomatik işlem yapmaz.** Sinyal, modelin sadece nokta "
+        "tahminini değil, tahmin belirsizliğini de hesaba katan olasılıksal bir beklenen değer "
+        "karşılaştırmasıdır (E[MAX(PTF,SMF)] ≥ MAX(PTF, E[SMF]) — belirsizlik göz ardı edilirse "
+        "açık maliyeti olduğundan düşük görünür). Nihai karar her zaman bir insana aittir."
+    )
+
+    # math.erf-based Gaussian E[max]/E[min] — deliberately NOT importing scipy
+    # here (dashboard's requirements.txt has no scipy/scikit-learn, same
+    # reasoning as the KPI section above on the SMF ML page).
+    import math as _math
+
+    def _norm_cdf(x):
+        return 0.5 * (1.0 + np.vectorize(_math.erf)(x / _math.sqrt(2.0)))
+
+    def _norm_pdf(x):
+        return np.exp(-0.5 * x * x) / _math.sqrt(2.0 * _math.pi)
+
+    def _expected_max(mu, sigma, a):
+        sigma = np.maximum(sigma, 1e-6)
+        d = (mu - a) / sigma
+        return a + sigma * _norm_pdf(d) + (mu - a) * _norm_cdf(d)
+
+    def _expected_min(mu, sigma, a):
+        return mu + a - _expected_max(mu, sigma, a)
+
+    DEFICIT_MULT, SURPLUS_MULT = 1.03, 0.97
+
+    # ── BACKTEST PERFORMANCE (the gate — see ADR-08) ──────────────────────────
+    st.markdown("### 🎯 Backtest — Sinyal vs Alternatif Stratejiler")
+
+    df_bt = query(f"SELECT * FROM {tbl('gold_smf_trading_backtest')} ORDER BY date, hour")
+    if df_bt.empty:
+        st.warning(
+            "Backtest verisi henüz yok. `python src/smf_trading_signal.py` çalıştırılmalı "
+            "(gold_smf_trading_backtest tablosunu oluşturur)."
+        )
+    else:
+        n_hours = len(df_bt)
+        n_days = df_bt["date"].nunique()
+
+        deficit_edge_settle = (df_bt["cost_always_settle"] - df_bt["cost_follow_signal"]).mean()
+        deficit_edge_trueup = (df_bt["cost_always_true_up"] - df_bt["cost_follow_signal"]).mean()
+        surplus_edge_settle = (df_bt["value_follow_signal"] - df_bt["value_always_settle"]).mean()
+        surplus_edge_trueup = (df_bt["value_follow_signal"] - df_bt["value_always_true_up"]).mean()
+
+        gap_to_perfect_deficit = (df_bt["cost_follow_signal"] - df_bt["cost_perfect_foresight"]).mean()
+        gap_to_perfect_surplus = (df_bt["value_perfect_foresight"] - df_bt["value_follow_signal"]).mean()
+
+        by_day = df_bt.groupby("date").apply(
+            lambda g: pd.Series({
+                "deficit_edge": (g["cost_always_true_up"] - g["cost_follow_signal"]).mean(),
+                "surplus_edge": (g["value_follow_signal"] - g["value_always_true_up"]).mean(),
+            }), include_groups=False
+        ).reset_index()
+        win_rate_deficit = (by_day["deficit_edge"] > 0).mean() * 100
+        win_rate_surplus = (by_day["surplus_edge"] > 0).mean() * 100
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Backtest Kapsamı", f"{n_hours} saat / {n_days} gün")
+        c2.metric("Açık Kazancı (vs GİP'e her zaman kapat)", f"+{deficit_edge_trueup:,.0f} TL/MWh",
+                   help="Ortalama: sinyali izlemek, her saat GİP'te kapatmaktan ne kadar ucuza mal oluyor")
+        c3.metric("Fazla Kazancı (vs GİP'e her zaman sat)", f"+{surplus_edge_trueup:,.0f} TL/MWh",
+                   help="Ortalama: sinyali izlemek, her saat GİP'te satmaktan ne kadar fazla değer üretiyor")
+        c4.metric("Mükemmel Öngörüye Uzaklık", f"{gap_to_perfect_deficit:,.0f} / {gap_to_perfect_surplus:,.0f} TL/MWh",
+                   help="Açık / Fazla tarafında, sinyalin teorik en iyi (gerçekleşeni önceden bilme) sonucundan farkı")
+
+        st.caption(
+            f"🟢 Açık tarafında sinyal, GİP'e her zaman kapatmayı **{win_rate_deficit:.0f}%** günde geçti. "
+            f"🟢 Fazla tarafında **{win_rate_surplus:.0f}%** günde geçti. "
+            f"⚠️ GİP referansı gerçekleşen saatlik VWAP'tır — gerçek işlem maliyeti (spread/kayma) dahil değildir."
+        )
+
+        bt_col1, bt_col2 = st.columns(2)
+        with bt_col1:
+            strategies = ["Her zaman GİP'e kapat", "Sinyali izle", "Her zaman SMF'de bırak", "Mükemmel öngörü"]
+            costs = [df_bt["cost_always_true_up"].mean(), df_bt["cost_follow_signal"].mean(),
+                     df_bt["cost_always_settle"].mean(), df_bt["cost_perfect_foresight"].mean()]
+            fig_d = go.Figure(go.Bar(x=strategies, y=costs, marker_color=["#64748b", "#00d4ff", "#ff6b35", "#22c55e"],
+                                      text=[f"{v:,.0f}" for v in costs], textposition="outside"))
+            dark(fig_d, height=340, title="Açık (Deficit) — Ort. Maliyet TL/MWh (düşük = iyi)",
+                 yaxis=dict(title="TL/MWh"))
+            st.plotly_chart(fig_d, use_container_width=True, key="trading_bt_deficit")
+        with bt_col2:
+            values = [df_bt["value_always_true_up"].mean(), df_bt["value_follow_signal"].mean(),
+                      df_bt["value_always_settle"].mean(), df_bt["value_perfect_foresight"].mean()]
+            fig_s = go.Figure(go.Bar(x=strategies, y=values, marker_color=["#64748b", "#00d4ff", "#ff6b35", "#22c55e"],
+                                      text=[f"{v:,.0f}" for v in values], textposition="outside"))
+            dark(fig_s, height=340, title="Fazla (Surplus) — Ort. Değer TL/MWh (yüksek = iyi)",
+                 yaxis=dict(title="TL/MWh"))
+            st.plotly_chart(fig_s, use_container_width=True, key="trading_bt_surplus")
+
+        fig_daily = go.Figure()
+        fig_daily.add_trace(go.Bar(x=by_day["date"], y=by_day["deficit_edge"],
+            name="Açık kazancı (vs GİP)", marker_color="#00d4ff"))
+        fig_daily.add_trace(go.Bar(x=by_day["date"], y=by_day["surplus_edge"],
+            name="Fazla kazancı (vs GİP)", marker_color="#ff6b35"))
+        dark(fig_daily, height=320, title="Günlük Sinyal Kazancı — GİP'e Her Zaman Kapatmaya Göre",
+             yaxis=dict(title="TL/MWh"), barmode="group")
+        st.plotly_chart(fig_daily, use_container_width=True, key="trading_bt_daily")
+
+    st.markdown("---")
+
+    # ── LIVE SIGNAL ────────────────────────────────────────────────────────────
+    st.markdown("### 🔮 Canlı Sinyal — Önümüzdeki Saatler")
+    st.caption(
+        "⚠️ GİP referansı canlı bir teklif değildir — son 7 günün aynı saatinin ortalama GİP fiyatıdır "
+        "(tipik seviye göstergesi). Gerçek anlık teklif akışı bu platforma henüz bağlı değil (bkz. ADR-08)."
+    )
+
+    df_fwd = query(f"""
+        SELECT f.predicted_date AS date, f.hour, f.predicted_smf, f.predicted_direction,
+               f.proba_energy_deficit, f.proba_energy_surplus, f.proba_in_balance,
+               p.ptf_try
+        FROM {tbl('gold_smf_forward_predictions')} f
+        LEFT JOIN {tbl('mart_ptf_realized')} p ON p.date = f.predicted_date AND p.hour = f.hour
+        ORDER BY f.predicted_date, f.hour
+        LIMIT 24
+    """)
+    df_gip_typical = query(f"""
+        SELECT hour, AVG(gip_vwap_try) AS gip_typical_try
+        FROM {tbl('mart_gip_hourly_reference')}
+        WHERE date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+        GROUP BY hour
+    """)
+    df_sigma = query(f"""
+        SELECT predicted_direction, AVG(sigma) AS sigma
+        FROM {tbl('gold_smf_trading_backtest')}
+        GROUP BY predicted_direction
+    """)
+
+    if df_fwd.empty or df_gip_typical.empty or df_sigma.empty:
+        st.info(
+            "Canlı sinyal için veri henüz yeterli değil — gold_smf_forward_predictions, "
+            "mart_gip_hourly_reference ve gold_smf_trading_backtest'in dolu olması gerekiyor."
+        )
+    else:
+        df_fwd = df_fwd.dropna(subset=["ptf_try"])
+        df_live = df_fwd.merge(df_gip_typical, on="hour", how="left")
+        overall_sigma = df_sigma["sigma"].mean()
+        sigma_map = dict(zip(df_sigma["predicted_direction"], df_sigma["sigma"]))
+        df_live["sigma"] = df_live["predicted_direction"].map(sigma_map).fillna(overall_sigma)
+
+        mu = df_live["predicted_smf"].to_numpy(dtype=float)
+        sigma = df_live["sigma"].to_numpy(dtype=float)
+        ptf = df_live["ptf_try"].to_numpy(dtype=float)
+        e_max = _expected_max(mu, sigma, ptf)
+        e_min = _expected_min(mu, sigma, ptf)
+
+        df_live["ev_deficit_settle"] = e_max * DEFICIT_MULT
+        df_live["signal_deficit"] = np.where(
+            df_live["gip_typical_try"] < df_live["ev_deficit_settle"], "GİP'te Kapat", "SMF'de Bırak")
+        df_live["ev_surplus_settle"] = e_min * SURPLUS_MULT
+        df_live["signal_surplus"] = np.where(
+            df_live["gip_typical_try"] > df_live["ev_surplus_settle"], "GİP'te Sat", "SMF'de Bırak")
+        df_live["confidence"] = df_live[
+            ["proba_energy_deficit", "proba_energy_surplus", "proba_in_balance"]
+        ].max(axis=1)
+
+        _direction_labels_tr_live = {
+            "ENERGY_DEFICIT": "Açık", "ENERGY_SURPLUS": "Fazla", "IN_BALANCE": "Dengede"}
+        df_disp = df_live.copy()
+        df_disp["Saat"] = pd.to_datetime(df_disp["date"]).dt.strftime("%d %b") + " " + df_disp["hour"].astype(str) + ":00"
+        df_disp["Yön"] = df_disp["predicted_direction"].map(_direction_labels_tr_live)
+        df_disp["Güven"] = (df_disp["confidence"] * 100).round(0).astype(int).astype(str) + "%"
+        df_disp["PTF"] = df_disp["ptf_try"].round(0)
+        df_disp["Tahmini SMF"] = df_disp["predicted_smf"].round(0)
+        df_disp["GİP (tipik)"] = df_disp["gip_typical_try"].round(0)
+        df_disp["Sinyal (Açıksan)"] = df_disp["signal_deficit"]
+        df_disp["Sinyal (Fazlaysan)"] = df_disp["signal_surplus"]
+
+        st.dataframe(
+            df_disp[["Saat", "Yön", "Güven", "PTF", "Tahmini SMF", "GİP (tipik)",
+                     "Sinyal (Açıksan)", "Sinyal (Fazlaysan)"]],
+            use_container_width=True, hide_index=True,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
