@@ -1298,7 +1298,8 @@ elif page == "🔋 SMF Tahmin & ML":
     # preferred, model forward prediction only where real doesn't cover yet.
     df_outlook = query(f"""
         SELECT date, hour, datetime, value, value_source FROM {tbl('mart_smf_forecast_outlook')}
-        WHERE date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+        WHERE datetime BETWEEN TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 HOUR)
+                            AND TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 16 HOUR)
         ORDER BY date, hour
     """)
     if not df_outlook.empty:
