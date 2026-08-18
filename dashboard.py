@@ -1,4 +1,4 @@
-"""
+﻿"""
 dashboard.py — EPIAŞ Elektrik Piyasası Analitik Paneli
 =======================================================
 Tüm dbt Gold mart tablolarını kapsayan interaktif Streamlit dashboard.
@@ -10,9 +10,8 @@ Sayfalar:
   4. 📊 GÖP Piyasa Hacimleri     — mart_gop_volume_analysis + mart_merit_order
   5. 🔋 Arz-Talep & Residual Yük — mart_supply_demand + mart_forecasted_residual_load + mart_ptf_drivers
   6. 🚨 Arz Şoku & Risk          — mart_supply_shock_index
-  7. 🤖 PTF Tahmin & ML          — mart_ptf_lag_features + gold_ptf_predictions
-  8. 🔋 SMF Tahmin & ML          — mart_smf_lag_features + gold_smf_predictions (2-stage: yön + fiyat)
-  9. 🌿 Lisanssız Üretim (YEKDEM)— mart_unlicensed_impact
+  7. 🔋 SMF Tahmin & ML          — mart_smf_lag_features + gold_smf_predictions (2-stage: yön + fiyat)
+  8. 🌿 Lisanssız Üretim (YEKDEM)— mart_unlicensed_impact
 """
 
 import decimal as _decimal
@@ -165,12 +164,12 @@ def get_gcs_client():
         return storage.Client(project=PROJECT)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_shap_importance(blob_path: str = "models/ptf_shap_importance.csv") -> pd.DataFrame:
+def load_shap_importance(blob_path: str) -> pd.DataFrame:
     """Fetch a SHAP importance CSV straight from GCS (written by the relevant
     trainer's weekly retrain via upload_to_gcs) instead of reading a committed
     models/ directory file, which nothing ever refreshes after the initial
-    commit. blob_path defaults to PTF's for backward compatibility; smf_trainer.py
-    writes models/smf_direction_importance.csv and models/smf_price_importance.csv."""
+    commit. smf_trainer.py writes models/smf_direction_importance.csv and
+    models/smf_price_importance.csv."""
     import io
     blob = get_gcs_client().bucket(GCS_BUCKET).blob(blob_path)
     return pd.read_csv(io.BytesIO(blob.download_as_bytes()))
@@ -217,7 +216,7 @@ def query(sql: str) -> pd.DataFrame:
         return df
     except BQNotFound:
         # Table doesn't exist yet — expected for tables populated by scheduled jobs
-        # (e.g. gold_ptf_predictions before the first inference run).
+        # (e.g. gold_smf_predictions before the first inference run).
         # Return empty silently; callers show context-appropriate messages.
         return pd.DataFrame()
     except Exception as e:
@@ -275,7 +274,6 @@ with st.sidebar:
         "📊 GÖP Piyasa Hacimleri",
         "🔋 Arz-Talep & Residual Yük",
         "🚨 Arz Şoku & Risk",
-        "🤖 PTF Tahmin & ML",
         "🔋 SMF Tahmin & ML",
         "🌿 Lisanssız Üretim (YEKDEM)",
         "⚡ GİP & Hava Durumu",
@@ -1263,379 +1261,7 @@ elif page == "🚨 Arz Şoku & Risk":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 7 — PTF TAHMİN & ML
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "🤖 PTF Tahmin & ML":
-    st.markdown("""
-    <div class='page-header'>
-        <span class='badge'>ML</span>
-        <h1>PTF Tahmin Modeli & Lag Analizi</h1>
-        <p>XGBoost backtesting, fiyat gecikmesi korelasyonları ve feature importance</p>
-    </div>""", unsafe_allow_html=True)
-
-    df_lag = query(f"""
-        SELECT date, hour, ptf_try,
-               ptf_lag_1h, ptf_lag_24h, ptf_lag_168h, ptf_rolling_avg_24h,
-               EXTRACT(YEAR FROM date) AS year
-        FROM {tbl('mart_ptf_lag_features')}
-        WHERE EXTRACT(YEAR FROM date) = {sel_year}{_month_filter}
-        ORDER BY date, hour
-    """)
-
-    # Fetch predictions for the last 90 days.  query() returns empty silently on
-    # BQNotFound (table absent before first inference run).
-    #
-    # NOTE: gold_ptf_predictions is a BACKTEST table — run_backtest_inference()
-    # only ever predicts hours where stg_pricing.ptf_try IS NOT NULL (i.e.
-    # already-settled hours), purely to measure accuracy against ground truth.
-    # It can never contain a genuinely future prediction, so it is NOT used for
-    # the forward-forecast panel below — see gold_ptf_forward_predictions instead.
-    df_pred = query(f"""
-        SELECT predicted_date, hour, predicted_ptf FROM {tbl('gold_ptf_predictions')}
-        WHERE predicted_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
-        ORDER BY predicted_date, hour
-    """)
-    if not df_pred.empty:
-        df_pred["predicted_date"] = pd.to_datetime(df_pred["predicted_date"])
-        df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").fillna(-1).astype(int)
-
-    # Single "what do we currently think this hour's price is" series — real
-    # (final PTF or pre-appeal K.PTF) preferred, XGBoost forward prediction
-    # only for hours neither covers yet. value_source ('final'|'interim'|
-    # 'model') replaces what used to be a hand-rolled pandas anti-join here —
-    # see mart_ptf_forecast_outlook.sql (ADR-0005) for why that duplication
-    # was worth centralizing into one dbt view.
-    # Sadece bugün + yarın — panel "şu an ne biliyoruz" sorusuna odaklı,
-    # geniş bir geçmiş penceresi değil.
-    df_outlook = query(f"""
-        SELECT date, hour, datetime, value, value_source FROM {tbl('mart_ptf_forecast_outlook')}
-        WHERE date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
-        ORDER BY date, hour
-    """)
-    if not df_outlook.empty:
-        df_outlook["date"] = pd.to_datetime(df_outlook["date"])
-        # tz_convert('Asia/Istanbul') BEFORE stripping tz — the mart's `datetime`
-        # is a real UTC instant for "this (date,hour), interpreted as Istanbul
-        # local time" (TIMESTAMP_ADD(TIMESTAMP(date,'Asia/Istanbul'), ...)),
-        # matching every other (date,hour) key in this project. Stripping tz
-        # straight from UTC (no convert) silently relabels e.g. 16:00 Istanbul
-        # as "13:00" on the chart's naive x-axis — confirmed 2026-08-18 from a
-        # user screenshot showing the realized/forecast line 3h (exactly
-        # Turkey's UTC+3 offset) earlier than the archived-prediction diamond
-        # markers on the same chart, which are built via direct date+hour
-        # arithmetic below and were never affected.
-        df_outlook["datetime"] = (pd.to_datetime(df_outlook["datetime"], utc=True)
-                                   .dt.tz_convert("Asia/Istanbul").dt.tz_localize(None))
-        df_outlook["hour"] = pd.to_numeric(df_outlook["hour"], errors="coerce").fillna(-1).astype(int)
-
-    # Archived forward predictions (resolved — see ptf_inference.py's
-    # _cleanup_stale_forward_predictions()) overlaid on the same chart below,
-    # so "what we predicted" and "what actually happened" (the line above)
-    # sit on the same timeline — same bugün+yarın window as df_outlook.
-    df_fwd_acc = query(f"""
-        SELECT predicted_date, hour, predicted_ptf, actual_ptf, lead_time_hours
-        FROM {tbl('gold_ptf_forward_accuracy')}
-        WHERE predicted_date BETWEEN CURRENT_DATE('Asia/Istanbul') AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
-        ORDER BY predicted_date, hour
-    """)
-    if not df_fwd_acc.empty:
-        df_fwd_acc["predicted_date"] = pd.to_datetime(df_fwd_acc["predicted_date"])
-        df_fwd_acc["hour"] = pd.to_numeric(df_fwd_acc["hour"], errors="coerce").fillna(-1).astype(int)
-        df_fwd_acc["ts"] = df_fwd_acc["predicted_date"] + pd.to_timedelta(df_fwd_acc["hour"], unit="h")
-        for col in ("predicted_ptf", "actual_ptf", "lead_time_hours"):
-            df_fwd_acc[col] = pd.to_numeric(df_fwd_acc[col], errors="coerce")
-
-    if df_lag.empty:
-        st.warning("Veri bulunamadı.")
-        st.stop()
-
-    dfy = df_lag.dropna(subset=["ptf_lag_24h", "ptf_lag_168h", "ptf_rolling_avg_24h"])
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Ort PTF", f"{dfy['ptf_try'].mean():,.2f} TL")
-    c2.metric("T-24h Korel.", f"{dfy['ptf_try'].corr(dfy['ptf_lag_24h']):.3f}")
-    c3.metric("T-168h Korel.", f"{dfy['ptf_try'].corr(dfy['ptf_lag_168h']):.3f}")
-    c4.metric("Rolling 24h Korel.", f"{dfy['ptf_try'].corr(dfy['ptf_rolling_avg_24h']):.3f}")
-
-    st.markdown("---")
-
-    col_l, col_r = st.columns(2)
-
-    with col_l:
-        # Lag correlation scatter T-24
-        fig = px.scatter(dfy.sample(min(3000, len(dfy)), random_state=42),
-            x="ptf_lag_24h", y="ptf_try", opacity=0.4, trendline="ols",
-            color_discrete_sequence=["#00d4ff"],
-            title="PTF(t) vs PTF(t-24h) — Günlük Kalıcılık",
-            labels={"ptf_lag_24h": "PTF t-24h (TL/MWh)", "ptf_try": "PTF t (TL/MWh)"})
-        dark(fig)
-        st.plotly_chart(fig, use_container_width=True, key="ml_lag24")
-
-    with col_r:
-        # Lag correlation scatter T-168
-        fig2 = px.scatter(dfy.sample(min(3000, len(dfy)), random_state=42),
-            x="ptf_lag_168h", y="ptf_try", opacity=0.4, trendline="ols",
-            color_discrete_sequence=["#7c3aed"],
-            title="PTF(t) vs PTF(t-168h) — Haftalık Kalıcılık",
-            labels={"ptf_lag_168h": "PTF t-168h (TL/MWh)", "ptf_try": "PTF t (TL/MWh)"})
-        dark(fig2)
-        st.plotly_chart(fig2, use_container_width=True, key="ml_lag168")
-
-    # ── FORWARD FORECAST PANEL ────────────────────────────────────────────────
-    # df_outlook (mart_ptf_forecast_outlook) already carries the real-vs-model
-    # precedence — just split by value_source for the two chart traces.
-    st.markdown("### 🔮 İleriye Yönelik Tahmin (Gerçek Forward-Looking)")
-
-    if df_outlook.empty:
-        # query()'s generic exception handler returns a columnless
-        # pd.DataFrame() (not just on BQNotFound) — guard before indexing by
-        # column name, same class of bug this session's code review flagged.
-        df_real_line  = pd.DataFrame()
-        df_model_line = pd.DataFrame()
-    else:
-        df_real_line  = df_outlook[df_outlook["value_source"] != "model"].sort_values("datetime")
-        df_model_line = df_outlook[df_outlook["value_source"] == "model"].sort_values("datetime")
-
-    if df_outlook.empty:
-        st.info(
-            "**Henüz ileriye dönük veri yok.**  \n"
-            "`mart_ptf_realized` (gerçek K.PTF/PTF), GÖP açık artırması kapandığında "
-            "(~14:00 TRT) otomatik dolar; `gold_ptf_forward_predictions` ise LEP verisi "
-            "geldikçe saatlik inference çalışmasıyla üretilir.  \n"
-            "Airflow DAG: `ptf_hourly_inference → run_forward_forecast`"
-        )
-    else:
-        fig_fwd = go.Figure()
-        if not df_real_line.empty:
-            fig_fwd.add_trace(go.Scatter(
-                x=df_real_line["datetime"], y=df_real_line["value"],
-                mode="lines+markers",
-                name="Gerçekleşen GÖP (K.PTF/PTF)",
-                line=dict(color="#00d4ff", width=2.5),
-                fill="tozeroy", fillcolor="rgba(0,212,255,0.07)",
-                hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
-            ))
-        if not df_model_line.empty:
-            fig_fwd.add_trace(go.Scatter(
-                x=df_model_line["datetime"], y=df_model_line["value"],
-                mode="lines+markers",
-                name="XGBoost Tahmin (D+2 ve sonrası)",
-                line=dict(color="#ff6b35", width=2.5, dash="dash"),
-                hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} TL/MWh<extra></extra>",
-            ))
-        # Archived (resolved) forward predictions — what the model guessed for
-        # an hour that has since settled, plotted at that same hour so it
-        # sits directly against the real (blue) line above it: distance
-        # between the marker and the line IS the historical forecast error.
-        if not df_fwd_acc.empty:
-            fig_fwd.add_trace(go.Scatter(
-                x=df_fwd_acc["ts"], y=df_fwd_acc["predicted_ptf"],
-                mode="markers",
-                name="Geçmiş Model Tahmini (arşiv)",
-                marker=dict(
-                    size=8, symbol="diamond", color="#facc15",
-                    line=dict(width=0.5, color="rgba(0,0,0,0.4)"),
-                ),
-                customdata=df_fwd_acc[["actual_ptf", "lead_time_hours"]],
-                hovertemplate=(
-                    "%{x|%d %b %H:%M}<br>Tahmin: %{y:,.0f} TL/MWh<br>"
-                    "Gerçekleşen: %{customdata[0]:,.0f} TL/MWh<br>"
-                    "Lead: %{customdata[1]:.0f} saat<extra></extra>"
-                ),
-            ))
-        dark(fig_fwd, height=380,
-             title="Saatlik PTF — Gerçekleşen (K.PTF/PTF), Canlı ve Geçmiş Model Tahmini",
-             yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
-             hovermode="x unified")
-        st.plotly_chart(fig_fwd, use_container_width=True, key="ml_forward")
-
-        _forward_values = df_outlook["value"].dropna()
-        fw1, fw2, fw3 = st.columns(3)
-        if _forward_values.empty:
-            fw1.metric("Ort. PTF", "—")
-            fw2.metric("Maks PTF", "—")
-            fw3.metric("Min PTF",  "—")
-        else:
-            fw1.metric("Ort. PTF", f"{_forward_values.mean():,.2f} TL/MWh")
-            fw2.metric("Maks PTF", f"{_forward_values.max():,.2f} TL/MWh")
-            fw3.metric("Min PTF",  f"{_forward_values.min():,.2f} TL/MWh")
-        st.caption(
-            f"🔵 {len(df_real_line)} saat gerçekleşen GÖP fiyatı (K.PTF/PTF) — tahmin değil. "
-            f"🟠 {len(df_model_line)} saat canlı model tahmini. "
-            f"🔶 {len(df_fwd_acc)} saat geçmiş (çözülmüş) model tahmini arşivi."
-        )
-
-    # ── BACKTESTING ───────────────────────────────────────────────────────────
-    if df_pred.empty:
-        st.info(
-            "**Tahmin tablosu henüz mevcut değil.**  \n"
-            "`gold_ptf_predictions` tablosu ilk `ptf_inference.py` çalışması "
-            "tamamlandıktan sonra otomatik olarak oluşturulur.  \n"
-            "Airflow DAG: `ptf_hourly_inference → run_ptf_inference`"
-        )
-    else:
-        st.markdown("### 🎯 Model Backtesting — Gerçekleşen vs Tahmin")
-
-        # ── Deduplicate predictions ───────────────────────────────────────────────
-        # Airflow task retries cause duplicate streaming inserts.  Keep the first
-        # occurrence of each (predicted_date, hour) pair.
-        df_pred = df_pred.drop_duplicates(subset=["predicted_date", "hour"])
-
-        # Backtesting: fetch actual PTF for the EXACT date range present in
-        # gold_ptf_predictions — independent of the sidebar year/month filter.
-        #
-        # Source: stg_pricing (NOT mart_forecasted_residual_load).
-        # Reason: mart_forecasted_residual_load is driven by stg_load_estimation
-        # (LEP), which stores Turkish-local hours (1–24) from the EPIAS API's
-        # `time` field.  stg_pricing derives its hour via
-        # EXTRACT(HOUR FROM UTC_timestamp), producing UTC hours (0–23).
-        # The inference stores predicted_date/hour from the UTC datetime index
-        # of mart_forecasted_residual_load.datetime — which is built as
-        # TIMESTAMP_ADD(CAST(date AS TIMESTAMP), INTERVAL hour HOUR), where
-        # `hour` in that mart comes from LEP (Turkish hours), not UTC.
-        # Consequently the JOIN l.hour = p.hour between LEP and pricing always
-        # misses (Turkish 22 ≠ UTC 19), leaving ptf_try NULL for all rows.
-        #
-        # stg_pricing.hour = EXTRACT(HOUR FROM UTC timestamp) matches
-        # predicted_ts.hour (also UTC) exactly — the merge is guaranteed to find
-        # rows as long as stg_pricing has settled data for the prediction dates.
-        _pred_dates = df_pred["predicted_date"].dropna()
-        if _pred_dates.empty:
-            st.warning("Tahmin tarihleri yüklenemedi — `predicted_date` sütunu boş.")
-            st.stop()
-        _bt_min = _pred_dates.min().strftime("%Y-%m-%d")
-        # +1 day buffer: UTC hours 22–23 on date D are fetched by the ds=D+1
-        # Bronze pipeline run (Turkish hours 01–02 of D+1 = UTC 22–23 of D).
-        _bt_max = (_pred_dates.max() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-        # stg_pricing used here (not a Gold mart) — see the hour-alignment comment
-        # above explaining why LEP-based Gold tables cannot be joined for backtesting.
-        df_actual = query(f"""
-            SELECT date, hour, ptf_try
-            FROM {tbl('stg_pricing')}
-            WHERE date BETWEEN '{_bt_min}' AND '{_bt_max}'
-            ORDER BY date, hour
-        """)
-
-        if df_actual.empty:
-            # query() returns a columnless DataFrame() on any BigQuery failure
-            # (timeout/quota/network blip) — guard here so df_actual["date"]
-            # below can't raise KeyError and take down the SHAP/rolling-average
-            # sections that render further down this page.
-            merged = pd.DataFrame()
-        else:
-            df_actual["date"] = pd.to_datetime(df_actual["date"])
-            merged = df_actual.merge(
-                df_pred, left_on=["date", "hour"], right_on=["predicted_date", "hour"],
-                how="inner")
-
-        if not merged.empty:
-            # Build an hourly timestamp (date+hour) — using `date` alone stacks
-            # all 24 hours of a day onto a single x-position.
-            merged["ts"] = merged["date"] + pd.to_timedelta(merged["hour"], unit="h")
-
-            err  = merged["ptf_try"] - merged["predicted_ptf"]
-            mae  = err.abs().mean()
-            rmse = (err**2).mean()**0.5
-            bias = -err.mean()   # positive = model over-predicts, negative = under-predicts
-
-            # sMAPE — matches ptf_trainer.py's own evaluation formula. Plain
-            # MAPE divides by the actual price alone, which is undefined /
-            # blows up on the zero-PTF hours EPİAŞ produces during solar
-            # oversupply (mart_price_analysis.is_zero_price). sMAPE's
-            # denominator averages |actual| and |predicted|, so it stays
-            # well-behaved near zero instead of silently dropping those rows.
-            _smape_denom = (merged["ptf_try"].abs() + merged["predicted_ptf"].abs()) / 2
-            smape = err.abs().div(_smape_denom.replace(0, float("nan"))).mean() * 100
-
-            # MASE vs. a naive "same hour, 24h ago" baseline — the standard
-            # bar in electricity price forecasting for whether a model earns
-            # its complexity. <1 = model beats naive persistence; >1 = a
-            # trivial "predict yesterday's price" forecast would do better.
-            _actual_by_ts = df_actual.assign(
-                ts=df_actual["date"] + pd.to_timedelta(df_actual["hour"], unit="h")
-            ).set_index("ts")["ptf_try"]
-            naive_pred = (merged["ts"] - pd.Timedelta(hours=24)).map(_actual_by_ts)
-            _naive_mae = (merged["ptf_try"] - naive_pred).abs().mean()
-            mase = mae / _naive_mae if pd.notna(_naive_mae) and _naive_mae > 0 else float("nan")
-
-            cm1, cm2, cm3, cm4, cm5 = st.columns(5)
-            cm1.metric("MAE", f"{mae:,.2f} TL/MWh")
-            cm2.metric("RMSE", f"{rmse:,.2f} TL/MWh")
-            cm3.metric("sMAPE", f"%{smape:.2f}",
-                       help="Simetrik MAPE — sıfır/düşük PTF saatlerinde düz MAPE gibi bozulmaz")
-            cm4.metric("MASE (T-24h naive'e göre)",
-                       f"{mase:.2f}" if pd.notna(mase) else "—",
-                       help="<1: model, 'dünkü fiyatı tahmin et' naive yöntemini geçiyor. >1: naive daha iyi.")
-            cm5.metric("Bias", f"{bias:+,.2f} TL/MWh",
-                       help="Pozitif = model fazla tahmin ediyor, negatif = az tahmin ediyor")
-
-            # `.tail(7*24)` selected the last 168 MATCHED rows, which — during
-            # periods when the hourly inference job wasn't running (e.g. the
-            # scheduler downtime) or actual/predicted hours didn't align —
-            # could stretch back months while looking like a continuous
-            # 7-day line.  Instead, take the real last 7 calendar days and
-            # reindex onto the full expected hourly grid so any missing hour
-            # shows as a break in the line (connectgaps=False) rather than a
-            # straight edge silently bridging the gap.
-            _ts_max = merged["ts"].max()
-            _window_start = _ts_max - pd.Timedelta(days=7)
-            sample = (merged[merged["ts"] >= _window_start]
-                      .set_index("ts")
-                      .reindex(pd.date_range(_window_start.ceil("h"), _ts_max, freq="h")))
-
-            fig3 = go.Figure()
-            fig3.add_trace(go.Scatter(x=sample.index, y=sample["ptf_try"],
-                name="Gerçekleşen", line=dict(color="#00d4ff", width=1.5),
-                connectgaps=False))
-            fig3.add_trace(go.Scatter(x=sample.index, y=sample["predicted_ptf"],
-                name="XGBoost Tahmin", line=dict(color="#ff6b35", width=1.5, dash="dash"),
-                connectgaps=False))
-            dark(fig3, height=420, title="Son 7 Günlük Saatlik Backtesting",
-                 yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
-                 hovermode="x unified")
-            st.plotly_chart(fig3, use_container_width=True, key="ml_bt")
-
-            _n_missing = int(sample["ptf_try"].isna().sum())
-            if _n_missing > 0:
-                st.caption(
-                    f"⚠️ Son 7 günde {_n_missing} saat için tahmin/gerçekleşen veri "
-                    f"eşleşmedi (pipeline kesintisi veya saat hizalama farkı) — "
-                    f"grafikte boşluk olarak gösteriliyor."
-                )
-        else:
-            st.info("Tahmin ve gerçekleşen veriler eşleştirilemedi.")
-
-    # SHAP importance — fetched fresh from GCS on each weekly retrain, not a
-    # static repo file (see load_shap_importance's docstring).
-    try:
-        shap_df = load_shap_importance()
-        fig4 = px.bar(shap_df.head(12),
-            x="feature_importance_vals", y="col_name", orientation="h",
-            color="feature_importance_vals", color_continuous_scale="Blues",
-            title="🔬 XGBoost Feature Importance (SHAP)",
-            labels={"feature_importance_vals": "SHAP Skoru", "col_name": ""})
-        fig4.update_layout(**DARK_LAYOUT, height=400,
-            yaxis={"categoryorder": "total ascending"},
-            coloraxis_showscale=False)
-        st.plotly_chart(fig4, use_container_width=True, key="ml_shap")
-    except BQNotFound:
-        st.info("SHAP verisi henüz mevcut değil. ptf_trainer.py çalıştırıldıktan sonra görünür.")
-
-    # Rolling avg trend
-    daily_roll = dfy.groupby("date").agg(
-        ptf=("ptf_try","mean"), roll=("ptf_rolling_avg_24h","mean")).reset_index()
-    fig5 = go.Figure()
-    fig5.add_trace(go.Scatter(x=daily_roll["date"], y=daily_roll["ptf"],
-        name="Günlük Ort PTF", line=dict(color="#00d4ff", width=1.5), opacity=0.7))
-    fig5.add_trace(go.Scatter(x=daily_roll["date"], y=daily_roll["roll"],
-        name="24h Rolling Ort", line=dict(color="#ff6b35", width=2.5)))
-    dark(fig5, height=360, title="Günlük PTF vs 24h Hareketli Ortalama",
-         yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
-    st.plotly_chart(fig5, use_container_width=True, key="ml_roll")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 7b — SMF TAHMİN & ML (2 aşamalı: yön sınıflandırıcı + fiyat regresörü)
+# PAGE 7 — SMF TAHMİN & ML (2 aşamalı: yön sınıflandırıcı + fiyat regresörü)
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "🔋 SMF Tahmin & ML":
     st.markdown("""
@@ -1654,8 +1280,9 @@ elif page == "🔋 SMF Tahmin & ML":
         ORDER BY date, hour
     """)
 
-    # gold_smf_predictions is a BACKTEST table — only already-settled hours —
-    # same rationale as gold_ptf_predictions, see that page's comment.
+    # gold_smf_predictions is a BACKTEST table — only ever predicts hours
+    # where the price is already settled, purely to measure accuracy against
+    # ground truth. It can never contain a genuinely future prediction.
     df_pred = query(f"""
         SELECT predicted_date, hour, predicted_smf, predicted_direction,
                proba_energy_deficit, proba_energy_surplus, proba_in_balance
@@ -3208,20 +2835,15 @@ elif page == "⏰ Vardiya Optimizasyonu":
          yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"))
     st.plotly_chart(fig3, use_container_width=True, key="so_daily_trend")
 
-    # ── Model tabanlı vardiya önerisi ────────────────────────────────────────
-    st.markdown("### 🤖 Model Tabanlı Vardiya Önerisi")
+    # ── Güncel vardiya önerisi (gerçekleşen fiyat bazlı) ─────────────────────
+    st.markdown("### 📅 Güncel Vardiya Önerisi")
     st.caption(
-        "Bu öneri önce gerçek fiyatı (K.PTF/PTF, `mart_ptf_realized`) kullanır — "
-        "GÖP açık artırması henüz kapanmamış saatler için `gold_ptf_forward_predictions`'daki "
-        "model tahminine düşer (backtest amaçlı `gold_ptf_predictions` değil)."
+        "Bu öneri sadece gerçekleşen fiyatı kullanır (K.PTF/PTF, `mart_ptf_realized`) — "
+        "GÖP açık artırması henüz kapanmamış saatler için öneri üretilmez."
     )
-    # mart_ptf_forecast_outlook already carries the real-vs-model precedence
-    # (ADR-0005) — this page just needs a wider lookback than the "İleriye
-    # Yönelik Tahmin" panel's today-only window, since it wants the most
-    # recent FULL day even if that day has just elapsed.
     df_pred_so = query(f"""
-        SELECT date AS predicted_date, hour, value AS predicted_ptf, value_source AS price_status
-        FROM {tbl('mart_ptf_forecast_outlook')}
+        SELECT date AS predicted_date, hour, ptf_try AS predicted_ptf
+        FROM {tbl('mart_ptf_realized')}
         WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 3 DAY)
         ORDER BY date, hour
     """)
@@ -3234,9 +2856,8 @@ elif page == "⏰ Vardiya Optimizasyonu":
 
     if df_pred_so.empty:
         st.info(
-            "Henüz ileriye dönük veri yok. `mart_ptf_realized` (gerçek K.PTF/PTF) GÖP açık "
-            "artırması kapandığında (~14:00 TRT) otomatik dolar; `gold_ptf_forward_predictions` "
-            "ise LEP verisi geldikçe saatlik inference çalışmasıyla üretilir."
+            "Henüz gerçekleşen veri yok. `mart_ptf_realized` (gerçek K.PTF/PTF) GÖP açık "
+            "artırması kapandığında (~14:00 TRT) otomatik dolar."
         )
     else:
         # Sadece TAM 24 saati olan en güncel günü öner — kısmi bir günün (örn.
@@ -3246,9 +2867,9 @@ elif page == "⏰ Vardiya Optimizasyonu":
         if _full_days.empty:
             _latest_n = int(_day_counts.max()) if not _day_counts.empty else 0
             st.info(
-                f"Henüz tam günlük (24 saat) ileriye dönük veri yok — en güncel günde "
+                f"Henüz tam günlük (24 saat) gerçekleşen veri yok — en güncel günde "
                 f"{_latest_n}/24 saat mevcut. EPİAŞ'ın günlük GÖP yayını (~14:00 TRT) "
-                f"sonrası, LEP verisi geldikçe saatler kademeli olarak tamamlanır."
+                f"sonrası saatler kademeli olarak tamamlanır."
             )
         else:
             _target_date = _full_days.index.max()
@@ -3259,13 +2880,6 @@ elif page == "⏰ Vardiya Optimizasyonu":
             best  = valid.loc[valid["window_avg"].idxmin()]
             worst = valid.loc[valid["window_avg"].idxmax()]
             saving = worst["window_avg"] - best["window_avg"]
-            _n_real  = int((df_tom["price_status"] != "model").sum())
-            _n_model = int((df_tom["price_status"] == "model").sum())
-            _source_note = (
-                "tamamen gerçekleşen GÖP fiyatı (K.PTF/PTF)" if _n_model == 0
-                else "tamamen model tahmini" if _n_real == 0
-                else f"{_n_real} saat gerçek + {_n_model} saat model tahmini"
-            )
             st.success(
                 f"**{_target_date.strftime('%d.%m.%Y')}** için önerilen vardiya başlangıcı: "
                 f"**saat {int(best['hour']):02d}:00** (ort. {best['window_avg']:,.2f} TL/MWh) — "
@@ -3273,4 +2887,4 @@ elif page == "⏰ Vardiya Optimizasyonu":
                 f"{worst['window_avg']:,.2f} TL/MWh) göre MWh başına "
                 f"**{saving:,.2f} TL** tasarruf potansiyeli."
             )
-            st.caption(f"Kaynak: {_source_note}.")
+            st.caption("Kaynak: gerçekleşen GÖP fiyatı (K.PTF/PTF).")

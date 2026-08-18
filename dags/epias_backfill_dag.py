@@ -342,12 +342,4 @@ with DAG(
         ),
     )
 
-    # =========================================================================
-    # PHASE 5 — ML: Train model ONCE on the now-complete historical dataset
-    # =========================================================================
-    train_initial_model = BashOperator(
-        task_id="train_initial_model",
-        bash_command="python /opt/airflow/src/ptf_trainer.py",
-    )
-
-    register_bq_tables >> run_dbt_backfill >> train_initial_model
+    register_bq_tables >> run_dbt_backfill

@@ -356,7 +356,7 @@ with DAG(
     # got a chance to catch it. `dbt build` interleaves each model with its
     # own tests in dependency order; `--fail-fast` aborts the rest of the run
     # on the first real failure, so a bad stg_pricing row (say) now stops
-    # mart_ml_features/mart_ptf_lag_features from building on top of it that
+    # mart_ml_features from building on top of it that
     # hour, instead of the bad data quietly propagating downstream. The 2
     # known pre-existing, non-duplication test failures (assert_no_hourly_gaps,
     # mart_gop_volume_analysis's ptf_try not_null -- both reflect the old
@@ -369,16 +369,6 @@ with DAG(
             '--exclude ' + ' '.join(DBT_EXCLUDE_PENDING_BACKFILL)
         ),
     )
-
-    # Training (haftalık) ve inference (saatlik) artık bu DAG'da değil — kendi
-    # cadence'lerine sahip ayrı DAG'lar: epias_ptf_training_weekly.py ve
-    # epias_ptf_inference_hourly.py. Bu DAG artık saatlik çalıştığı için
-    # (yukarıdaki schedule_interval="0 * * * *") ağır XGBoost training'i
-    # (10-30 dk) burada tutmak onu günde 24 kez çalıştırırdı — yorumun kendi
-    # belirttiği "haftada bir" niyetiyle çelişirdi. Inference zaten bağımsız
-    # olarak "son 180 satır + önceden eğitilmiş model" ile çalıştığı için bu
-    # DAG'ın dbt run'ını beklemesine gerek yok, gold tablo her ikisi için de
-    # ortak veri kaynağı.
 
     # Zinciri Bağlama
     for batch_t in silver_batch_tasks:

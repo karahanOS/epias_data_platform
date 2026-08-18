@@ -40,13 +40,12 @@ EPIAŞ API & Open-Meteo (Hava Durumu) API & TCMB EVDS (Döviz Kuru)
               │   🥇 Gold Katman        │
               └───────────┬───────────┘
                           │
-              ┌───────────┴────────────┐
-              ▼                        ▼
-    ┌──────────────────┐    ┌──────────────────────┐
-    │  XGBoost PTF      │    │     Streamlit         │
-    │  Training (haftalık)│    │     Dashboard         │
-    │  Inference (saatlik)│    │  (dashboard.py)       │
-    └──────────────────┘    └──────────────────────┘
+                          ▼
+              ┌───────────────────────┐
+              │      Streamlit         │
+              │      Dashboard         │
+              │   (dashboard.py)       │
+              └───────────────────────┘
 
 Hata durumunda: Airflow, Gmail SMTP üzerinden `mehmetkarahanc@gmail.com` adresine e-posta ile uyarı gönderir (ADR-0004).
 
@@ -57,9 +56,8 @@ Hata durumunda: Airflow, Gmail SMTP üzerinden `mehmetkarahanc@gmail.com` adresi
 1. **Ingestion (Bronze):** `src/epias_client.py`, `src/weather_client.py` ve `src/fx_client.py` ile veriler çekilir; ana DAG (`dags/epias_dag.py`, DAG id: `epias_medallion_pipeline_v3`) **saatlik** (`schedule_interval="0 * * * *"`) çalışarak GCS'e (`gs://epias-data-lake/bronze/...`) ham Parquet olarak yazar. Kaynak tanımlarının tek doğrusu `dags/epias_sources.py`'dir (method, GCS yolu, backfill/daily uygunluğu).
 2. **Transformation (Silver):** Silver katmanı artık container içinde çalışan Spark yerine **Dataproc Serverless** üzerinde çalışıyor (`DataprocCreateBatchOperator`, ADR-0002). Kaynaklar `DATAPROC_POOL_SIZE=2` grup halinde konsolide ediliyor (ADR-0003) — cold-start maliyetini (~3-4 dk) 24 kez yerine 2 kez ödemek için.
 3. **Warehouse (Gold):** Silver veriler BigQuery'e köprülenir (`src/load_to_bigquery.py`) ve `epias_dbt/` altındaki dbt modelleri `dbt build --fail-fast` ile staging → marts katmanlarını üretir; hatalı bir model, üzerine kurulu mart'ların o saat build edilmesini durdurur (ADR-0004).
-4. **Forecasting:** PTF tahmini artık ana pipeline'dan bağımsız iki ayrı DAG'da: `dags/epias_ptf_training_weekly.py` (haftalık XGBoost eğitimi) ve `dags/ptf_inference_dag.py` (`ptf_hourly_inference`, saatlik tahmin — GCS'ten önceden eğitilmiş modeli yükler, `src/ptf_inference.py` ile çalışır ve sonucu `gold_ptf_predictions` tablosuna yazar).
-5. **Backfill & Pilot:** `dags/epias_backfill_dag.py` geçmiş veriyi günlük parçalar halinde doldurur (API bazı kaynaklarda haftalık istekleri sessizce tek güne kırptığı için gün-gün backfill zorunlu); `dags/epias_dataproc_pilot_dag.py` Dataproc Serverless geçişinin pilot/test DAG'ıdır.
-6. **Analytics:** `src/data_quality_check.py` veri kalitesi kontrollerini çalıştırır (artık ayrıca dbt testleri her staging modeli için de var); Streamlit dashboard'u (`dashboard.py`, 2000+ satır, çok sayfalı) BigQuery `epias_gold` dataset'ini sorgulayarak yönetici özeti sunar.
+4. **Backfill & Pilot:** `dags/epias_backfill_dag.py` geçmiş veriyi günlük parçalar halinde doldurur (API bazı kaynaklarda haftalık istekleri sessizce tek güne kırptığı için gün-gün backfill zorunlu); `dags/epias_dataproc_pilot_dag.py` Dataproc Serverless geçişinin pilot/test DAG'ıdır.
+5. **Analytics:** `src/data_quality_check.py` veri kalitesi kontrollerini çalıştırır (artık ayrıca dbt testleri her staging modeli için de var); Streamlit dashboard'u (`dashboard.py`, 2000+ satır, çok sayfalı) BigQuery `epias_gold` dataset'ini sorgulayarak yönetici özeti sunar.
 
 ---
 
@@ -94,19 +92,13 @@ epias_data_platform/
 │   ├── epias_dag.py                  # Ana Airflow DAG — epias_medallion_pipeline_v3 (saatlik)
 │   ├── epias_sources.py              # Kaynak/tablo tanımları (tek doğru kaynak) + Dataproc config
 │   ├── epias_backfill_dag.py         # Geçmiş veri backfill DAG'ı (gün-gün)
-│   ├── epias_dataproc_pilot_dag.py   # Dataproc Serverless geçiş pilot DAG'ı
-│   ├── epias_ptf_training_weekly.py  # Haftalık XGBoost model eğitimi
-│   └── ptf_inference_dag.py          # Saatlik PTF tahmin DAG'ı (ptf_hourly_inference)
+│   └── epias_dataproc_pilot_dag.py   # Dataproc Serverless geçiş pilot DAG'ı
 ├── src/
 │   ├── epias_client.py               # EPIAŞ API Wrapper
 │   ├── weather_client.py             # Open-Meteo API Wrapper
 │   ├── fx_client.py                  # TCMB EVDS döviz kuru API Wrapper
 │   ├── load_to_bigquery.py           # Silver → BigQuery köprüleme
 │   ├── data_quality_check.py         # Veri kalitesi kontrolleri
-│   ├── ptf_features.py               # ML feature engineering
-│   ├── ptf_trainer.py                # XGBoost model eğitimi
-│   ├── ptf_inference.py              # Tahmin çalıştırma (GCS model + son satırlar)
-│   ├── model_comparison.py           # Model performans karşılaştırma
 │   └── config.py                     # Ortak konfigürasyon
 ├── spark_jobs/
 │   ├── bronze_to_silver_*.py         # 25+ Spark ETL süreci — artık Dataproc

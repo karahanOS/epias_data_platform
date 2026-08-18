@@ -14,9 +14,7 @@ EPIAS_SOURCES'taki "daily_eligible" flag'i GERÇEKTE "hourly ALL_SOURCES loop'un
 dahil" anlamına geliyor (epias_medallion_pipeline_v3'ün schedule_interval'ı
 "0 * * * *" — saatlik, günlük değil). Bu kaynağı oraya eklemek 20 dakikalık işi
 saatte bir tekrarlamak, günde ~8 saat API çağrısı ve muhtemelen üst üste binen
-DAG run'ları demek olurdu. Aynı ayrışma gerekçesi epias_ptf_training_weekly.py
-için de geçerliydi (bkz. o dosyanın docstring'i) — buradaki DAG onun deseniyle
-kuruldu.
+DAG run'ları demek olurdu.
 
 Zamanlama: 11:30 UTC (~14:30 TRT) — GÖP açık artırması ~14:00 TRT'de kapanıp
 yayınlandıktan sonra, aynı gün içinde veri gerçekten mevcut olsun diye (aynı

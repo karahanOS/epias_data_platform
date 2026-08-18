@@ -24,11 +24,6 @@ USER airflow
 ENV PATH="${PATH}:/home/airflow/.local/bin"
 
 # 3. Python paketleri — _PIP_ADDITIONAL_REQUIREMENTS'a gerek kalmaz
-#    optuna ve holidays eklendi (2026-08-02): ikisi de src/ptf_trainer.py ve
-#    src/ptf_features.py tarafından try/except ile "gracefully" atlanıyordu —
-#    yani hiçbir hata vermeden, hiperparametre araması (regularization dahil)
-#    ve resmi tatil özelliği sessizce hiç çalışmadan production'da aylarca
-#    kaldılar. Bkz. ml_model_quality memory notu.
 #    catboost eklendi (2026-08-18): smf_trainer.py'nin yön sınıflandırıcısı
 #    XGBoost'tan CatBoost'a geçti; joblib.load() unpickle sırasında bu paketi
 #    import edebilmeli, yoksa smf_inference.py ModuleNotFoundError ile çöker
@@ -39,4 +34,4 @@ RUN pip install --no-cache-dir --upgrade \
     "dbt-core<1.8.0" \
     pandas numpy requests google-cloud-bigquery pyarrow \
     xgboost scikit-learn openmeteo-requests requests-cache retry-requests \
-    optuna holidays catboost
+    catboost
