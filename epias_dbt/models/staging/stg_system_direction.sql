@@ -15,7 +15,15 @@ SELECT
         ELSE CAST(systemDirection AS STRING)
     END AS system_direction
 FROM {{ source('silver', 'system_direction') }} AS s
-{% if is_incremental() %} WHERE DATE(s.date, 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
+{% if is_incremental() %}
+  -- 1-day lookback (2026-08-18) — same rationale as stg_smf.sql: S+5
+  -- settlement means hours 22-23 (Istanbul) aren't published until
+  -- 03:00-04:00 the next Istanbul day, after the last hourly run for that
+  -- date already ran. A plain `>= MAX(date)` filter would never reprocess
+  -- yesterday once today's date exists, permanently dropping the correction
+  -- written by src/silver_lookback_fix.py.
+  WHERE DATE(s.date, 'Asia/Istanbul') >= DATE_SUB((SELECT MAX(date) FROM {{ this }}), INTERVAL 1 DAY)
+{% endif %}
 -- See stg_pricing.sql: adjacent Hive day-partitions can both carry the same
 -- UTC 21:00-23:59 slice, duplicating a (date,hour) row. Self-heal here.
 QUALIFY ROW_NUMBER() OVER (

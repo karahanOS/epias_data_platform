@@ -92,5 +92,10 @@ with_lags AS (
 
 SELECT * FROM with_lags
 {% if is_incremental() %}
-  WHERE date >= (SELECT MAX(date) FROM {{ this }})
+  -- 1-day lookback (2026-08-18), same rationale as stg_smf.sql/
+  -- stg_system_direction.sql: a plain `>= MAX(date)` filter would never
+  -- re-derive yesterday's row once today's date exists here, so a
+  -- late-corrected smf_try/system_direction (see src/silver_lookback_fix.py)
+  -- would never propagate past staging.
+  WHERE date >= DATE_SUB((SELECT MAX(date) FROM {{ this }}), INTERVAL 1 DAY)
 {% endif %}

@@ -32,6 +32,7 @@ try:
     from epias_client import EPIASClient
     from weather_client import WeatherClient
     from fx_client import FXClient
+    from silver_lookback_fix import fix_smf_partition, fix_system_direction_partition
 except ImportError as exc:
     logging.error(f"Modül yükleme hatası: {exc}")
 
@@ -177,6 +178,33 @@ def get_fx_data_callable(**context) -> list:
     target = (datetime.strptime(ds, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     return client.get_usdtry(target)
 
+def smf_lookback_silver_fix_callable(**context) -> None:
+    """Corrects yesterday's smf/system_direction Silver partition once
+    EPİAŞ's S+5 settlement lag has fully cleared (2026-08-18 investigation).
+
+    Hours 22-23 (Istanbul) settle at 03:00/04:00 the NEXT Istanbul day — after
+    the last hourly run for `ds` already executed (see epias_client.py's
+    _safe_end_iso, which narrows same-day requests to "now - 1h"). Since
+    DATA_DELAYS["get_smf"]/["get_system_direction"] = 0 means the DAG's `ds`
+    never revisits a past date, Bronze permanently froze at whatever was
+    available in that narrow window — confirmed missing exactly hours 22-23
+    every day since same-day SMF fetch went live (2026-08-15).
+
+    Runs every hour rather than once daily: cheap (a few small API calls +
+    a GCS parquet overwrite, no Dataproc/Spark involved — see
+    src/silver_lookback_fix.py) and self-heals within ~1h of settlement
+    instead of waiting for a once-a-day window, with no meaningful added
+    GCP cost either way.
+    """
+    ds = context["ds"]
+    yesterday = (datetime.strptime(ds, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    client = EPIASClient()
+
+    n_smf = fix_smf_partition(client, yesterday)
+    n_dir = fix_system_direction_partition(client, yesterday)
+    logger.info(f"Silver lookback fix ({yesterday}): smf={n_smf} rows, system_direction={n_dir} rows")
+
+
 def save_to_gcs_callable(task_id: str, bucket_path: str, allow_empty: bool = False, **context) -> None:
     data = context["ti"].xcom_pull(task_ids=task_id)
 
@@ -309,6 +337,16 @@ with DAG(
         bash_command='python /opt/airflow/src/load_to_bigquery.py',
     )
 
+    # smf/system_direction lookback correction (2026-08-18, see
+    # smf_lookback_silver_fix_callable docstring) — independent of the
+    # Bronze/Silver Dataproc chain (writes directly to Silver's GCS Hive
+    # partition via src/silver_lookback_fix.py), only needs to complete
+    # before dbt build reads Silver this hour.
+    smf_lookback_fix = PythonOperator(
+        task_id='smf_lookback_silver_fix',
+        python_callable=smf_lookback_silver_fix_callable,
+    )
+
     # ADR-0004 (2026-07-27): dbt run never ran dbt test in production -- the
     # 2026-07-25/26 Silver dedup investigation found ~12 tables silently
     # duplicated for months because schema.yml's tests were never actually
@@ -346,3 +384,4 @@ with DAG(
     for batch_t in silver_batch_tasks:
         batch_t >> load_to_bq
     load_to_bq >> run_dbt
+    smf_lookback_fix >> run_dbt
