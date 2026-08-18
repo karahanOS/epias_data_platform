@@ -1295,16 +1295,20 @@ elif page == "🔋 SMF Tahmin & ML":
         df_pred["hour"] = pd.to_numeric(df_pred["hour"], errors="coerce").fillna(-1).astype(int)
 
     # Real value + predicted value across a rolling window centered on now —
-    # sourced per hour according to SMF's S+5 disclosure-lag constraint: once
-    # a target hour's lead time first drops to <=5h, its prediction is frozen
-    # in gold_smf_forward_snapshot_5h and never changes again (see
-    # write_fixed_horizon_snapshot() in smf_inference.py), so that's the
-    # authoritative "what was predicted" for any hour already inside the S+5
-    # window — including past hours, which always are. Hours still >5h out
-    # haven't been snapshotted yet, so they fall back to the live,
-    # continuously-refreshed gold_smf_forward_predictions (expected to change
-    # run to run at that range — not a bug). A generated hourly spine keeps
-    # every hour in the window present even where a source has no row yet.
+    # sourced per hour according to SMF's S+5 disclosure-lag constraint. "S"
+    # here is the hour of the LAST PUBLISHED real value (MAX(datetime) in
+    # mart_smf_realized), not wall-clock now — the two track close together
+    # in steady state (real SMF data itself lags ~5-6h behind now), but S+5
+    # is the more correct anchor whenever the pipeline falls behind, since it
+    # reflects what's actually known rather than assuming steady-state timing.
+    # Any target hour at or before S+5 is treated as locked: it prefers the
+    # frozen gold_smf_forward_snapshot_5h value (captured once, the first
+    # time that hour's lead time hit <=5h — see write_fixed_horizon_snapshot()
+    # in smf_inference.py — and never overwritten since), falling back to the
+    # live table only if a snapshot hasn't landed yet. Hours after S+5 prefer
+    # the live, continuously-refreshed gold_smf_forward_predictions (expected
+    # to change run to run out there — not a bug). A generated hourly spine
+    # keeps every hour in the window present even where a source has no row.
     df_window = query(f"""
         WITH spine AS (
             SELECT ts AS datetime
@@ -1322,9 +1326,18 @@ elif page == "🔋 SMF Tahmin & ML":
             FROM spine
         ),
         real AS (
-            SELECT date, hour, smf_try AS actual_value
+            SELECT date, hour, datetime, smf_try AS actual_value
             FROM {tbl('mart_smf_realized')}
             WHERE date BETWEEN DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+                            AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
+        ),
+        last_real AS (
+            -- Widen past the spine's own -1/+1 day net so a genuinely stale
+            -- pipeline (last real value >1 day old) still finds S, instead of
+            -- silently falling back to treating every hour as "live".
+            SELECT MAX(datetime) AS last_real_datetime
+            FROM {tbl('mart_smf_realized')}
+            WHERE date BETWEEN DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 7 DAY)
                             AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
         ),
         snapshot AS (
@@ -1342,9 +1355,17 @@ elif page == "🔋 SMF Tahmin & ML":
         SELECT
             sp.datetime, sp.date, sp.hour,
             r.actual_value,
-            COALESCE(sn.snapshot_value, lv.live_value) AS predicted_value,
-            CASE WHEN sn.snapshot_value IS NOT NULL THEN 'snapshot' ELSE 'live' END AS predicted_source
+            CASE
+                WHEN sp.datetime <= TIMESTAMP_ADD(lr.last_real_datetime, INTERVAL 5 HOUR)
+                    THEN COALESCE(sn.snapshot_value, lv.live_value)
+                ELSE COALESCE(lv.live_value, sn.snapshot_value)
+            END AS predicted_value,
+            CASE
+                WHEN sp.datetime <= TIMESTAMP_ADD(lr.last_real_datetime, INTERVAL 5 HOUR) THEN 'snapshot'
+                ELSE 'live'
+            END AS predicted_source
         FROM spine_keyed sp
+        CROSS JOIN last_real lr
         LEFT JOIN real r      ON r.date = sp.date  AND r.hour = sp.hour
         LEFT JOIN snapshot sn ON sn.date = sp.date  AND sn.hour = sp.hour
         LEFT JOIN live lv     ON lv.date = sp.date  AND lv.hour = sp.hour
