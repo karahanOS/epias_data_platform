@@ -20,6 +20,18 @@ Zamanlama: 11:30 UTC (~14:30 TRT) — GÖP açık artırması ~14:00 TRT'de kapa
 yayınlandıktan sonra, aynı gün içinde veri gerçekten mevcut olsun diye (aynı
 mantık dam_clearing/pricing/price_ind_bid'in allow_empty=True gerekçesiyle —
 bkz. epias_sources.py).
+
+2026-08-19 DÜZELTME: yukarıdaki niyet ("aynı gün içinde bugünün verisi") hiç
+gerçekleşmiyordu — kod `ds`'i (Airflow'un data-interval BAŞLANGICI, günlük
+cron'da her zaman çalıştığı takvim gününden 1 gün GERİ) doğrudan hedef olarak
+kullanıyordu, bu yüzden her run bir gün ÖNCEKİ (zaten dünden beri mevcut olan)
+veriyi çekiyordu. Ayrıca clearing-quantity'nin K.PTF gibi 1 gün ERKEN değil,
+final PTF gibi kendi teslim gününün ~14:00'inde yayınlandığı canlı API ile
+doğrulandı (2026-08-19: bugünün verisi, dünün 14:00'i çoktan geçmiş olmasına
+rağmen hâlâ mevcut değildi). İki etki üst üste binince mart_company_gop_activity
+her zaman "bugün"den 2 gün geride kalıyordu. Fix: `target = ds + 1 gün`
+(fetch_and_save_callable içinde) — DAG'ın gerçek çalıştığı günü hedefliyor,
+tam da o günün kendi 14:00'inden 30dk sonra.
 """
 from __future__ import annotations
 
@@ -51,23 +63,30 @@ def fetch_and_save_callable(**context) -> None:
     epias_dag.py'deki get_epias_data_callable + save_to_gcs_callable'ın tek
     task'a birleştirilmiş hali — bu kaynak kendi DAG'ında yalnız, xcom üzerinden
     iki task arasında taşımaya gerek yok. GCS yazım deseni (int64->float64,
-    datetimetz->str, gs://{BUCKET}/{path}/{ds}.parquet) ana DAG'daki
+    datetimetz->str, gs://{BUCKET}/{path}/{target}.parquet) ana DAG'daki
     save_to_gcs_callable ile birebir aynı — Silver'daki BaseEpiasSparkJob.read_bronze()
     her kaynak için aynı path yapısını beklediği için.
     """
+    # `ds` (data-interval başlangıcı) günlük cron'da çalıştığı takvim gününden
+    # her zaman 1 gün geridir — `target` bunu düzeltip DAG'ın gerçekten
+    # çalıştığı günü hedefler (bkz. modül docstring'indeki 2026-08-19 notu).
+    # silver_batch task'ının ds_args'ı ({{ macros.ds_add(ds, 1) }}) burayla
+    # AYNI değeri üretmeli — ikisi tutarsız olursa Silver, bronze'un yazmadığı
+    # bir tarihte dosya arar.
     ds = context["ds"]
+    target = (datetime.strptime(ds, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
     client = EPIASClient()
     method = getattr(client, METHOD_NAME)
-    data = method(ds, ds)
+    data = method(target, target)
 
     if not data:
         if ALLOW_EMPTY:
             logger.warning(
-                f"{SOURCE_KEY}: {ds} için veri yok (14:00 TRT öncesi tetiklenmiş "
+                f"{SOURCE_KEY}: {target} için veri yok (14:00 TRT öncesi tetiklenmiş "
                 f"olabilir ya da o gün hiçbir organizasyon eşleşme yapmamış olabilir)."
             )
             return
-        raise ValueError(f"🚨 {SOURCE_KEY}: {ds} için veri gelmedi.")
+        raise ValueError(f"🚨 {SOURCE_KEY}: {target} için veri gelmedi.")
 
     df = pd.DataFrame(data)
 
@@ -80,7 +99,7 @@ def fetch_and_save_callable(**context) -> None:
     for col in df.select_dtypes(include=["datetimetz"]).columns:
         df[col] = df[col].astype(str)
 
-    gcs_path = f"gs://{BUCKET_NAME}/{GCS_SUBPATH}/{ds}.parquet"
+    gcs_path = f"gs://{BUCKET_NAME}/{GCS_SUBPATH}/{target}.parquet"
     df.to_parquet(gcs_path, index=False)
     logger.info(f"✅ {SOURCE_KEY}: {len(df)} satır -> {gcs_path}")
 
@@ -110,8 +129,11 @@ with DAG(
     # dataproc_batches slot'larını paylaşır (bkz. make_silver_batch_task),
     # hourly pipeline'la aynı anda tetiklenirse Airflow pool semantiği ile
     # sıraya girer, çakışma riski yok.
+    # ds_add(ds, 1): fetch_and_save_callable'daki `target` ile AYNI tarihi
+    # üretmeli — bronze'un yazdığı {target}.parquet'i Silver'ın {{ ds }} ile
+    # değil bu düzeltilmiş tarihle araması gerekiyor, yoksa dosya bulunamaz.
     silver_batch = make_silver_batch_task(
-        "silver_dam_clearing_by_org", [SOURCE_KEY], ["{{ ds }}"]
+        "silver_dam_clearing_by_org", [SOURCE_KEY], ["{{ macros.ds_add(ds, 1) }}"]
     )
 
     fetch_bronze >> silver_batch
