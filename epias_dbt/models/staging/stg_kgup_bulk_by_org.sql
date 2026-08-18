@@ -12,8 +12,11 @@
 -- Şirket adı için stg_participants'a JOIN edilmeli (mart katmanında) —
 -- burada sadece org_id + uevcb_name (santral adı) taşınıyor.
 
+-- 2026-08-19 DÜZELTME: s.date UTC bir TIMESTAMP; Asia/Istanbul'a çevirmeden
+-- çıplak CAST(... AS DATE) her günün ilk 3 TRT saatini yanlış tarihe
+-- etiketliyordu (bkz. stg_pricing.sql'in aynı notu).
 SELECT
-    CAST(s.date AS DATE)                              AS date,
+    DATE(CAST(s.date AS TIMESTAMP), 'Asia/Istanbul')  AS date,
     CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64)  AS hour,
     CAST(orgId     AS INT64)  AS org_id,
     CAST(uevcbId   AS INT64)  AS uevcb_id,
@@ -35,10 +38,10 @@ SELECT
 FROM {{ source('silver', 'kgup_bulk_by_org') }} AS s
 
 {% if is_incremental() %}
-  WHERE CAST(s.date AS DATE) >= (SELECT MAX(date) FROM {{ this }})
+  WHERE DATE(CAST(s.date AS TIMESTAMP), 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }})
 {% endif %}
 -- Aynı cross-Hive-partition-boundary sınıfı (bkz. stg_dam_clearing_by_org.sql).
 QUALIFY ROW_NUMBER() OVER (
-  PARTITION BY CAST(s.date AS DATE), CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64), CAST(orgId AS INT64), CAST(uevcbId AS INT64)
+  PARTITION BY DATE(CAST(s.date AS TIMESTAMP), 'Asia/Istanbul'), CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64), CAST(orgId AS INT64), CAST(uevcbId AS INT64)
   ORDER BY s.date DESC
 ) = 1

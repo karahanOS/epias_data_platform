@@ -11,9 +11,12 @@
 -- (stg_dpp) ve kaynak tablo adı (silver.dpp) API endpoint adını yansıtıyor,
 -- değiştirilmedi — sadece bu yorum ve get_dpp()'nin docstring'i düzeltildi.
 -- Uzlaştırma dönemine ait SONRAKİ katman (KUDÜP) için stg_sbfgp.sql kullanılmalıdır.
+-- 2026-08-19 DÜZELTME: date UTC bir TIMESTAMP; Asia/Istanbul'a çevirmeden
+-- çıplak CAST(... AS DATE) her günün ilk 3 TRT saatini yanlış tarihe
+-- etiketliyordu (bkz. stg_pricing.sql'in aynı notu).
 WITH deduped AS (
     SELECT
-        CAST(date AS DATE)                                    AS date,
+        DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul')        AS date,
         CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64)    AS hour,
         CAST(toplam      AS FLOAT64) AS total_planned_mwh,
         CAST(dogalgaz    AS FLOAT64) AS natural_gas_mwh,
@@ -34,7 +37,7 @@ WITH deduped AS (
         -- so the last few UTC hours of a day land in the NEXT day's local-hour partition
         -- too, duplicating (date,hour) 00/01/02 across two adjacent GCS partitions.
         ROW_NUMBER() OVER(
-            PARTITION BY CAST(date AS DATE), CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64)
+            PARTITION BY DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul'), CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64)
             ORDER BY _record_hash DESC
         ) AS rn
     FROM {{ source('silver', 'dpp') }}

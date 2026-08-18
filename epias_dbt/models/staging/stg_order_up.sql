@@ -2,8 +2,11 @@
 
 -- Silver order_up is company-level (one row per organizationId per hour).
 -- SUM aggregates all companies to system-level totals per (date, hour).
+-- 2026-08-19 DÜZELTME: date UTC bir TIMESTAMP; Asia/Istanbul'a çevirmeden
+-- çıplak CAST(... AS DATE) her günün ilk 3 TRT saatini yanlış tarihe
+-- etiketliyordu (bkz. stg_pricing.sql'in aynı notu).
 SELECT
-    CAST(date AS DATE) AS date,
+    DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul') AS date,
     CAST(SUBSTR(CAST(hour AS STRING), 1, 2) AS INT64) AS hour,
     SUM(CAST(upRegulationZeroCoded AS FLOAT64)) AS up_regulation_zero_mwh,
     SUM(CAST(upRegulationOneCoded AS FLOAT64)) AS up_regulation_one_mwh,
@@ -12,6 +15,6 @@ SELECT
     SUM(CAST(net AS FLOAT64)) AS net_mwh
 FROM {{ source('silver', 'order_up') }}
 
-{% if is_incremental() %} WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
+{% if is_incremental() %} WHERE DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }}) {% endif %}
 
 GROUP BY 1, 2

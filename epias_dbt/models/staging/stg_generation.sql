@@ -5,9 +5,13 @@
     partition_by={"field": "date", "data_type": "date"}
 ) }}
 
+-- 2026-08-19 DÜZELTME: date UTC bir TIMESTAMP; Asia/Istanbul'a çevirmeden
+-- çıplak CAST(... AS DATE) her günün ilk 3 TRT saatini (UTC 21-23, önceki
+-- takvim günü) yanlış tarihe etiketliyordu (bkz. stg_pricing.sql'in aynı
+-- notu). Bu tablo mart_ml_features'ı besliyor — ML eğitim verisi etkileniyor.
 WITH deduped AS (
     SELECT
-        CAST(date AS DATE) AS date,
+        DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul') AS date,
         CAST(SUBSTR(CAST(hour AS STRING), 1, 2) AS INT64) AS hour,
         
         -- Kaynak Tablodaki Gerçek Kolonlar
@@ -31,7 +35,7 @@ WITH deduped AS (
         
         -- API'den aynı saat için gelen olası çift kayıtları önlemek için Row Number
         ROW_NUMBER() OVER(
-            PARTITION BY CAST(date AS DATE), CAST(SUBSTR(CAST(hour AS STRING), 1, 2) AS INT64) 
+            PARTITION BY DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul'), CAST(SUBSTR(CAST(hour AS STRING), 1, 2) AS INT64)
             ORDER BY _record_hash DESC
         ) as rn
     FROM {{ source('silver', 'generation') }}

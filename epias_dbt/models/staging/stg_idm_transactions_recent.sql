@@ -26,9 +26,15 @@
 
 {% set cutoff = (run_started_at.date() - modules.datetime.timedelta(days=7)) %}
 
+-- 2026-08-19 DÜZELTME: date UTC bir TIMESTAMP; Asia/Istanbul'a çevirmeden
+-- çıplak CAST(... AS DATE) her günün ilk 3 TRT saatini yanlış tarihe
+-- etiketliyordu (bkz. stg_pricing.sql'in aynı notu). NOT: alttaki
+-- year/month/day cutoff WHERE'i bilinçli olarak DOKUNULMADI — o, Hive
+-- partition pruning için ayrı bir mekanizma (ds/Bronze fetch gününe göre),
+-- bu satırdaki içerik tarihinden bağımsız çalışıyor.
 SELECT
     CAST(id AS STRING) AS id,
-    CAST(date AS DATE) AS date,
+    DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul') AS date,
     CAST(SUBSTR(CAST(hour AS STRING), 1, 2) AS INT64) AS hour,
     CAST(contractName AS STRING) AS contract_name,
     CAST(price    AS FLOAT64) AS price_try,

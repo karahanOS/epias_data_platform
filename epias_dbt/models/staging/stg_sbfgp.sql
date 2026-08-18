@@ -13,8 +13,11 @@
 -- docstring'i düzeltildi.
 -- GİP kapanışından sonra DUY 69. madde kapsamında güncellenen nihai plandır.
 -- stg_dpp (gerçek KGÜP) ile farkı → intraday revizyon miktarı
+-- 2026-08-19 DÜZELTME: date UTC bir TIMESTAMP; Asia/Istanbul'a çevirmeden
+-- çıplak CAST(... AS DATE) her günün ilk 3 TRT saatini yanlış tarihe
+-- etiketliyordu (bkz. stg_pricing.sql'in aynı notu).
 SELECT
-    CAST(date AS DATE)                                    AS date,
+    DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul')        AS date,
     CAST(SUBSTR(CAST(time AS STRING), 1, 2) AS INT64)    AS hour,
     CAST(toplam      AS FLOAT64) AS total_kgup_mwh,
     CAST(dogalgaz    AS FLOAT64) AS natural_gas_mwh,
@@ -33,5 +36,5 @@ SELECT
 FROM {{ source('silver', 'sbfgp') }}
 
 {% if is_incremental() %}
-  WHERE CAST(date AS DATE) >= (SELECT MAX(date) FROM {{ this }})
+  WHERE DATE(CAST(date AS TIMESTAMP), 'Asia/Istanbul') >= (SELECT MAX(date) FROM {{ this }})
 {% endif %}
