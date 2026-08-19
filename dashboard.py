@@ -1360,8 +1360,16 @@ elif page == "🔋 SMF Tahmin & ML":
             -- though gold_smf_forward_snapshot_5h already had real rows for
             -- them. Checking existence directly sidesteps re-deriving
             -- "within 5h of now" with a second, drifting reference point.
-            COALESCE(sn.snapshot_value, lv.live_value) AS predicted_value,
-            CASE WHEN sn.snapshot_value IS NOT NULL THEN 'snapshot' ELSE 'live' END AS predicted_source
+            -- Once a real value publishes for an hour, it supersedes
+            -- whatever was predicted for it — null the prediction out so the
+            -- two traces hand off cleanly instead of drawing two overlapping
+            -- points at the same hour.
+            CASE WHEN r.actual_value IS NULL
+                 THEN COALESCE(sn.snapshot_value, lv.live_value) END AS predicted_value,
+            CASE WHEN r.actual_value IS NOT NULL THEN NULL
+                 WHEN sn.snapshot_value IS NOT NULL THEN 'snapshot'
+                 ELSE 'live'
+            END AS predicted_source
         FROM spine_keyed sp
         LEFT JOIN real r      ON r.date = sp.date  AND r.hour = sp.hour
         LEFT JOIN snapshot sn ON sn.date = sp.date  AND sn.hour = sp.hour
