@@ -67,7 +67,17 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     "idm_transactions": ("get_idm_transaction_history",     "bronze/idm_transactions", False, True,  True),
     "order_up":         ("get_order_summary_up",            "bronze/order_up",         False, True,  True),
     "order_down":       ("get_order_summary_down",          "bronze/order_down",       False, True,  True),
-    "system_direction": ("get_system_direction",            "bronze/system_direction", False, True,  True),
+    # system_direction: allow_empty=True added 2026-08-19. Same /v1/markets/bpm/*
+    # family and same S+5-style settlement lag as smf (see epias_client.py's
+    # _safe_end_iso), but unlike smf this one does go empty in practice: at
+    # 00:00-01:00 UTC (~03:00-04:00 TRT), none of "today" has cleared S+5 yet,
+    # so get_system_direction legitimately returns zero rows for the whole
+    # requested window. With allow_empty=False that hit save_to_gcs_callable's
+    # hard ValueError every time — confirmed failing on 2026-08-10, 08-11, and
+    # 08-15 (the last time on both the 00:00 and 01:00 UTC runs). The separate
+    # smf_lookback_silver_fix_callable task self-heals yesterday's late-hour
+    # Silver gap; it doesn't touch this same-day Bronze-fetch-time emptiness.
+    "system_direction": ("get_system_direction",            "bronze/system_direction", True,  True,  True),
     "dpp":              ("get_dpp",                         "bronze/dpp",              False, True,  True),
     "aic":              ("get_aic",                         "bronze/aic",              False, True,  True),
     "imbalance":        ("get_imbalance_quantity",          "bronze/imbalance",        False, True,  True),
