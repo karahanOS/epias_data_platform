@@ -1312,10 +1312,14 @@ elif page == "🔋 SMF Tahmin & ML":
     # keeps every hour in the window present even where a source has no row.
     df_window = query(f"""
         WITH spine AS (
+            -- TIMESTAMP_TRUNC(..., HOUR) first -- CURRENT_TIMESTAMP() carries
+            -- the current second, so an un-truncated anchor produces spine
+            -- points like 12:41:06 instead of 12:00:00, off the clean
+            -- (date, hour) grain every joined table actually uses.
             SELECT ts AS datetime
             FROM UNNEST(GENERATE_TIMESTAMP_ARRAY(
-                TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 HOUR),
-                TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 16 HOUR),
+                TIMESTAMP_SUB(TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), HOUR), INTERVAL 7 HOUR),
+                TIMESTAMP_ADD(TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), HOUR), INTERVAL 16 HOUR),
                 INTERVAL 1 HOUR
             )) AS ts
         ),
