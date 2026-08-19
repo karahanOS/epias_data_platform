@@ -60,7 +60,20 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # taşımıyor, bu yüzden backfill_eligible=False.
     "interim_mcp":      ("get_interim_mcp",                  "bronze/interim_mcp",      True,  False, True),
     "smf":              ("get_smf",                         "bronze/smf",              False, True,  True),
-    "consumption":      ("get_realtime_consumption",        "bronze/consumption",      False, True,  True),
+    # consumption/generation/imbalance: allow_empty flipped True 2026-08-19,
+    # proactively — audited against EPİAŞ Kurul Kararı 10711: consumption ~
+    # row 49 "Gerçekleşen Tüketim" (Saatlik, S+2), generation ~ row 15
+    # "Gerçekleşen Santral Üretimleri" (Saatlik, G+1), imbalance is the same
+    # settlement-family shape. All three live-tested successfully with
+    # end_date=today (2026-08-19, ~19:00 TRT) but returned an *incomplete*
+    # day (23/24 hours) — unlike order_up/order_down/dpp below, which
+    # returned the full 24 hours even mid-evening (their data is published
+    # in advance, not built up hour-by-hour). That "grows through the day"
+    # shape is exactly what made system_direction (same reasoning, same S+5
+    # BPM family) legitimately return zero rows at 00:00-01:00 UTC before —
+    # not tested at that exact hour for these three, but the same failure
+    # mode is plausible and the fix costs nothing when it doesn't apply.
+    "consumption":      ("get_realtime_consumption",        "bronze/consumption",      True,  True,  True),
     "supply_demand":    ("get_supply_demand",               "bronze/supply_demand",    True,  True,  True),
     "dam_clearing":     ("get_dam_clearing_quantity",       "bronze/dam_clearing",     True,  True,  True),
     "price_ind_bid":    ("get_price_independent_bid",       "bronze/price_ind_bid",    True,  True,  True),
@@ -71,6 +84,16 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # very-early-hour run before any of today's rows exist yet from
     # hard-failing on empty.
     "idm_transactions": ("get_idm_transaction_history",     "bronze/idm_transactions", True,  True,  True),
+    # order_up/order_down: audited 2026-08-19 against EPİAŞ Kurul Kararı 10711
+    # row 3 ("DGP Talimatları", Saatlik, G+1) — deliberately left
+    # allow_empty=False despite the G+1 label. Live-tested with end_date=today
+    # and got the FULL 24 hours back immediately (unlike
+    # consumption/generation/imbalance above, which came back short by one
+    # hour, i.e. still filling in through the day) — so this data is
+    # published in advance, not built up hour-by-hour, and shouldn't ever be
+    # empty for a valid same-day request. Keeping allow_empty=False here on
+    # purpose so a genuine future failure still alerts instead of being
+    # silently swallowed.
     "order_up":         ("get_order_summary_up",            "bronze/order_up",         False, True,  True),
     "order_down":       ("get_order_summary_down",          "bronze/order_down",       False, True,  True),
     # system_direction: allow_empty=True added 2026-08-19. Same /v1/markets/bpm/*
@@ -84,11 +107,15 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # smf_lookback_silver_fix_callable task self-heals yesterday's late-hour
     # Silver gap; it doesn't touch this same-day Bronze-fetch-time emptiness.
     "system_direction": ("get_system_direction",            "bronze/system_direction", True,  True,  True),
+    # dpp/aic: same "full 24 hours back immediately, published in advance"
+    # reasoning as order_up/order_down above (dpp = row 13/14 KUDÜP-family,
+    # G-1; aic already has its own ADR-0006 LOOKAHEAD_DAYS fix). Deliberately
+    # left allow_empty=False.
     "dpp":              ("get_dpp",                         "bronze/dpp",              False, True,  True),
     "aic":              ("get_aic",                         "bronze/aic",              False, True,  True),
-    "imbalance":        ("get_imbalance_quantity",          "bronze/imbalance",        False, True,  True),
+    "imbalance":        ("get_imbalance_quantity",          "bronze/imbalance",        True,  True,  True),
     "res_forecast":     ("get_res_generation_and_forecast", "bronze/res_forecast",     False, True,  True),
-    "generation":       ("get_realtime_generation",         "bronze/generation",       False, True,  True),
+    "generation":       ("get_realtime_generation",         "bronze/generation",       True,  True,  True),
     "load_estimation":  ("get_load_estimation_plan",        "bronze/load_estimation",  False, True,  True),
     "outages":          ("get_outages",                     "bronze/outages",          True,  True,  True),
     "dams":             ("get_dams",                        "bronze/dams",             False, True,  True),
