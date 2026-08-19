@@ -69,7 +69,19 @@ DATA_DELAYS: Dict[str, int] = {
     "get_supply_demand":                0,
     "get_dam_clearing_quantity":        0,
     "get_price_independent_bid":        0,
-    "get_idm_transaction_history":      1,
+    # get_idm_transaction_history/get_outages: also used to be in the same
+    # delay=1 "endDate must be in the past" group as get_smf above, based on
+    # the same original (overly broad) diagnosis. Re-verified live 2026-08-19
+    # against EPİAŞ Kurul Kararı 10711 (Şeffaflık Platformunda Yayımlanacak
+    # Veri Listesi): GİP anlık işlemler ~ row 76 "Gün İçi Piyasası İşlem Akışı"
+    # (Saatlik, G — same-day/near-real-time), outages = row 24 "Arıza &
+    # Plansız Bakım" (Saatlik, Anlık — real-time). Both live-tested with
+    # end_date=today: get_idm_transaction_history returned 18,404 rows,
+    # get_outages returned 68 rows, neither raised the past-date validation
+    # error. delay=0 is correct per the official schedule; allow_empty=True
+    # (epias_sources.py) covers the edge case of a very-early-hour run before
+    # any of today's rows exist yet, same safety net as smf/system_direction.
+    "get_idm_transaction_history":      0,
     "get_order_summary_up":             0,
     "get_order_summary_down":           0,
     "get_system_direction":             0,
@@ -82,7 +94,7 @@ DATA_DELAYS: Dict[str, int] = {
     "get_load_estimation_plan":         0,
     "get_unlicensed_generation":        35,
     "get_uevcb_list":                   0,
-    "get_outages":                      1,
+    "get_outages":                      0,
     "get_dams":                         0,
     # get_interim_mcp: negative delay = LEAD. K.PTF (itiraz-öncesi PTF)
     # teslim gününden ~1 gün önce, GÖP açık artırması kapanır kapanmaz

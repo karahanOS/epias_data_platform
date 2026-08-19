@@ -64,7 +64,13 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     "supply_demand":    ("get_supply_demand",               "bronze/supply_demand",    True,  True,  True),
     "dam_clearing":     ("get_dam_clearing_quantity",       "bronze/dam_clearing",     True,  True,  True),
     "price_ind_bid":    ("get_price_independent_bid",       "bronze/price_ind_bid",    True,  True,  True),
-    "idm_transactions": ("get_idm_transaction_history",     "bronze/idm_transactions", False, True,  True),
+    # idm_transactions/outages: allow_empty flipped True 2026-08-19, alongside
+    # removing their stale delay=1 in epias_dag.py's DATA_DELAYS (see that
+    # comment for the full story — re-verified against EPİAŞ Kurul Kararı
+    # 10711 rows 76/24). Same safety net as smf/system_direction: protects a
+    # very-early-hour run before any of today's rows exist yet from
+    # hard-failing on empty.
+    "idm_transactions": ("get_idm_transaction_history",     "bronze/idm_transactions", True,  True,  True),
     "order_up":         ("get_order_summary_up",            "bronze/order_up",         False, True,  True),
     "order_down":       ("get_order_summary_down",          "bronze/order_down",       False, True,  True),
     # system_direction: allow_empty=True added 2026-08-19. Same /v1/markets/bpm/*
@@ -84,7 +90,7 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     "res_forecast":     ("get_res_generation_and_forecast", "bronze/res_forecast",     False, True,  True),
     "generation":       ("get_realtime_generation",         "bronze/generation",       False, True,  True),
     "load_estimation":  ("get_load_estimation_plan",        "bronze/load_estimation",  False, True,  True),
-    "outages":          ("get_outages",                     "bronze/outages",          False, True,  True),
+    "outages":          ("get_outages",                     "bronze/outages",          True,  True,  True),
     "dams":             ("get_dams",                        "bronze/dams",             False, True,  True),
     # daily-only: slow bulk / not historically meaningful
     "injection":        ("get_injection_quantity",          "bronze/injection",        True,  False, True),
