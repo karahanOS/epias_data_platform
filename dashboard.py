@@ -1332,15 +1332,6 @@ elif page == "🔋 SMF Tahmin & ML":
             WHERE date BETWEEN DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
                             AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
         ),
-        last_real AS (
-            -- Widen past the spine's own -1/+1 day net so a genuinely stale
-            -- pipeline (last real value >1 day old) still finds S, instead of
-            -- silently falling back to treating every hour as "live".
-            SELECT MAX(datetime) AS last_real_datetime
-            FROM {tbl('mart_smf_realized')}
-            WHERE date BETWEEN DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 7 DAY)
-                            AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
-        ),
         snapshot AS (
             SELECT predicted_date AS date, hour, predicted_smf AS snapshot_value
             FROM {tbl('gold_smf_forward_snapshot_5h')}
@@ -1356,17 +1347,18 @@ elif page == "🔋 SMF Tahmin & ML":
         SELECT
             sp.datetime, sp.date, sp.hour,
             r.actual_value,
-            CASE
-                WHEN sp.datetime <= TIMESTAMP_ADD(lr.last_real_datetime, INTERVAL 5 HOUR)
-                    THEN COALESCE(sn.snapshot_value, lv.live_value)
-                ELSE COALESCE(lv.live_value, sn.snapshot_value)
-            END AS predicted_value,
-            CASE
-                WHEN sp.datetime <= TIMESTAMP_ADD(lr.last_real_datetime, INTERVAL 5 HOUR) THEN 'snapshot'
-                ELSE 'live'
-            END AS predicted_source
+            -- "Frozen" means a row genuinely exists in the snapshot table --
+            -- not a re-derived proximity check. The previous version compared
+            -- against the last SETTLED real datetime (which itself lags ~5-6h
+            -- behind wall-clock "now" due to SMF's own S+5 publication lag),
+            -- so the boundary could never actually reach any future hour --
+            -- confirmed live 2026-08-19: every hour showed "canlı" even
+            -- though gold_smf_forward_snapshot_5h already had real rows for
+            -- them. Checking existence directly sidesteps re-deriving
+            -- "within 5h of now" with a second, drifting reference point.
+            COALESCE(sn.snapshot_value, lv.live_value) AS predicted_value,
+            CASE WHEN sn.snapshot_value IS NOT NULL THEN 'snapshot' ELSE 'live' END AS predicted_source
         FROM spine_keyed sp
-        CROSS JOIN last_real lr
         LEFT JOIN real r      ON r.date = sp.date  AND r.hour = sp.hour
         LEFT JOIN snapshot sn ON sn.date = sp.date  AND sn.hour = sp.hour
         LEFT JOIN live lv     ON lv.date = sp.date  AND lv.hour = sp.hour
