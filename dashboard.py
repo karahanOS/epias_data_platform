@@ -1360,14 +1360,16 @@ elif page == "🔋 SMF Tahmin & ML":
             -- though gold_smf_forward_snapshot_5h already had real rows for
             -- them. Checking existence directly sidesteps re-deriving
             -- "within 5h of now" with a second, drifting reference point.
-            -- Once a real value publishes for an hour, it supersedes
-            -- whatever was predicted for it — null the prediction out so the
-            -- two traces hand off cleanly instead of drawing two overlapping
-            -- points at the same hour.
-            CASE WHEN r.actual_value IS NULL
-                 THEN COALESCE(sn.snapshot_value, lv.live_value) END AS predicted_value,
-            CASE WHEN r.actual_value IS NOT NULL THEN NULL
-                 WHEN sn.snapshot_value IS NOT NULL THEN 'snapshot'
+            -- 2026-08-19: previously nulled the prediction out once a real
+            -- value published for the same hour (avoiding "two overlapping
+            -- points"). Changed on request — once an hour settles, its
+            -- snapshot prediction (write_fixed_horizon_snapshot() in
+            -- smf_inference.py, insert-once/never-updated) stays available
+            -- forever regardless, so keep showing it alongside the actual
+            -- value instead of dropping it — that's the actual point of a
+            -- forecast-vs-actual comparison.
+            COALESCE(sn.snapshot_value, lv.live_value) AS predicted_value,
+            CASE WHEN sn.snapshot_value IS NOT NULL THEN 'snapshot'
                  ELSE 'live'
             END AS predicted_source
         FROM spine_keyed sp
