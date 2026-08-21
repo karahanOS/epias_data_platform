@@ -1372,7 +1372,19 @@ elif page == "🔋 SMF Tahmin & ML":
             -- value instead of dropping it — that's the actual point of a
             -- forecast-vs-actual comparison.
             COALESCE(sn.snapshot_value, lv.live_value) AS predicted_value,
+            -- An hour that has already started can no longer be "live" in
+            -- any real sense: extract_forward_features() (smf_inference.py)
+            -- only re-predicts hours with `datetime > CURRENT_TIMESTAMP()`,
+            -- so a past hour's row in gold_smf_forward_predictions is just a
+            -- stale leftover from before it became past, frozen in practice
+            -- even without a formal gold_smf_forward_snapshot row for it (a
+            -- gap can happen right around a code/rule change, like
+            -- 2026-08-21's mid-day snapshot-rule switch, where no hourly run
+            -- ever caught that specific hour inside its 1h snapshot window).
+            -- Treat "already past" as frozen regardless of source so the
+            -- tooltip never claims a bygone hour "can still change."
             CASE WHEN sn.snapshot_value IS NOT NULL THEN 'snapshot'
+                 WHEN sp.datetime <= CURRENT_TIMESTAMP() THEN 'snapshot'
                  ELSE 'live'
             END AS predicted_source
         FROM spine_keyed sp
@@ -1478,7 +1490,7 @@ elif page == "🔋 SMF Tahmin & ML":
             # single trace so it reads as one forecast, not two disconnected
             # segments.
             _source_label = df_pred_line["predicted_source"].map(
-                {"snapshot": "Sabit (sonraki saat)", "live": "Canlı (henüz değişebilir)"})
+                {"snapshot": "Sabit (artık değişmez)", "live": "Canlı (henüz değişebilir)"})
             fig_fwd.add_trace(go.Scatter(
                 x=df_pred_line["datetime"], y=df_pred_line["predicted_value"],
                 mode="lines+markers",
@@ -1514,7 +1526,7 @@ elif page == "🔋 SMF Tahmin & ML":
             fw3.metric("Min SMF",  f"{_outlook_values.min():,.2f} TL/MWh")
         st.caption(
             f"🔵 {len(df_real_line)} saat gerçekleşen SMF — tahmin değil. "
-            f"🟠 {len(df_pred_frozen)} saat sabit tahmin (sonraki saate girdi, artık değişmez). "
+            f"🟠 {len(df_pred_frozen)} saat sabit tahmin (sonraki saat ya da daha önce geçmiş, artık değişmez). "
             f"🟡 {len(df_pred_live)} saat canlı tahmin (2+ saat sonrası, henüz değişebilir)."
         )
 
