@@ -30,26 +30,39 @@ PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_predictions"
 # rationale as ptf_inference.py's FORWARD_PREDICTIONS_TABLE.
 FORWARD_PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_forward_predictions"
 
-# Fixed-horizon snapshot: the prediction each hour first had at <=7h wall-clock
-# lead time from the current hour, written once and never overwritten.
-# Distinct from FORWARD_PREDICTIONS_TABLE, which is a live view continuously
-# refreshed as fresher features arrive and is EXPECTED to change hour to hour
-# for the same target — that's correct behavior for "what does the model
-# think right now," not a bug. This table exists so forecast accuracy at a
-# genuine, fixed lead time can be measured at all. Added 2026-08-18 after
-# confirming the prior gold_smf_forward_accuracy table (now retired) only
-# ever captured 0-2h lead-time snapshots, because it archived whatever the
-# live table's last value happened to be right before the hour elapsed —
-# never a real forward-looking horizon.
+# Fixed-horizon snapshot: the prediction each hour first had at
+# <=FORWARD_SNAPSHOT_LEAD_HOURS wall-clock lead time from the current hour,
+# written once and never overwritten. Distinct from FORWARD_PREDICTIONS_TABLE,
+# which is a live view continuously refreshed as fresher features arrive and
+# is EXPECTED to change hour to hour for the same target — that's correct
+# behavior for "what does the model think right now," not a bug. This table
+# exists so forecast accuracy at a genuine, fixed lead time can be measured
+# at all. Added 2026-08-18 after confirming the prior gold_smf_forward_accuracy
+# table (now retired) only ever captured 0-2h lead-time snapshots, because it
+# archived whatever the live table's last value happened to be right before
+# the hour elapsed — never a real forward-looking horizon.
 #
-# 2026-08-21: widened from 5h to 7h (user request) — the original 5h choice
-# just matched SMF's own S+5 disclosure lag as a convenient number, it was
-# never structurally tied to it (lead_hours here is measured from wall-clock
-# now, not from the real-data boundary S). Table physically renamed
-# gold_smf_forward_snapshot_5h -> _7h (BigQuery ALTER TABLE RENAME, metadata
-# only — existing snapshot history preserved unchanged).
-FORWARD_SNAPSHOT_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_forward_snapshot_7h"
-FORWARD_SNAPSHOT_LEAD_HOURS = 7
+# 2026-08-21, two corrections same day:
+# 1. Widened 5h -> 7h, then anchored to S (last real-published SMF hour,
+#    mart_smf_realized) instead of wall-clock now, per a report that hour 13
+#    should be the last frozen hour at 12:23 with S=hour 6 (S+7=13, matched).
+# 2. That "confirmation" turned out to be a coincidence, not a real fix —
+#    S+7 happens to sit close to wall-clock now most of the time (SMF's own
+#    ~5-6h publish lag means now-S is usually ~5-7h, so S+7 wanders around
+#    "now +/- a couple hours" rather than reliably being ANY fixed distance
+#    ahead of it). Confirmed live: at 15:57 TRT, S was 09:00 TRT, so S+7 =
+#    16:00 — 3 minutes ahead of "now", not a meaningful forward freeze at
+#    all. Root issue: real trading doesn't wait for SMF to publish (S) —
+#    it happens continuously in wall-clock time, so anchoring to S was wrong
+#    in principle, not just in width. Reverted to wall-clock `now`, and
+#    narrowed the window to 1h so the guarantee is exactly what was asked
+#    for: the NEXT hour's prediction (lead_hours in (0,1]) freezes, prior
+#    (already-elapsed) predictions stay frozen (unchanged, insert-once as
+#    always), hours 2+ out remain live. Table renamed (again) to a
+#    threshold-agnostic name so a future width tweak doesn't need a third
+#    rename: gold_smf_forward_snapshot_7h -> gold_smf_forward_snapshot.
+FORWARD_SNAPSHOT_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_forward_snapshot"
+FORWARD_SNAPSHOT_LEAD_HOURS = 1
 
 # Same lookback as ptf_inference.py — 168 (rolling window) + a day's margin.
 LOOKBACK_HOURS = 204
@@ -336,7 +349,7 @@ _FORWARD_SNAPSHOT_SCHEMA = [
 
 def _ensure_forward_snapshot_table(client: bigquery.Client) -> None:
     dataset_ref = bigquery.DatasetReference(PROJECT_ID, DATASET_ID)
-    table_ref   = dataset_ref.table("gold_smf_forward_snapshot_7h")
+    table_ref   = dataset_ref.table("gold_smf_forward_snapshot")
     table       = bigquery.Table(table_ref, schema=_FORWARD_SNAPSHOT_SCHEMA)
     table.time_partitioning = bigquery.TimePartitioning(
         type_=bigquery.TimePartitioningType.DAY,
@@ -402,38 +415,6 @@ def write_fixed_horizon_snapshot(predicted_date: pd.Timestamp, row: pd.Series,
     if job.num_dml_affected_rows:
         logger.info(f"Fixed-horizon snapshot captured — {date_str} hour={hour} "
                     f"lead={lead_hours:.1f}h SMF={row['predicted_smf']:.2f} TRY")
-
-
-def get_last_real_smf_ts() -> pd.Timestamp:
-    """Last hour with a genuinely real (published, not predicted) SMF value —
-    MAX(datetime) in mart_smf_realized. This is "S", the true what-do-we-
-    currently-know boundary.
-
-    2026-08-21: FORWARD_SNAPSHOT_LEAD_HOURS was being measured against
-    wall-clock now (see run_forward_forecast()'s old `now_utc`), but SMF
-    settles with a genuine ~5-6h publication lag — so "now" and "the last
-    hour we actually know a real value for" (S) are NOT the same reference
-    point, and the gap between them is exactly the lag itself. User-reported
-    symptom: with the window anchored to wall-clock now, hours up to now+7h
-    were freezing — but the user's actual expectation is a window anchored
-    to S (confirmed empirically: S sat at hour 6 today, and the user's
-    complaint was specifically about hour 13 = S+7 being the wrong cutoff,
-    i.e. they want the freeze horizon counted from S, not from now). Falls
-    back to wall-clock now in run_forward_forecast() only if mart_smf_realized
-    is completely empty (first-ever run / pipeline not yet warmed up)."""
-    client = get_bq_client()
-    query = f"""
-        SELECT MAX(datetime) AS last_dt
-        FROM `{PROJECT_ID}.{DATASET_ID}.mart_smf_realized`
-    """
-    try:
-        rows = list(client.query(query).result())
-    except NotFound:
-        return None
-    if not rows or rows[0].last_dt is None:
-        return None
-    ts = pd.Timestamp(rows[0].last_dt)
-    return ts.tz_convert("UTC").tz_localize(None) if ts.tzinfo is not None else ts
 
 
 def get_last_predicted_ts() -> pd.Timestamp:
@@ -509,11 +490,9 @@ def _cleanup_stale_forward_predictions() -> int:
 def run_forward_forecast(artifact: dict) -> int:
     """Predict every genuinely future (not-yet-settled) hour. Also captures a
     fixed-horizon snapshot (see write_fixed_horizon_snapshot()) the first
-    time each target hour is seen at <=FORWARD_SNAPSHOT_LEAD_HOURS lead time
-    from S (the last hour with a real published SMF value — see
-    get_last_real_smf_ts()), so forecast accuracy can be measured at a real,
-    stable lead time instead of only against whatever the live table's last
-    value was."""
+    time each target hour is seen at <=FORWARD_SNAPSHOT_LEAD_HOURS wall-clock
+    lead time, so forecast accuracy can be measured at a real, stable lead
+    time instead of only against whatever the live table's last value was."""
     direction_features = artifact["direction_features"]
 
     _cleanup_stale_forward_predictions()
@@ -527,14 +506,13 @@ def run_forward_forecast(artifact: dict) -> int:
         return 0
 
     predictions = _predict_both_stages(artifact, X_batch)
-    # Anchored to S (last real published hour), not wall-clock now — SMF's
-    # ~5-6h publication lag means the two differ substantially, and S is the
-    # actual "what do we currently know" boundary the freeze window should
-    # count from. Falls back to wall-clock now only if mart_smf_realized has
-    # no rows at all yet (pipeline not warmed up).
-    anchor_ts = get_last_real_smf_ts()
-    if anchor_ts is None:
-        anchor_ts = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    # Anchored to wall-clock now, NOT S (last real-published SMF hour) — see
+    # FORWARD_SNAPSHOT_LEAD_HOURS's 2026-08-21 comment above for why the S
+    # anchor (tried earlier the same day) was wrong: real trading happens
+    # continuously regardless of when SMF itself gets published, so the
+    # freeze boundary needs to track wall-clock time, not the data pipeline's
+    # own publish lag.
+    anchor_ts = pd.Timestamp.now(tz="UTC").tz_localize(None)
     for ts, row in predictions.iterrows():
         write_prediction_to_bq(predicted_date=ts, row=row, table=FORWARD_PREDICTIONS_TABLE)
 

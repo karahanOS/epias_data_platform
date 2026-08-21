@@ -1297,19 +1297,22 @@ elif page == "🔋 SMF Tahmin & ML":
 
     # Real value + predicted value across a rolling window centered on now.
     # "Locked" (frozen) is decided purely by whether a row exists in
-    # gold_smf_forward_snapshot_7h — that table is written once per (date,
+    # gold_smf_forward_snapshot — that table is written once per (date,
     # hour), the first time smf_inference.py's run_forward_forecast() sees
-    # that hour at <=FORWARD_SNAPSHOT_LEAD_HOURS (7h) wall-clock lead time
-    # from the current hour (see write_fixed_horizon_snapshot() in
-    # smf_inference.py), and never overwritten since. Falls back to the
-    # live, continuously-refreshed gold_smf_forward_predictions only when no
-    # snapshot has landed yet for that hour (expected to keep changing
-    # run to run out there — not a bug). A generated hourly spine keeps
-    # every hour in the window present even where a source has no row.
-    # 2026-08-21: widened from 5h to 7h (user request) — see
-    # smf_inference.py's FORWARD_SNAPSHOT_LEAD_HOURS comment for why the
-    # number itself was never structurally tied to SMF's own S+5 disclosure
-    # lag, just chosen to match it originally.
+    # that hour at <=FORWARD_SNAPSHOT_LEAD_HOURS (1h) wall-clock lead time
+    # from now (see write_fixed_horizon_snapshot() in smf_inference.py), and
+    # never overwritten since. Falls back to the live, continuously-refreshed
+    # gold_smf_forward_predictions only when no snapshot has landed yet for
+    # that hour (expected to keep changing run to run out there — not a
+    # bug). A generated hourly spine keeps every hour in the window present
+    # even where a source has no row.
+    # 2026-08-21: two corrections same day — 5h -> 7h anchored to S (last
+    # real-published SMF hour), then reverted to wall-clock-anchored 1h
+    # after confirming the S-anchor was wrong in principle (real trading
+    # happens continuously, it doesn't wait for SMF to publish). See
+    # smf_inference.py's FORWARD_SNAPSHOT_LEAD_HOURS comment for the full
+    # story. Net effect: exactly the next hour freezes, 2+ hours out stays
+    # live.
     df_window = query(f"""
         WITH spine AS (
             -- TIMESTAMP_TRUNC(..., HOUR) first -- CURRENT_TIMESTAMP() carries
@@ -1338,7 +1341,7 @@ elif page == "🔋 SMF Tahmin & ML":
         ),
         snapshot AS (
             SELECT predicted_date AS date, hour, predicted_smf AS snapshot_value
-            FROM {tbl('gold_smf_forward_snapshot_7h')}
+            FROM {tbl('gold_smf_forward_snapshot')}
             WHERE predicted_date BETWEEN DATE_SUB(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
                                       AND DATE_ADD(CURRENT_DATE('Asia/Istanbul'), INTERVAL 1 DAY)
         ),
@@ -1357,7 +1360,7 @@ elif page == "🔋 SMF Tahmin & ML":
             -- behind wall-clock "now" due to SMF's own S+5 publication lag),
             -- so the boundary could never actually reach any future hour --
             -- confirmed live 2026-08-19: every hour showed "canlı" even
-            -- though gold_smf_forward_snapshot_7h already had real rows for
+            -- though gold_smf_forward_snapshot already had real rows for
             -- them. Checking existence directly sidesteps re-deriving
             -- "within 5h of now" with a second, drifting reference point.
             -- 2026-08-19: previously nulled the prediction out once a real
@@ -1452,7 +1455,7 @@ elif page == "🔋 SMF Tahmin & ML":
         st.info(
             "**Henüz veri yok.**  \n"
             "`mart_smf_realized`, aynı-gün SMF verisi (S+5 gecikmeyle) geldikçe otomatik dolar; "
-            "`gold_smf_forward_predictions`/`gold_smf_forward_snapshot_7h` ise saatlik inference "
+            "`gold_smf_forward_predictions`/`gold_smf_forward_snapshot` ise saatlik inference "
             "çalışmasıyla üretilir.  \n"
             "Airflow DAG: `smf_hourly_inference → run_smf_inference`"
         )
@@ -1469,13 +1472,13 @@ elif page == "🔋 SMF Tahmin & ML":
             ))
         if not df_pred_line.empty:
             # One continuous predicted line across the whole window — sourced
-            # from the frozen 7h snapshot where it exists (can't change
+            # from the frozen next-hour snapshot where it exists (can't change
             # anymore), the live forward table otherwise (still updates run
             # to run). Marker shape flags which is which per point; kept as a
             # single trace so it reads as one forecast, not two disconnected
             # segments.
             _source_label = df_pred_line["predicted_source"].map(
-                {"snapshot": "Sabit (7 saat içinde)", "live": "Canlı (henüz değişebilir)"})
+                {"snapshot": "Sabit (sonraki saat)", "live": "Canlı (henüz değişebilir)"})
             fig_fwd.add_trace(go.Scatter(
                 x=df_pred_line["datetime"], y=df_pred_line["predicted_value"],
                 mode="lines+markers",
@@ -1490,7 +1493,7 @@ elif page == "🔋 SMF Tahmin & ML":
                 hovertemplate="%{x|%d %b %H:%M}<br>Tahmin: %{y:,.0f} TL/MWh<br>%{customdata}<extra></extra>",
             ))
         dark(fig_fwd, height=380,
-             title="Saatlik SMF — Gerçekleşen ve Model Tahmini (7 saat sabit + canlı)",
+             title="Saatlik SMF — Gerçekleşen ve Model Tahmini (sonraki saat sabit + canlı)",
              yaxis=dict(title="TL/MWh", gridcolor="rgba(255,255,255,0.05)"),
              hovermode="x unified")
         st.plotly_chart(fig_fwd, use_container_width=True, key="smf_ml_forward")
@@ -1511,8 +1514,8 @@ elif page == "🔋 SMF Tahmin & ML":
             fw3.metric("Min SMF",  f"{_outlook_values.min():,.2f} TL/MWh")
         st.caption(
             f"🔵 {len(df_real_line)} saat gerçekleşen SMF — tahmin değil. "
-            f"🟠 {len(df_pred_frozen)} saat sabit tahmin (7 saatlik pencereye girdi, artık değişmez). "
-            f"🟡 {len(df_pred_live)} saat canlı tahmin (7 saat dışında, henüz değişebilir)."
+            f"🟠 {len(df_pred_frozen)} saat sabit tahmin (sonraki saate girdi, artık değişmez). "
+            f"🟡 {len(df_pred_live)} saat canlı tahmin (2+ saat sonrası, henüz değişebilir)."
         )
 
     # ── BACKTESTING ───────────────────────────────────────────────────────────
