@@ -8,8 +8,8 @@
 
 The project already has a working 2-stage SMF forecaster (CatBoost direction classifier → XGBoost price
 regressor) producing `predicted_smf` / `predicted_direction` / class probabilities, backtested
-(`gold_smf_predictions`) and live-forward (`gold_smf_forward_predictions`, plus a fixed-5h-lead snapshot
-in `gold_smf_forward_snapshot_5h`). Current backtest quality: MAE ≈715 TL/MWh, MASE ≈0.656 (beats T-24h
+(`gold_smf_predictions`) and live-forward (`gold_smf_forward_predictions`, plus a fixed-7h-lead snapshot
+in `gold_smf_forward_snapshot_7h`). Current backtest quality: MAE ≈715 TL/MWh, MASE ≈0.656 (beats T-24h
 naive), direction accuracy ≈64.8%, macro F1 ≈0.647, macro AUC ≈0.739 — a genuine but noisy edge, not a
 precise instrument. None of this is a trading opportunity yet — it's a forecast sitting in a database.
 
@@ -128,7 +128,7 @@ prove edge with B's backtest first.
 ## Consequences
 
 - **Easier:** every future refinement to the SMF forecaster (better MAE, calibrated probabilities, the
-  planned fixed-5h snapshot already shipped this session) flows straight through to signal quality — no
+  planned fixed-7h snapshot already shipped this session) flows straight through to signal quality — no
   separate model needed for "trading" vs. "forecasting."
 - **Harder:** the platform now needs a live GİP quote feed it doesn't have today — this is new ingestion
   surface, new `DATA_DELAYS`/schedule considerations, and a new Silver source, not a trivial add.
@@ -146,7 +146,7 @@ prove edge with B's backtest first.
        `EPIAS_SOURCES` pattern — GİP company-activity ingestion already exists as a precedent to extend).
 2. [ ] Add a per-bucket residual uncertainty estimate to the price regressor's output (hour-of-day ×
        predicted_direction bucketing of backtest residuals is the cheap first pass).
-3. [ ] Build `mart_smf_trading_signal.sql`: joins `gold_smf_forward_snapshot_5h` (or live forward,
+3. [ ] Build `mart_smf_trading_signal.sql`: joins `gold_smf_forward_snapshot_7h` (or live forward,
        depending on desired horizon) against `mart_ptf_realized` and the new GİP source, computes the EV
        formula above.
 4. [ ] Build a strategy backtest against `gold_smf_predictions`' real settlements: cumulative P&L of

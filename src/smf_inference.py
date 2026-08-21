@@ -30,19 +30,26 @@ PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_predictions"
 # rationale as ptf_inference.py's FORWARD_PREDICTIONS_TABLE.
 FORWARD_PREDICTIONS_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_forward_predictions"
 
-# Fixed-horizon snapshot: the prediction each hour first had at <=5h wall-clock
-# lead time (matching SMF's official S+5 disclosure lag), written once and
-# never overwritten. Distinct from FORWARD_PREDICTIONS_TABLE, which is a live
-# view continuously refreshed as fresher features arrive and is EXPECTED to
-# change hour to hour for the same target — that's correct behavior for "what
-# does the model think right now," not a bug. This table exists so forecast
-# accuracy at a genuine, fixed lead time can be measured at all. Added
-# 2026-08-18 after confirming the prior gold_smf_forward_accuracy table (now
-# retired) only ever captured 0-2h lead-time snapshots, because it archived
-# whatever the live table's last value happened to be right before the hour
-# elapsed — never a real forward-looking horizon.
-FORWARD_SNAPSHOT_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_forward_snapshot_5h"
-FORWARD_SNAPSHOT_LEAD_HOURS = 5
+# Fixed-horizon snapshot: the prediction each hour first had at <=7h wall-clock
+# lead time from the current hour, written once and never overwritten.
+# Distinct from FORWARD_PREDICTIONS_TABLE, which is a live view continuously
+# refreshed as fresher features arrive and is EXPECTED to change hour to hour
+# for the same target — that's correct behavior for "what does the model
+# think right now," not a bug. This table exists so forecast accuracy at a
+# genuine, fixed lead time can be measured at all. Added 2026-08-18 after
+# confirming the prior gold_smf_forward_accuracy table (now retired) only
+# ever captured 0-2h lead-time snapshots, because it archived whatever the
+# live table's last value happened to be right before the hour elapsed —
+# never a real forward-looking horizon.
+#
+# 2026-08-21: widened from 5h to 7h (user request) — the original 5h choice
+# just matched SMF's own S+5 disclosure lag as a convenient number, it was
+# never structurally tied to it (lead_hours here is measured from wall-clock
+# now, not from the real-data boundary S). Table physically renamed
+# gold_smf_forward_snapshot_5h -> _7h (BigQuery ALTER TABLE RENAME, metadata
+# only — existing snapshot history preserved unchanged).
+FORWARD_SNAPSHOT_TABLE = f"{PROJECT_ID}.{DATASET_ID}.gold_smf_forward_snapshot_7h"
+FORWARD_SNAPSHOT_LEAD_HOURS = 7
 
 # Same lookback as ptf_inference.py — 168 (rolling window) + a day's margin.
 LOOKBACK_HOURS = 204
@@ -329,7 +336,7 @@ _FORWARD_SNAPSHOT_SCHEMA = [
 
 def _ensure_forward_snapshot_table(client: bigquery.Client) -> None:
     dataset_ref = bigquery.DatasetReference(PROJECT_ID, DATASET_ID)
-    table_ref   = dataset_ref.table("gold_smf_forward_snapshot_5h")
+    table_ref   = dataset_ref.table("gold_smf_forward_snapshot_7h")
     table       = bigquery.Table(table_ref, schema=_FORWARD_SNAPSHOT_SCHEMA)
     table.time_partitioning = bigquery.TimePartitioning(
         type_=bigquery.TimePartitioningType.DAY,
@@ -347,8 +354,9 @@ def write_fixed_horizon_snapshot(predicted_date: pd.Timestamp, row: pd.Series,
     WHEN NOT MATCHED THEN INSERT with no WHEN MATCHED clause makes this
     idempotent/safe to call every hourly run — later runs for the same
     (date, hour) are no-ops once a snapshot exists, so an outage that skips
-    the exact 5h mark just captures the closest lead time still <=5h once the
-    pipeline recovers, rather than losing the snapshot entirely."""
+    the exact FORWARD_SNAPSHOT_LEAD_HOURS mark just captures the closest
+    lead time still <=FORWARD_SNAPSHOT_LEAD_HOURS once the pipeline
+    recovers, rather than losing the snapshot entirely."""
     client = get_bq_client()
     _ensure_forward_snapshot_table(client)
 
