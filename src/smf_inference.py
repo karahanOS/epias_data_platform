@@ -404,6 +404,38 @@ def write_fixed_horizon_snapshot(predicted_date: pd.Timestamp, row: pd.Series,
                     f"lead={lead_hours:.1f}h SMF={row['predicted_smf']:.2f} TRY")
 
 
+def get_last_real_smf_ts() -> pd.Timestamp:
+    """Last hour with a genuinely real (published, not predicted) SMF value —
+    MAX(datetime) in mart_smf_realized. This is "S", the true what-do-we-
+    currently-know boundary.
+
+    2026-08-21: FORWARD_SNAPSHOT_LEAD_HOURS was being measured against
+    wall-clock now (see run_forward_forecast()'s old `now_utc`), but SMF
+    settles with a genuine ~5-6h publication lag — so "now" and "the last
+    hour we actually know a real value for" (S) are NOT the same reference
+    point, and the gap between them is exactly the lag itself. User-reported
+    symptom: with the window anchored to wall-clock now, hours up to now+7h
+    were freezing — but the user's actual expectation is a window anchored
+    to S (confirmed empirically: S sat at hour 6 today, and the user's
+    complaint was specifically about hour 13 = S+7 being the wrong cutoff,
+    i.e. they want the freeze horizon counted from S, not from now). Falls
+    back to wall-clock now in run_forward_forecast() only if mart_smf_realized
+    is completely empty (first-ever run / pipeline not yet warmed up)."""
+    client = get_bq_client()
+    query = f"""
+        SELECT MAX(datetime) AS last_dt
+        FROM `{PROJECT_ID}.{DATASET_ID}.mart_smf_realized`
+    """
+    try:
+        rows = list(client.query(query).result())
+    except NotFound:
+        return None
+    if not rows or rows[0].last_dt is None:
+        return None
+    ts = pd.Timestamp(rows[0].last_dt)
+    return ts.tz_convert("UTC").tz_localize(None) if ts.tzinfo is not None else ts
+
+
 def get_last_predicted_ts() -> pd.Timestamp:
     client = get_bq_client()
     query = f"""
@@ -477,9 +509,11 @@ def _cleanup_stale_forward_predictions() -> int:
 def run_forward_forecast(artifact: dict) -> int:
     """Predict every genuinely future (not-yet-settled) hour. Also captures a
     fixed-horizon snapshot (see write_fixed_horizon_snapshot()) the first
-    time each target hour is seen at <=FORWARD_SNAPSHOT_LEAD_HOURS wall-clock
-    lead time, so forecast accuracy can be measured at a real, stable lead
-    time instead of only against whatever the live table's last value was."""
+    time each target hour is seen at <=FORWARD_SNAPSHOT_LEAD_HOURS lead time
+    from S (the last hour with a real published SMF value — see
+    get_last_real_smf_ts()), so forecast accuracy can be measured at a real,
+    stable lead time instead of only against whatever the live table's last
+    value was."""
     direction_features = artifact["direction_features"]
 
     _cleanup_stale_forward_predictions()
@@ -493,11 +527,18 @@ def run_forward_forecast(artifact: dict) -> int:
         return 0
 
     predictions = _predict_both_stages(artifact, X_batch)
-    now_utc = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    # Anchored to S (last real published hour), not wall-clock now — SMF's
+    # ~5-6h publication lag means the two differ substantially, and S is the
+    # actual "what do we currently know" boundary the freeze window should
+    # count from. Falls back to wall-clock now only if mart_smf_realized has
+    # no rows at all yet (pipeline not warmed up).
+    anchor_ts = get_last_real_smf_ts()
+    if anchor_ts is None:
+        anchor_ts = pd.Timestamp.now(tz="UTC").tz_localize(None)
     for ts, row in predictions.iterrows():
         write_prediction_to_bq(predicted_date=ts, row=row, table=FORWARD_PREDICTIONS_TABLE)
 
-        lead_hours = (ts - now_utc) / pd.Timedelta(hours=1)
+        lead_hours = (ts - anchor_ts) / pd.Timedelta(hours=1)
         if lead_hours <= FORWARD_SNAPSHOT_LEAD_HOURS:
             write_fixed_horizon_snapshot(predicted_date=ts, row=row, lead_hours=lead_hours)
 
