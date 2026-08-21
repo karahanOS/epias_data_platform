@@ -1819,16 +1819,16 @@ elif page == "💰 Trading Sinyalleri":
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Backtest Kapsamı", f"{n_hours} saat / {n_days} gün")
-        c2.metric("Açık Kazancı (vs GİP'e her zaman kapat)", f"+{deficit_edge_trueup:,.0f} TL/MWh",
+        c2.metric("Açık Edge (vs GİP'e her zaman kapat)", f"+{deficit_edge_trueup:,.0f} TL/MWh",
                    help="Ortalama: sinyali izlemek, her saat GİP'te kapatmaktan ne kadar ucuza mal oluyor")
-        c3.metric("Fazla Kazancı (vs GİP'e her zaman sat)", f"+{surplus_edge_trueup:,.0f} TL/MWh",
+        c3.metric("Fazla Edge (vs GİP'e her zaman sat)", f"+{surplus_edge_trueup:,.0f} TL/MWh",
                    help="Ortalama: sinyali izlemek, her saat GİP'te satmaktan ne kadar fazla değer üretiyor")
         c4.metric("Mükemmel Öngörüye Uzaklık", f"{gap_to_perfect_deficit:,.0f} / {gap_to_perfect_surplus:,.0f} TL/MWh",
                    help="Açık / Fazla tarafında, sinyalin teorik en iyi (gerçekleşeni önceden bilme) sonucundan farkı")
 
         st.caption(
-            f"🟢 Açık tarafında sinyal, GİP'e her zaman kapatmayı **{win_rate_deficit:.0f}%** günde geçti. "
-            f"🟢 Fazla tarafında **{win_rate_surplus:.0f}%** günde geçti. "
+            f"🟢 Win Rate (Açık): sinyal, GİP'e her zaman kapatmayı **{win_rate_deficit:.0f}%** günde geçti. "
+            f"🟢 Win Rate (Fazla): **{win_rate_surplus:.0f}%** günde geçti. "
             f"⚠️ GİP referansı gerçekleşen saatlik VWAP'tır — gerçek işlem maliyeti (spread/kayma) dahil değildir."
         )
 
@@ -1863,11 +1863,11 @@ elif page == "💰 Trading Sinyalleri":
 
         fig_daily = go.Figure()
         fig_daily.add_trace(go.Bar(x=by_day_recent["date"], y=by_day_recent["deficit_edge"],
-            name="Açık kazancı (vs GİP)", marker_color="#00d4ff"))
+            name="Açık Edge (vs GİP)", marker_color="#00d4ff"))
         fig_daily.add_trace(go.Bar(x=by_day_recent["date"], y=by_day_recent["surplus_edge"],
-            name="Fazla kazancı (vs GİP)", marker_color="#ff6b35"))
+            name="Fazla Edge (vs GİP)", marker_color="#ff6b35"))
         dark(fig_daily, height=320,
-             title="Günlük Sinyal Kazancı (Son 7 Gün) — GİP'e Her Zaman Kapatmaya Göre",
+             title="Günlük Sinyal Edge'i (Son 7 Gün) — GİP'e Her Zaman Kapatmaya Göre",
              xaxis=dict(range=[_today_ts - pd.Timedelta(days=7), _today_ts]),
              yaxis=dict(title="TL/MWh"), barmode="group")
         st.plotly_chart(fig_daily, use_container_width=True, key="trading_bt_daily")
