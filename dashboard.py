@@ -1817,14 +1817,18 @@ elif page == "💰 Trading Sinyalleri":
         win_rate_deficit = (by_day["deficit_edge"] > 0).mean() * 100
         win_rate_surplus = (by_day["surplus_edge"] > 0).mean() * 100
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Backtest Kapsamı", f"{n_hours} saat / {n_days} gün")
         c2.metric("Açık Edge (vs GİP'e her zaman kapat)", f"+{deficit_edge_trueup:,.0f} TL/MWh",
                    help="Ortalama: sinyali izlemek, her saat GİP'te kapatmaktan ne kadar ucuza mal oluyor")
         c3.metric("Fazla Edge (vs GİP'e her zaman sat)", f"+{surplus_edge_trueup:,.0f} TL/MWh",
                    help="Ortalama: sinyali izlemek, her saat GİP'te satmaktan ne kadar fazla değer üretiyor")
-        c4.metric("Mükemmel Öngörüye Uzaklık", f"{gap_to_perfect_deficit:,.0f} / {gap_to_perfect_surplus:,.0f} TL/MWh",
-                   help="Açık / Fazla tarafında, sinyalin teorik en iyi (gerçekleşeni önceden bilme) sonucundan farkı")
+        c4.metric("Açık — Mükemmel Öngörüye Uzaklık", f"{gap_to_perfect_deficit:,.0f} TL/MWh",
+                   help="Sinyali izlediğimizde, saat başına ortalama ne kadar daha pahalıya mal oluyor — "
+                        "o saatin gerçek SMF'sini önceden bilseydik (mükemmel öngörü) ödeyeceğimiz maliyete kıyasla")
+        c5.metric("Fazla — Mükemmel Öngörüye Uzaklık", f"{gap_to_perfect_surplus:,.0f} TL/MWh",
+                   help="Sinyali izlediğimizde, saat başına ortalama ne kadar daha az değer elde ediyoruz — "
+                        "o saatin gerçek SMF'sini önceden bilseydik (mükemmel öngörü) elde edeceğimiz değere kıyasla")
 
         st.caption(
             f"🟢 Win Rate (Açık): sinyal, GİP'e her zaman kapatmayı **{win_rate_deficit:.0f}%** günde geçti. "
