@@ -1851,12 +1851,24 @@ elif page == "💰 Trading Sinyalleri":
                  yaxis=dict(title="TL/MWh"))
             st.plotly_chart(fig_s, use_container_width=True, key="trading_bt_surplus")
 
+        # Rolling 7-day window ending today — KPI'lar/strateji grafikleri
+        # yukarıda tüm backtest dönemini yansıtmaya devam ediyor, sadece bu
+        # günlük grafik son 7 güne kırpılıyor (istek: 21 Ağustos'tayken
+        # 14-21 Ağustos aralığını göstermesi, tüm geçmişi değil).
+        _today_ts = pd.Timestamp(query(
+            "SELECT CURRENT_DATE('Asia/Istanbul') AS today")["today"].iloc[0])
+        by_day_recent = by_day[
+            pd.to_datetime(by_day["date"]) >= _today_ts - pd.Timedelta(days=7)
+        ]
+
         fig_daily = go.Figure()
-        fig_daily.add_trace(go.Bar(x=by_day["date"], y=by_day["deficit_edge"],
+        fig_daily.add_trace(go.Bar(x=by_day_recent["date"], y=by_day_recent["deficit_edge"],
             name="Açık kazancı (vs GİP)", marker_color="#00d4ff"))
-        fig_daily.add_trace(go.Bar(x=by_day["date"], y=by_day["surplus_edge"],
+        fig_daily.add_trace(go.Bar(x=by_day_recent["date"], y=by_day_recent["surplus_edge"],
             name="Fazla kazancı (vs GİP)", marker_color="#ff6b35"))
-        dark(fig_daily, height=320, title="Günlük Sinyal Kazancı — GİP'e Her Zaman Kapatmaya Göre",
+        dark(fig_daily, height=320,
+             title="Günlük Sinyal Kazancı (Son 7 Gün) — GİP'e Her Zaman Kapatmaya Göre",
+             xaxis=dict(range=[_today_ts - pd.Timedelta(days=7), _today_ts]),
              yaxis=dict(title="TL/MWh"), barmode="group")
         st.plotly_chart(fig_daily, use_container_width=True, key="trading_bt_daily")
 
