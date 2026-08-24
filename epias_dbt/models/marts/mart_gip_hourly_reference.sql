@@ -1,9 +1,10 @@
 {{ config(
     materialized='incremental',
-    unique_key=['date', 'hour'],
-    incremental_strategy='merge',
+    incremental_strategy='insert_overwrite',
     partition_by={"field": "date", "data_type": "date"}
 ) }}
+
+{% set cutoff = (run_started_at.date() - modules.datetime.timedelta(days=7)).strftime('%Y-%m-%d') %}
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- mart_gip_hourly_reference: hourly GİP (intraday market) volume-weighted
@@ -16,6 +17,16 @@
 -- cost this hour," not a live order-book price. Adequate for backtesting
 -- (it's exactly what actually happened), understates real execution cost for
 -- a live signal (no spread/slippage) — see ADR-08's Consequences section.
+--
+-- Fixed 2026-08-25 (cost investigation): was incremental_strategy='merge',
+-- which — like stg_idm_transactions before it — scans the ENTIRE
+-- stg_idm_transactions table every run regardless of predicate (confirmed:
+-- BigQuery's MERGE doesn't prune, full stop, same finding as that earlier
+-- fix). Switched to insert_overwrite, the same fix already validated there.
+-- Unlike that fix, no separate intermediate model is needed here —
+-- stg_idm_transactions is now a NATIVE partitioned table (not external), and
+-- insert_overwrite's read step is a plain SELECT, not a MERGE, so a literal
+-- WHERE filter prunes correctly on its own.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 SELECT
@@ -26,6 +37,6 @@ SELECT
     COUNT(*)                                                      AS gip_transaction_count
 FROM {{ ref('stg_idm_transactions') }}
 {% if is_incremental() %}
-  WHERE date >= DATE_SUB((SELECT MAX(date) FROM {{ this }}), INTERVAL 1 DAY)
+WHERE date >= DATE('{{ cutoff }}')
 {% endif %}
 GROUP BY date, hour

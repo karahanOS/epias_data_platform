@@ -1,7 +1,10 @@
 {{ config(
-    materialized='table',
+    materialized='incremental',
+    incremental_strategy='insert_overwrite',
     partition_by={"field": "date", "data_type": "date"}
 ) }}
+
+{% set cutoff = (run_started_at.date() - modules.datetime.timedelta(days=7)).strftime('%Y-%m-%d') %}
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- mart_cross_market_spread: GÖP → GİP → DGP Üç Piyasa Arbitraj Analizi
@@ -29,6 +32,16 @@
 --   GİP - GÖP < 0  → GÖP daha pahalı; öngörüde GÖP'te fazla teklif verilmemiş
 --   SMF - GÖP > 0  → Balans piyasası daha pahalı; sistem açık kalmış
 --   SMF - GİP > 0  → Balans, GİP'ten de pahalı; portföy GİP'te kapamamış
+--
+-- Fixed 2026-08-25 (cost investigation): was materialized='table' — full
+-- rebuild every hour, `gip` CTE re-scanning the ENTIRE stg_idm_transactions
+-- table each time (confirmed 463.4 MiB/run via INFORMATION_SCHEMA.
+-- JOBS_BY_PROJECT, second-largest cost in the project). Switched to
+-- incremental + insert_overwrite; every source CTE now filters to the same
+-- 7-day window so the join's driving table (gop/stg_pricing) also only
+-- spans the touched-partition range — without this, insert_overwrite would
+-- still try to write full-history rows with NULL gip/dgp/sys columns for
+-- everything outside gip's filtered range, defeating the point.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 WITH
@@ -36,6 +49,9 @@ WITH
 gop AS (
     SELECT date, hour, ptf_try
     FROM {{ ref('stg_pricing') }}
+    {% if is_incremental() %}
+    WHERE date >= DATE('{{ cutoff }}')
+    {% endif %}
 ),
 
 -- ── GİP: Saatlik ortalama işlem fiyatı & hacmi ───────────────────────────
@@ -56,6 +72,9 @@ gip AS (
         MAX(price_try)          AS gip_max_price_try,
         MAX(price_try) - MIN(price_try) AS gip_price_range_try
     FROM {{ ref('stg_idm_transactions') }}
+    {% if is_incremental() %}
+    WHERE date >= DATE('{{ cutoff }}')
+    {% endif %}
     GROUP BY 1, 2
 ),
 
@@ -63,6 +82,9 @@ gip AS (
 dgp AS (
     SELECT date, hour, smf_try
     FROM {{ ref('stg_smf') }}
+    {% if is_incremental() %}
+    WHERE date >= DATE('{{ cutoff }}')
+    {% endif %}
 ),
 
 -- ── Sistem Yönü & İmbalans ────────────────────────────────────────────────
@@ -77,6 +99,9 @@ sys AS (
     FROM {{ ref('stg_system_direction') }} sd
     LEFT JOIN {{ ref('stg_imbalance') }} imb
         ON sd.date = imb.date AND sd.hour = imb.hour
+    {% if is_incremental() %}
+    WHERE sd.date >= DATE('{{ cutoff }}')
+    {% endif %}
 ),
 
 -- ── DGP Regülasyon Hacimleri (Sistem geneli YAL / YAT) ───────────────────
@@ -93,6 +118,9 @@ dgp_vol AS (
     FROM {{ ref('stg_order_up') }} u
     LEFT JOIN {{ ref('stg_order_down') }} d
         ON u.date = d.date AND u.hour = d.hour
+    {% if is_incremental() %}
+    WHERE u.date >= DATE('{{ cutoff }}')
+    {% endif %}
 )
 
 SELECT
