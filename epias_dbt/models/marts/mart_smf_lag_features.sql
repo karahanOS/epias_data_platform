@@ -53,41 +53,69 @@ WITH base AS (
         ON ml.date = sd.date AND ml.hour = sd.hour
 ),
 
+-- Regime persistence length (2026-08-25 — added after a sustained ~16h+
+-- deficit streak got badly under-predicted, see memory/smf_model_quality.md):
+-- classic "gaps and islands" run-length, causal by construction (each row's
+-- value only depends on rows at or before it in the (date,hour) ordering,
+-- never on whether the streak keeps going afterward) — grp is constant across
+-- a maximal run of identical system_direction values, then ROW_NUMBER()
+-- within grp counts 1,2,3,... for how many consecutive hours (including this
+-- one) the system has already been in that direction.
+direction_streaks AS (
+    SELECT
+        date, hour,
+        ROW_NUMBER() OVER (ORDER BY date, hour)
+          - ROW_NUMBER() OVER (PARTITION BY system_direction ORDER BY date, hour) AS grp
+    FROM base
+),
+direction_persistence AS (
+    SELECT
+        date, hour,
+        ROW_NUMBER() OVER (PARTITION BY grp ORDER BY date, hour) AS direction_persistence_hours
+    FROM direction_streaks
+),
+
 with_lags AS (
     SELECT
-        *,
+        base.*,
         TIMESTAMP_ADD(
-            TIMESTAMP(date, 'Asia/Istanbul'),
-            INTERVAL CAST(hour AS INT64) HOUR
+            TIMESTAMP(base.date, 'Asia/Istanbul'),
+            INTERVAL CAST(base.hour AS INT64) HOUR
         ) AS datetime,
 
         -- SMF lag / rolling özellikleri — mart_ptf_lag_features.sql'deki
         -- LAG(smf_try, N) tekniğinin birebir aynısı.
-        LAG(smf_try, 24)  OVER (ORDER BY date, hour) AS smf_try_lag_24h,
-        LAG(smf_try, 168) OVER (ORDER BY date, hour) AS smf_try_lag_168h,
-        AVG(smf_try) OVER (
-            ORDER BY date, hour
+        LAG(base.smf_try, 24)  OVER (ORDER BY base.date, base.hour) AS smf_try_lag_24h,
+        LAG(base.smf_try, 168) OVER (ORDER BY base.date, base.hour) AS smf_try_lag_168h,
+        AVG(base.smf_try) OVER (
+            ORDER BY base.date, base.hour
             ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING
         ) AS smf_rolling_avg_24h,
-        MAX(smf_try) OVER (
-            ORDER BY date, hour
+        MAX(base.smf_try) OVER (
+            ORDER BY base.date, base.hour
             ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING
         ) AS smf_rolling_max_24h,
-        MIN(smf_try) OVER (
-            ORDER BY date, hour
+        MIN(base.smf_try) OVER (
+            ORDER BY base.date, base.hour
             ROWS BETWEEN 24 PRECEDING AND 1 PRECEDING
         ) AS smf_rolling_min_24h,
-        AVG(smf_try) OVER (
-            ORDER BY date, hour
+        AVG(base.smf_try) OVER (
+            ORDER BY base.date, base.hour
             ROWS BETWEEN 168 PRECEDING AND 1 PRECEDING
         ) AS smf_rolling_avg_168h,
 
         -- Taze (~5 saat) sinyaller — 2026-08-15 aynı-gün SMF düzeltmesiyle
         -- mümkün oldu (bkz. dosya başlığı).
-        LAG(smf_try, 5)          OVER (ORDER BY date, hour) AS smf_try_lag_5h,
-        LAG(system_direction, 5) OVER (ORDER BY date, hour) AS system_direction_lag_5h
+        LAG(base.smf_try, 5)          OVER (ORDER BY base.date, base.hour) AS smf_try_lag_5h,
+        LAG(base.system_direction, 5) OVER (ORDER BY base.date, base.hour) AS system_direction_lag_5h,
+
+        -- Same 5h safety boundary as system_direction_lag_5h above — how many
+        -- consecutive hours the direction AS OF T-5 had already held, not
+        -- including the target hour itself.
+        LAG(dp.direction_persistence_hours, 5) OVER (ORDER BY base.date, base.hour) AS direction_persistence_lag5h
 
     FROM base
+    LEFT JOIN direction_persistence dp ON dp.date = base.date AND dp.hour = base.hour
 )
 
 SELECT * FROM with_lags

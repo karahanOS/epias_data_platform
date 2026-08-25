@@ -69,7 +69,7 @@ shock_trend AS (
 
 cross_lag AS (
     SELECT date, hour, arbitrage_opportunity_score, yal_delivered_mwh,
-           yat_delivered_mwh, net_dgp_mwh
+           yat_delivered_mwh, net_dgp_mwh, gip_gop_spread_try
     FROM {{ ref('mart_cross_market_spread') }}
 ),
 
@@ -103,13 +103,37 @@ latest_settled_smf AS (
     QUALIFY rn = 1
 ),
 
+-- Regime persistence length (2026-08-25, mirrors mart_smf_lag_features.sql's
+-- gaps-and-islands technique exactly — see that file's header comment).
+-- Computed over the full stg_system_direction history so the frozen value
+-- below reflects a real run-length, not just a same-day count.
+direction_streaks AS (
+    SELECT
+        date, hour,
+        ROW_NUMBER() OVER (ORDER BY date, hour)
+          - ROW_NUMBER() OVER (PARTITION BY system_direction ORDER BY date, hour) AS grp
+    FROM {{ ref('stg_system_direction') }}
+),
+direction_persistence AS (
+    SELECT
+        date, hour,
+        ROW_NUMBER() OVER (PARTITION BY grp ORDER BY date, hour) AS direction_persistence_hours
+    FROM direction_streaks
+),
+
 -- Frozen latest known system direction — categorical persistence feature, no
 -- numeric decay applies; the model learns staleness via lead_hours itself.
+-- direction_persistence_lag5h gets the same no-decay treatment: it's frozen
+-- as of the same latest-settled hour as frozen_system_direction_lag_5h, and
+-- the model already has lead_hours available to learn how much to discount
+-- an increasingly-stale streak count.
 latest_settled_direction AS (
     SELECT
-        system_direction AS frozen_system_direction_lag_5h,
-        ROW_NUMBER() OVER (ORDER BY date DESC, hour DESC) AS rn
-    FROM {{ ref('stg_system_direction') }}
+        sd.system_direction AS frozen_system_direction_lag_5h,
+        dp.direction_persistence_hours AS frozen_direction_persistence_lag5h,
+        ROW_NUMBER() OVER (ORDER BY sd.date DESC, sd.hour DESC) AS rn
+    FROM {{ ref('stg_system_direction') }} sd
+    JOIN direction_persistence dp ON dp.date = sd.date AND dp.hour = sd.hour
     QUALIFY rn = 1
 ),
 
@@ -141,6 +165,7 @@ joined AS (
         COALESCE(cl.yal_delivered_mwh, 0)           AS yal_lag24,
         COALESCE(cl.yat_delivered_mwh, 0)           AS yat_lag24,
         COALESCE(cl.net_dgp_mwh, 0)                 AS net_dgp_lag24,
+        cl.gip_gop_spread_try                       AS gip_gop_spread_lag24,
 
         pt.ptf_try                                  AS ptf_try,
 
@@ -152,7 +177,8 @@ joined AS (
         ls.frozen_smf_rolling_max_24h               AS raw_smf_rolling_max_24h,
         ls.frozen_smf_rolling_min_24h               AS raw_smf_rolling_min_24h,
         ls.frozen_smf_rolling_avg_168h              AS smf_rolling_avg_168h,
-        ld.frozen_system_direction_lag_5h           AS system_direction_lag_5h
+        ld.frozen_system_direction_lag_5h           AS system_direction_lag_5h,
+        ld.frozen_direction_persistence_lag5h       AS direction_persistence_lag5h
 
     FROM targets t
     LEFT JOIN res_forecast rf  ON rf.date = t.date AND rf.hour = t.hour
@@ -174,10 +200,10 @@ SELECT
     forecasted_load_mwh, forecasted_res_mwh, forecasted_residual_load_mwh,
     capacity_utilization_ratio,
     supply_shock_index, total_outage_mwh, supply_shock_trend_7d,
-    arb_score_lag24, yal_lag24, yat_lag24, net_dgp_lag24,
+    arb_score_lag24, yal_lag24, yat_lag24, net_dgp_lag24, gip_gop_spread_lag24,
     ptf_try,
     smf_try_lag_24h, smf_try_lag_168h,
-    system_direction_lag_5h,
+    system_direction_lag_5h, direction_persistence_lag5h,
 
     -- EXP(-lead_hours/5): identity (decay=1) at lead_hours=0 (the frozen value
     -- really is ~5h old, matching the signal's native lag), ~37% weight left
