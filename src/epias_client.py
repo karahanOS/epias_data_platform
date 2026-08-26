@@ -409,10 +409,20 @@ class EPIASClient:
     # ── GİP ───────────────────────────────────────────────────────────────────
 
     def get_idm_transaction_history(self, start_date: str, end_date: str) -> list:
-        """GİP anlık işlemler. POST /v1/markets/idm/data/transaction-history"""
+        """GİP anlık işlemler. POST /v1/markets/idm/data/transaction-history
+
+        end_date bugünse endDate _safe_end_iso ile sınırlanır. fcdba37,
+        delay=1'i kaldırırken get_smf'nin _safe_end_iso korumasını buraya
+        taşımadı — sonuç: gün sonu (T23:00 TRT) hariç her saatlik run
+        (VAL)SEF1116 "endDate must be in the past" ile 400 döndü, 2026-08-25/26
+        confirmed.
+        """
         return self._post(
             "/v1/markets/idm/data/transaction-history",
-            self._date_body(start_date, end_date),
+            {
+                "startDate": self._to_iso(start_date, end_of_day=False),
+                "endDate":   self._safe_end_iso(end_date),
+            },
         ).get("items", [])
 
     def get_idm_matching_quantity(self, start_date: str, end_date: str) -> list:
@@ -856,13 +866,19 @@ class EPIASClient:
         """
         Santral Arıza ve Bakım Bildirimleri (Piyasa Mesaj Sistemi - UMM).
         Swagger Referansı: /v1/markets/data/market-message-system
+
+        end_date bugünse endDate _safe_end_iso ile sınırlanır — bkz.
+        get_idm_transaction_history'deki aynı fcdba37 regresyon notu.
         """
         self.logger.info(f"Santral Arıza/Bakım (UMM) verisi çekiliyor: {start_date} -> {end_date}")
-        
+
         # Tarih parametrelerini al ve regionId (1: Türkiye geneli) ekle
-        body_data = self._date_body(start_date, end_date)
-        body_data["regionId"] = 1 
-        
+        body_data = {
+            "startDate": self._to_iso(start_date, end_of_day=False),
+            "endDate":   self._safe_end_iso(end_date),
+        }
+        body_data["regionId"] = 1
+
         # 💡 DÜZELTME BURADA: payload=body_data yerine sadece body_data yazıyoruz
         return self._post(
             "/v1/markets/data/market-message-system",
