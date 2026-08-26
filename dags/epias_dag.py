@@ -32,7 +32,7 @@ try:
     from epias_client import EPIASClient
     from weather_client import WeatherClient
     from fx_client import FXClient
-    from silver_lookback_fix import fix_smf_partition, fix_system_direction_partition
+    from silver_lookback_fix import fix_smf_partition, fix_system_direction_partition, fix_outages_partition
 except ImportError as exc:
     logging.error(f"Modül yükleme hatası: {exc}")
 
@@ -191,22 +191,37 @@ def get_fx_data_callable(**context) -> list:
     return client.get_usdtry(target)
 
 def smf_lookback_silver_fix_callable(**context) -> None:
-    """Corrects yesterday's smf/system_direction Silver partition once
-    EPİAŞ's S+5 settlement lag has fully cleared (2026-08-18 investigation).
+    """Corrects yesterday's smf/system_direction/outages Silver partition once
+    late-arriving corrections have landed (2026-08-18 investigation; outages
+    added 2026-08-26).
 
-    Hours 22-23 (Istanbul) settle at 03:00/04:00 the NEXT Istanbul day — after
-    the last hourly run for `ds` already executed (see epias_client.py's
-    _safe_end_iso, which narrows same-day requests to "now - 1h"). Since
-    DATA_DELAYS["get_smf"]/["get_system_direction"] = 0 means the DAG's `ds`
-    never revisits a past date, Bronze permanently froze at whatever was
-    available in that narrow window — confirmed missing exactly hours 22-23
-    every day since same-day SMF fetch went live (2026-08-15).
+    smf/system_direction: hours 22-23 (Istanbul) settle at 03:00/04:00 the
+    NEXT Istanbul day — after the last hourly run for `ds` already executed
+    (see epias_client.py's _safe_end_iso, which narrows same-day requests to
+    "now - 1h"). Since DATA_DELAYS["get_smf"]/["get_system_direction"] = 0
+    means the DAG's `ds` never revisits a past date, Bronze permanently froze
+    at whatever was available in that narrow window — confirmed missing
+    exactly hours 22-23 every day since same-day SMF fetch went live
+    (2026-08-15).
+
+    outages: same class of gap, different mechanism — Bronze's normal-mode
+    partitioning writes a fetch into the RUN's `ds` (not the outage record's
+    own date, see spark_utils.py's add_partition_columns), and
+    DATA_DELAYS["get_outages"]=0 means `ds` never revisits a past date either.
+    A generator amending a filed outage report (extending the estimated end
+    time, revising the affected capacity) after `ds` has moved on was never
+    picked up. Confirmed empirically 2026-08-26: mart_supply_shock_index's
+    total_outage_mwh for the same past date kept growing across repeated
+    queries — the outage magnitude behind a real sustained-deficit incident
+    was badly under-counted right when the forecaster needed it most. See
+    memory/smf_model_quality.md and stg_outages.sql's matching 1-day lookback
+    widening (without that, the corrected Silver partition alone wouldn't
+    propagate through to the staging model).
 
     Runs every hour rather than once daily: cheap (a few small API calls +
     a GCS parquet overwrite, no Dataproc/Spark involved — see
-    src/silver_lookback_fix.py) and self-heals within ~1h of settlement
-    instead of waiting for a once-a-day window, with no meaningful added
-    GCP cost either way.
+    src/silver_lookback_fix.py) and self-heals within ~1h instead of waiting
+    for a once-a-day window, with no meaningful added GCP cost either way.
     """
     ds = context["ds"]
     yesterday = (datetime.strptime(ds, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -214,7 +229,9 @@ def smf_lookback_silver_fix_callable(**context) -> None:
 
     n_smf = fix_smf_partition(client, yesterday)
     n_dir = fix_system_direction_partition(client, yesterday)
-    logger.info(f"Silver lookback fix ({yesterday}): smf={n_smf} rows, system_direction={n_dir} rows")
+    n_out = fix_outages_partition(client, yesterday)
+    logger.info(f"Silver lookback fix ({yesterday}): smf={n_smf} rows, "
+                f"system_direction={n_dir} rows, outages={n_out} rows")
 
 
 def save_to_gcs_callable(task_id: str, bucket_path: str, allow_empty: bool = False, **context) -> None:

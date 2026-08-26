@@ -13,7 +13,12 @@ SELECT
 FROM {{ source('silver', 'outages') }} AS s
 
 {% if is_incremental() %}
-  WHERE CAST(CAST(s.caseStartDate AS TIMESTAMP) AS DATE) >= (SELECT MAX(date) FROM {{ this }})
+  -- 1-day lookback (2026-08-26), same rationale as stg_smf.sql/
+  -- stg_system_direction.sql: a plain `>= MAX(date)` filter would never
+  -- re-derive yesterday's row once today's date exists here, so a
+  -- late-amended outage report (see src/silver_lookback_fix.py's
+  -- fix_outages_partition) would never propagate past staging.
+  WHERE CAST(CAST(s.caseStartDate AS TIMESTAMP) AS DATE) >= DATE_SUB((SELECT MAX(date) FROM {{ this }}), INTERVAL 1 DAY)
 {% endif %}
 -- Same cross-partition-boundary duplication as stg_idm_transactions/stg_pricing:
 -- the same outage `id` can appear in two adjacent Hive day-partitions with
