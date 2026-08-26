@@ -30,16 +30,17 @@ ENV PATH="${PATH}:/home/airflow/.local/bin"
 #    (production'da 2026-08-16 gecesi böyle oldu — bkz. ml_model_quality notu).
 #    xgboost/scikit-learn/catboost pinned (2026-08-26): bu üçü daha önce
 #    pinsiz kuruluyordu, image her rebuild'de PyPI'daki en güncel sürümü
-#    alıyordu. VM'deki xgboost (2.1.4) trainer'ın çalıştığı yerel ortamdan
-#    (3.2.0) sürüklenmişti — aynı model dosyası + aynı feature'lar, sadece
-#    farklı xgboost sürümü yüzünden production'da tamamen farklı (ve çok
-#    daha düşük) fiyat tahminleri üretiyordu, hatasız ama sessizce yanlış.
-#    Buradaki sürümler smf_trainer.py'nin çalıştığı yerel ortamla eşleşmeli;
-#    trainer başka bir ortamda çalıştırılırsa buradaki pinler de güncellenmeli.
+#    alıyordu — trainer'ın (yerel, daha yeni Python) kullandığı sürümlerden
+#    sessizce sürüklenip aynı model dosyası + aynı feature'larla production'da
+#    çok daha düşük fiyat tahminleri üretmişti, hatasız ama yanlış.
+#    Buradaki sürümler apache/airflow:2.8.0'ın Python 3.8'iyle uyumlu en
+#    yeni sürümler (xgboost 3.x/scikit-learn 1.4+ Python 3.8'i desteklemiyor)
+#    — trainer da modeli bu sürümlerle eşleşen bir ortamda eğitmeli
+#    (bkz. venv_prod_match/), yoksa aynı sürüklenme tekrar yaşanır.
 RUN pip install --no-cache-dir --upgrade \
     "apache-airflow-providers-google" \
     "dbt-bigquery<1.8.0" \
     "dbt-core<1.8.0" \
     pandas numpy requests google-cloud-bigquery pyarrow \
-    "xgboost==3.2.0" "scikit-learn==1.7.2" openmeteo-requests requests-cache retry-requests \
+    "xgboost==2.1.4" "scikit-learn==1.3.2" openmeteo-requests requests-cache retry-requests \
     "catboost==1.2.10"
