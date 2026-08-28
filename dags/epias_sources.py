@@ -38,8 +38,15 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # UTC, self-resolving by 10:00 UTC once EPIAS published). This pattern
     # existed long before today but was invisible until ADR-0004's
     # email_on_failure alerting started surfacing it. `smf` uses a different
-    # endpoint (BPM, not day-ahead) and was NOT affected — confirmed via the
-    # same failing runs — so it intentionally keeps allow_empty=False.
+    # endpoint (BPM, not day-ahead) and was NOT affected at the time — confirmed
+    # via the same failing runs. UPDATE 2026-08-28: this assumption is now
+    # stale. smf shares system_direction's S+5-style settlement lag (see
+    # epias_client.py's _safe_end_iso), and while _safe_end_iso caps the
+    # *end* of the request window, it can't manufacture rows that genuinely
+    # haven't cleared settlement yet — at 00:00-01:00 UTC (~03:00-04:00 TRT)
+    # none of "today" has, so get_smf legitimately returns empty. Confirmed
+    # failing (save_smf_to_gcs, both tries) 2026-08-28T00:00 and T01:00 UTC —
+    # see the system_direction fix (2026-08-19) for the identical mechanism.
     #
     # supply_demand: allow_empty=True added 2026-07-30, proactively — same
     # `/v1/markets/dam/*` (Gün Öncesi Piyasası) endpoint family as pricing/
@@ -59,7 +66,7 @@ EPIAS_SOURCES: dict[str, tuple[str, str, bool, bool, bool]] = {
     # edildi, 2026-08) — backfill'de stg_pricing'e göre fazladan bilgi
     # taşımıyor, bu yüzden backfill_eligible=False.
     "interim_mcp":      ("get_interim_mcp",                  "bronze/interim_mcp",      True,  False, True),
-    "smf":              ("get_smf",                         "bronze/smf",              False, True,  True),
+    "smf":              ("get_smf",                         "bronze/smf",              True,  True,  True),
     # consumption/generation/imbalance: allow_empty flipped True 2026-08-19,
     # proactively — audited against EPİAŞ Kurul Kararı 10711: consumption ~
     # row 49 "Gerçekleşen Tüketim" (Saatlik, S+2), generation ~ row 15
