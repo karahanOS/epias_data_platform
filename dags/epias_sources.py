@@ -273,6 +273,28 @@ def make_silver_batch_task(task_id: str, sources: list, ds_args: list):
                 # Combined with the 4-cores-per-unit default, 12 vCPU (1 driver +
                 # 2 executors) is the practical floor for a batch — not reducible.
                 # Fits within the increased CPUS_ALL_REGIONS quota (see ADR-0002).
+                "properties": {
+                    # 2026-08-28: no explicit disk size was ever set, so every
+                    # batch used Dataproc Serverless's default (documented as
+                    # "100GiB per core" per driver/executor unit) — for our
+                    # 4-cores-per-unit config that's ~400GiB per unit, ~1.2TB
+                    # per batch. Confirmed live via alert emails hitting
+                    # "Quota 'HDB_TOTAL_GB' exceeded. Limit: 500.0 in region
+                    # europe-west1" and "zone ... does not have enough
+                    # resources available" on most hourly runs that day —
+                    # matches this project's own "actual per-source data
+                    # volume is tiny" note (ADR-0003), so the default is pure
+                    # waste here. 250GiB is the documented hard floor
+                    # ("must be at least 250GiB") for the standard disk tier
+                    # — cannot go lower via config. NOTE: even 3 units (1
+                    # driver + 2 executors) at this floor is 750GiB/batch,
+                    # which can still exceed the 500GB regional HDB_TOTAL_GB
+                    # quota on its own — if HDB_TOTAL_GB errors persist after
+                    # this change, that quota itself needs a Console increase,
+                    # not a further code reduction (there isn't one available).
+                    "spark.dataproc.driver.disk.size":   "250g",
+                    "spark.dataproc.executor.disk.size": "250g",
+                },
             },
             "environment_config": {
                 # Must be explicit — without it Dataproc defaults to the project's
