@@ -24,6 +24,7 @@ until this shows genuine, non-fluke edge over a meaningful sample.
 """
 
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -275,3 +276,14 @@ def run() -> pd.DataFrame:
 
 if __name__ == "__main__":
     run()
+    # Force-exit rather than let the interpreter shut down naturally — this
+    # exact script hung for ~8h on 2026-08-30/09-01 (process alive, ~0s CPU
+    # accumulated, run() had already completed) right after a transient GCS
+    # billing-account suspension, blocking every subsequent scheduled DagRun
+    # via max_active_runs=1. Root thread not conclusively identified, but the
+    # shape (finishes its work, then never exits) matches a lingering
+    # non-daemon thread — most likely the BigQuery client's own connection
+    # pool. os._exit(0) skips normal interpreter teardown and terminates
+    # immediately; safe here since run() has already written everything by
+    # this point (write_backtest() uses WRITE_TRUNCATE, already committed).
+    os._exit(0)

@@ -12,6 +12,7 @@ Purpose : Load pre-trained direction+price models from GCS, predict every hour
 """
 
 import logging
+import os
 import joblib
 import tempfile
 import pandas as pd
@@ -535,3 +536,14 @@ def run():
 
 if __name__ == "__main__":
     run()
+    # Force-exit rather than let the interpreter shut down naturally. Observed
+    # 2026-08-21/2026-09-01 (see dags/smf_inference_dag.py's execution_timeout
+    # comment): this class of script has hung with the OS process still alive
+    # but ~0 CPU accumulated after run() had already returned/logged — a
+    # lingering non-daemon thread (most likely the BigQuery client's own
+    # connection-pool/gRPC threads) keeping the process from exiting on its
+    # own. os._exit(0) skips normal interpreter teardown (atexit handlers,
+    # thread joins) and terminates immediately — safe here since run() has
+    # already completed all its writes by this point, there's nothing left to
+    # flush.
+    os._exit(0)
