@@ -273,6 +273,18 @@ def save_to_gcs_callable(task_id: str, bucket_path: str, allow_empty: bool = Fal
 # nobody was actually notified unless they opened the Airflow UI. email_on_failure
 # uses Airflow's built-in SMTP support (see docker-compose.yml's AIRFLOW__SMTP__*
 # env vars) to send a real email on any task failure, at zero added cost.
+# 2026-09-01: execution_timeout/dagrun_timeout added after run_dbt_gold_models
+# zombied twice (2026-08-04, recurred 2026-08-09/10 — see memory/infra_gce_vm.md)
+# — the dbt subprocess printed its final "Done. PASS=..." summary but the OS
+# process never exited, so Airflow kept the task "running" for 13+ hours with
+# only ~40s of accumulated CPU time, blocking every subsequent hourly run via
+# max_active_runs=1 (retries never helped — a hung task never actually fails).
+# 30 min is generous headroom for an hourly-incremental dbt build (full
+# production build was 158 PASS/2 WARN in well under that); override per-task
+# if a specific step legitimately needs longer. dagrun_timeout is the second
+# line of defense — this DAG is hourly, so a run still going after 1h is
+# already broken regardless of which task is stuck, and self-failing frees
+# the max_active_runs=1 slot instead of blocking every future run silently.
 default_args = {
     "owner":               "epias_team",
     "retries":             1,
@@ -280,6 +292,7 @@ default_args = {
     "on_failure_callback": notify_failure,
     "email_on_failure":    True,
     "email":               ["mehmetkarahanc@gmail.com"],
+    "execution_timeout":   timedelta(minutes=30),
 }
 
 with DAG(
@@ -296,6 +309,7 @@ with DAG(
     catchup=False,
     max_active_runs=1,
     max_active_tasks=5,
+    dagrun_timeout=timedelta(hours=1),
     tags=["epias", "medallion", "dbt", "ml"],
 ) as dag:
 
