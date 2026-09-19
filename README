@@ -2,7 +2,7 @@
 
 Türkiye elektrik piyasası verilerini uçtan uca işleyen, üretim ortamına hazır (GCE üzerinde canlı çalışan) bir veri mühendisliği projesi.
 
-**[📁 Veri Kaynağı: EPIAŞ Şeffaflık Platformu](https://seffaflik.epias.com.tr/)** | **[📊 Dashboard: Enerji Analitiği (Streamlit)]**
+**[📁 Veri Kaynağı: EPIAŞ Şeffaflık Platformu](https://seffaflik.epias.com.tr/)** | **[📊 Dashboard: Enerji Analitiği (Streamlit)](https://epiasdataplatform.streamlit.app/)**
 
 ---
 
@@ -40,12 +40,15 @@ EPIAŞ API & Open-Meteo (Hava Durumu) API & TCMB EVDS (Döviz Kuru)
               │   🥇 Gold Katman        │
               └───────────┬───────────┘
                           │
-                          ▼
-              ┌───────────────────────┐
-              │      Streamlit         │
-              │      Dashboard         │
-              │   (dashboard.py)       │
-              └───────────────────────┘
+              ┌───────────┴────────────┐
+              ▼                        ▼
+    ┌───────────────────┐    ┌──────────────────────┐
+    │  SMF Tahminleme    │    │      Streamlit        │
+    │  CatBoost→XGBoost  │───▶│      Dashboard        │
+    │  Eğitim: haftalık  │    │   (dashboard.py)      │
+    │  Inference: saatlik│    │  Streamlit Community  │
+    │  + Trading Sinyali │    │  Cloud                │
+    └───────────────────┘    └──────────────────────┘
 
 Hata durumunda: Airflow, Gmail SMTP üzerinden `mehmetkarahanc@gmail.com` adresine e-posta ile uyarı gönderir (ADR-0004).
 
@@ -56,8 +59,14 @@ Hata durumunda: Airflow, Gmail SMTP üzerinden `mehmetkarahanc@gmail.com` adresi
 1. **Ingestion (Bronze):** `src/epias_client.py`, `src/weather_client.py` ve `src/fx_client.py` ile veriler çekilir; ana DAG (`dags/epias_dag.py`, DAG id: `epias_medallion_pipeline_v3`) **saatlik** (`schedule_interval="0 * * * *"`) çalışarak GCS'e (`gs://epias-data-lake/bronze/...`) ham Parquet olarak yazar. Kaynak tanımlarının tek doğrusu `dags/epias_sources.py`'dir (method, GCS yolu, backfill/daily uygunluğu).
 2. **Transformation (Silver):** Silver katmanı artık container içinde çalışan Spark yerine **Dataproc Serverless** üzerinde çalışıyor (`DataprocCreateBatchOperator`, ADR-0002). Kaynaklar `DATAPROC_POOL_SIZE=2` grup halinde konsolide ediliyor (ADR-0003) — cold-start maliyetini (~3-4 dk) 24 kez yerine 2 kez ödemek için.
 3. **Warehouse (Gold):** Silver veriler BigQuery'e köprülenir (`src/load_to_bigquery.py`) ve `epias_dbt/` altındaki dbt modelleri `dbt build --fail-fast` ile staging → marts katmanlarını üretir; hatalı bir model, üzerine kurulu mart'ların o saat build edilmesini durdurur (ADR-0004).
-4. **Backfill & Pilot:** `dags/epias_backfill_dag.py` geçmiş veriyi günlük parçalar halinde doldurur (API bazı kaynaklarda haftalık istekleri sessizce tek güne kırptığı için gün-gün backfill zorunlu); `dags/epias_dataproc_pilot_dag.py` Dataproc Serverless geçişinin pilot/test DAG'ıdır.
-5. **Analytics:** `src/data_quality_check.py` veri kalitesi kontrollerini çalıştırır (artık ayrıca dbt testleri her staging modeli için de var); Streamlit dashboard'u (`dashboard.py`, 2000+ satır, çok sayfalı) BigQuery `epias_gold` dataset'ini sorgulayarak yönetici özeti sunar.
+4. **SMF Tahminleme (ML):** Sistem Marjinal Fiyatı (SMF) için 2 aşamalı model: Aşama 1 `CatBoostClassifier` ile sistem yönünü (`system_direction`: enerji açığı/fazlası) tahmin eder, Aşama 2 `XGBRegressor` bu olasılıkları ek feature olarak kullanıp `smf_try` fiyatını tahmin eder (Aşama 2 eğitiminde sızıntıyı önlemek için out-of-fold olasılıklar kullanılır).
+   - `dags/epias_smf_training_weekly.py` (`epias_smf_training_weekly`, pazartesi 04:00 UTC): `src/smf_trainer.py` ile Optuna + TimeSeriesSplit tabanlı tam yeniden eğitim; model artifact'ı GCS'e yazılır.
+   - `dags/smf_inference_dag.py` (`smf_hourly_inference`, saatlik): `src/smf_inference.py` GCS'ten modeli yükler; backtest (`gold_smf_predictions`), ileriye dönük tahmin (`gold_smf_forward_predictions`) ve sabit 7 saat öncesi snapshot'ı (`gold_smf_forward_snapshot_7h`) BigQuery'e yazar. Feature'lar `src/smf_features.py` ve `mart_smf_lag_features` / `mart_smf_forward_features` mart'larından gelir.
+   - `src/smf_trading_signal.py` (ADR-08): DUY Madde 28 dengesizlik formülü altında (açık: `GREATEST(PTF,SMF)×1.03`, fazla: `LEAST(PTF,SMF)×0.97`) "GİP'te şimdi kapat" ile "SMF'de dengesizliği kabul et" arasındaki beklenen maliyeti, tahmin belirsizliğini de hesaba katarak (Jensen eşitsizliği) saatlik olarak hesaplar. Bu bir **karar destek** sistemidir; emir iletmez.
+   - Doğrulama araçları: `src/smf_walk_forward.py`, `src/smf_direction_model_comparison.py`; sonuçları `models/*.csv` altındadır (ADR-09: önce doğrula, sonra iterasyon yap — persistence/GİP-GÖP spread/blend denemeleri net fayda göstermediği için devreye alınmadı).
+5. **Şirket Bazlı GÖP Aktivitesi:** `dags/epias_gop_company_activity_dag.py` (`epias_gop_company_activity_daily`, günlük 11:30 UTC) her organizasyon için ayrı istek gerektirdiği (~1600 org, ~20 dk) için saatlik ana DAG'a konmadı (ADR-0007).
+6. **Backfill & Pilot:** `dags/epias_backfill_dag.py` (`epias_historical_backfill`, sadece manuel tetik) geçmiş veriyi günlük parçalar halinde doldurur (API bazı kaynaklarda haftalık istekleri sessizce tek güne kırptığı için gün-gün backfill zorunlu); `dags/epias_dataproc_pilot_dag.py` Dataproc Serverless geçişinin pilot/test DAG'ıdır. `src/silver_lookback_fix.py` geç güncellenen kayıtlar (ör. outages UMM/Arıza) için Silver'da lookback düzeltmesi yapar.
+7. **Analytics:** `src/data_quality_check.py` veri kalitesi kontrollerini çalıştırır (ayrıca dbt testleri her staging modeli için de var); Streamlit dashboard'u (`dashboard.py`, 2000+ satır, 16 sayfa — Executive Summary, Fiyat Analizi, GÖP/GİP/KGÜP analizleri, Arz-Talep, **SMF Tahmin & ML**, **Trading Sinyalleri**, Hidrolik & Baraj, Vardiya Optimizasyonu vb.) BigQuery `epias_gold` dataset'ini sorgulayarak yönetici özeti sunar.
 
 ---
 
@@ -91,14 +100,24 @@ epias_data_platform/
 ├── dags/
 │   ├── epias_dag.py                  # Ana Airflow DAG — epias_medallion_pipeline_v3 (saatlik)
 │   ├── epias_sources.py              # Kaynak/tablo tanımları (tek doğru kaynak) + Dataproc config
-│   ├── epias_backfill_dag.py         # Geçmiş veri backfill DAG'ı (gün-gün)
-│   └── epias_dataproc_pilot_dag.py   # Dataproc Serverless geçiş pilot DAG'ı
+│   ├── epias_backfill_dag.py         # Geçmiş veri backfill DAG'ı (gün-gün, manuel)
+│   ├── epias_dataproc_pilot_dag.py   # Dataproc Serverless geçiş pilot DAG'ı
+│   ├── epias_gop_company_activity_dag.py # Günlük şirket bazlı GÖP aktivitesi (ADR-0007)
+│   ├── epias_smf_training_weekly.py  # Haftalık SMF model eğitimi
+│   └── smf_inference_dag.py          # Saatlik SMF tahmini (smf_hourly_inference)
 ├── src/
 │   ├── epias_client.py               # EPIAŞ API Wrapper
 │   ├── weather_client.py             # Open-Meteo API Wrapper
 │   ├── fx_client.py                  # TCMB EVDS döviz kuru API Wrapper
 │   ├── load_to_bigquery.py           # Silver → BigQuery köprüleme
+│   ├── silver_lookback_fix.py        # Silver lookback düzeltmesi (geç güncellenen kayıtlar)
 │   ├── data_quality_check.py         # Veri kalitesi kontrolleri
+│   ├── smf_features.py               # SMF feature engineering
+│   ├── smf_trainer.py                # 2 aşamalı SMF eğitimi (CatBoost → XGBoost)
+│   ├── smf_inference.py              # SMF tahmin (backtest + forward + 7h snapshot)
+│   ├── smf_trading_signal.py         # Olasılıksal EV trading sinyali (ADR-08)
+│   ├── smf_walk_forward.py           # Walk-forward doğrulama
+│   ├── smf_direction_model_comparison.py # Yön sınıflandırıcı model karşılaştırması
 │   └── config.py                     # Ortak konfigürasyon
 ├── spark_jobs/
 │   ├── bronze_to_silver_*.py         # 25+ Spark ETL süreci — artık Dataproc
@@ -114,7 +133,12 @@ epias_data_platform/
 │                                      #  fix_silver_parquet_types.py gibi tek seferlik/yardımcı script'ler
 ├── docs/
 │   └── epias_openapi.yaml            # EPIAŞ API OpenAPI şeması
-├── plans/                            # ADR'ler ve mimari geçiş planları (ör. 02-spark-airflow-hosting-migration.md)
+├── infra/
+│   └── gcs-lifecycle-policy.json     # GCS lifecycle (bronze/ → Nearline/Coldline)
+├── models/                           # SMF walk-forward / ablation / karşılaştırma sonuç CSV'leri
+├── plans/                            # ADR'ler (01–09): tekilleştirme, Dataproc geçişi ve konsolidasyonu,
+│                                      #  veri kalitesi, forward-forecast kalitesi, şirket bazlı aktivite,
+│                                      #  SMF trading sinyali ve doğrulama metodolojisi
 ├── tests/                            # Birim/entegrasyon testleri
 ├── dashboard.py                      # Streamlit yönetici özeti (çok sayfalı)
 ├── Dockerfile                        # Airflow imajı (Spark kaldırıldı, sadece Dataproc submit)
@@ -140,12 +164,22 @@ Neden tüm silver Spark job'ları numerik kolonları FLOAT64'e cast ediyor? Bron
 
 dbt Path ve Kütüphane bağımlılıkları: Python 3.8 uyumluluğu için `dbt-core < 1.8.0` sürümü sabitlendi ve ENV PATH ayarı ile dbt'nin Airflow içinden sorunsuz tetiklenmesi sağlandı.
 
+**ML kütüphane sürümleri pinli:** `xgboost==2.1.4`, `scikit-learn==1.3.2`, `catboost==1.2.10` (Dockerfile). Pinsiz kurulumda image her rebuild'de PyPI'daki en güncel sürüme kayıyor, VM eğitim ortamından ayrışıp sessizce yanlış tahmin üretiyordu (xgboost 3.x / scikit-learn 1.4+ Python 3.8'i desteklemiyor).
+
+**Zaman aşımı korumaları:** Ana DAG'da `execution_timeout` (30 dk) ve `dagrun_timeout` (1 saat) tanımlı; takılı kalan bir task'ın sessizce tüm saatlik akışı bloke etmesi (zombie-task) engellenir. SMF inference'ta ayrıca freshness watchdog ve zorla çıkış (force-exit) var.
+
+**UTC tarih kesme hatası sınıfı:** Staging modellerinde `CAST(ts AS DATE)` UTC'de keserek TRT'nin ilk 3 saatini bir önceki güne yazıyordu; 13 staging modelde düzeltildi. Yeni staging modelleri bu kalıba karşı kontrol edilmelidir.
+
+**Neden SMF tahmini karar destek, işlem değil?** Model gerçek ama gürültülü bir avantaj sağlıyor (yön doğruluğu ~%70, MASE ~0.77, naif T-24h'yi geçiyor); bu yüzden çıktı emir iletmek yerine trader'a beklenen maliyet karşılaştırması sunuyor (ADR-08, ADR-09).
+
+**Maliyet:** BigQuery maliyetinin büyük kısmı, incremental olmayan mart'ların `stg_idm_transactions`'ı her çalışmada tam taramasından geliyordu; bu kalıp birkaç mart'ta düzeltildi. Yeni mart'lar bu açıdan gözden geçirilmelidir.
+
 ---
 
 ## 🔗 Servisler ve Erişim
 
 - Airflow UI: localhost:8080 (GCE üzerinde: VM'in dinamik IP'si — bkz. firewall notu)
-- Streamlit Dashboard: localhost:8501
+- Streamlit Dashboard: canlı ortamda [epiasdataplatform.streamlit.app](https://epiasdataplatform.streamlit.app/) (Streamlit Community Cloud); yerelde localhost:8501 (`streamlit run dashboard.py` veya `run_dashboard_local.bat`)
 
 Not: GCE VM'in IP'si dinamik olduğundan firewall kurallarını buna göre güncellemek gerekebilir.
 
